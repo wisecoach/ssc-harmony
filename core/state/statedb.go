@@ -367,12 +367,12 @@ func (db *DB) GetCodeHash(addr common.Address) common.Hash {
 }
 
 // GetState retrieves a value from the given account's storage trie.
-func (db *DB) GetState(addr common.Address, hash common.Hash) common.Hash {
+func (db *DB) GetState(addr common.Address, hash common.Hash) (common.Hash, error) {
 	Object := db.getStateObject(addr)
 	if Object != nil {
-		return Object.GetState(db.db, hash)
+		return Object.GetState(db.db, hash), nil
 	}
-	return common.Hash{}
+	return common.Hash{}, nil
 }
 
 // GetProof returns the Merkle proof for a given account.
@@ -482,11 +482,12 @@ func (db *DB) SetCode(addr common.Address, code []byte, isValidatorCode bool) {
 	}
 }
 
-func (db *DB) SetState(addr common.Address, key, value common.Hash) {
+func (db *DB) SetState(addr common.Address, key, value common.Hash) error {
 	Object := db.GetOrNewStateObject(addr)
 	if Object != nil {
 		Object.SetState(db.db, key, value)
 	}
+	return nil
 }
 
 // SetStorage replaces the entire storage for the specified account with given

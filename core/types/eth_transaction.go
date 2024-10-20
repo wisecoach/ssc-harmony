@@ -49,6 +49,10 @@ type EthTransaction struct {
 	time time.Time
 }
 
+func (tx *EthTransaction) CrossShard() bool {
+	return false
+}
+
 type ethTxdata struct {
 	AccountNonce uint64          `json:"nonce"    gencodec:"required"`
 	Price        *big.Int        `json:"gasPrice" gencodec:"required"`

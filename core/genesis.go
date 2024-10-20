@@ -125,6 +125,7 @@ func NewGenesisSpec(netType nodeconfig.NetworkType, shardID uint32) *Genesis {
 		// Smart contract deployer account used to deploy initial smart contract
 
 		contractDeployerAddress := crypto.PubkeyToAddress(genesis.ContractDeployerKey.PublicKey)
+		fmt.Printf("use netType: %v, contractDeployer: %v\n", netType, contractDeployerAddress)
 		contractDeployerFunds := big.NewInt(ContractDeployerInitFund)
 		contractDeployerFunds = contractDeployerFunds.Mul(
 			contractDeployerFunds, big.NewInt(denominations.One),

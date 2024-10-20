@@ -75,7 +75,7 @@ func (consensus *Consensus) ProposeNewBlock(commitSigs chan []byte) (*types.Bloc
 
 	// Add VRF
 	if consensus.Blockchain().Config().IsVRF(header.Epoch()) {
-		//generate a new VRF for the current block
+		// generate a new VRF for the current block
 		if err := consensus.GenerateVrfAndProof(header); err != nil {
 			return nil, err
 		}
@@ -450,7 +450,7 @@ func (consensus *Consensus) WaitForConsensusReadyV2(stopChan chan struct{}, stop
 							if waitTime == 0 {
 								utils.Logger().Info().Msg("[ProposeNewBlock] Sync block proposal, reading commit sigs directly from DB")
 							} else {
-								utils.Logger().Info().Msg("[ProposeNewBlock] Timeout waiting for commit sigs, reading directly from DB")
+								utils.Logger().Info().Msg("[ProposeNewBlock] CallTimeout waiting for commit sigs, reading directly from DB")
 							}
 							sigs, err := consensus.BlockCommitSigs(consensus.Blockchain().CurrentBlock().NumberU64())
 

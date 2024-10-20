@@ -75,7 +75,7 @@ func New(
 	header := blockfactory.NewFactory(chain.Config()).NewHeader(epoch).With().
 		ParentHash(parent.Hash()).
 		Number(num.Add(num, common.Big1)).
-		GasLimit(worker.GasFloor(epoch)). //core.CalcGasLimit(parent, worker.gasFloor, worker.gasCeil)).
+		GasLimit(worker.GasFloor(epoch)). // core.CalcGasLimit(parent, worker.gasFloor, worker.gasCeil)).
 		Time(big.NewInt(timestamp)).
 		ShardID(chain.ShardID()).
 		Header()
@@ -295,16 +295,25 @@ func (w *Worker) commitTransaction(
 ) error {
 	snap := w.current.state.Snapshot()
 	gasUsed := w.current.header.GasUsed()
-	receipt, cx, stakeMsgs, _, err := core.ApplyTransaction(
-		w.chain,
-		&coinbase,
-		w.current.gasPool,
-		w.current.state,
-		w.current.header,
-		tx,
-		&gasUsed,
-		vm.Config{},
-	)
+	var err error
+	var receipt *types.Receipt
+	var cx *types.CXReceipt
+	var stakeMsgs []staking.StakeMsg
+	if !tx.CrossShard() {
+		receipt, cx, stakeMsgs, _, err = core.ApplyTransaction(
+			w.chain,
+			&coinbase,
+			w.current.gasPool,
+			w.current.state,
+			w.current.header,
+			tx,
+			&gasUsed,
+			vm.Config{},
+		)
+	} else {
+		// simulate cross-shard transaction with SSCService
+		receipt, cx, stakeMsgs, _, err = core.SimulateCXTransaction(w.chain.GetSSCSerivce(), w.chain, &coinbase, w.current.gasPool, w.current.state, w.current.header, tx, &gasUsed, vm.Config{})
+	}
 	w.current.header.SetGasUsed(gasUsed)
 	if err != nil {
 		w.current.state.RevertToSnapshot(snap)
@@ -568,7 +577,7 @@ func (w *Worker) FinalizeNewBlock(
 
 	// Put shard state into header
 	if shardState != nil && len(shardState.Shards) != 0 {
-		//we store shardstatehash in header only before prestaking epoch (header v0,v1,v2)
+		// we store shardstatehash in header only before prestaking epoch (header v0,v1,v2)
 		if !w.config.IsPreStaking(w.current.header.Epoch()) {
 			w.current.header.SetShardStateHash(shardState.Hash())
 		}
@@ -608,7 +617,7 @@ func (w *Worker) FinalizeNewBlock(
 			sigsReady <- true
 		case <-time.After(CommitSigReceiverTimeout):
 			// Exit goroutine
-			utils.Logger().Warn().Msg("Timeout waiting for commit sigs")
+			utils.Logger().Warn().Msg("CallTimeout waiting for commit sigs")
 		}
 	}()
 

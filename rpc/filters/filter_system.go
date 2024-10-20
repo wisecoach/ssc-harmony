@@ -480,6 +480,7 @@ func (es *EventSystem) eventLoop() {
 		select {
 		// Handle subscribed events
 		case ev := <-es.txsCh:
+			fmt.Printf("get tx: %v\n", ev.Txs)
 			es.broadcast(index, ev)
 		case ev := <-es.logsCh:
 			es.broadcast(index, ev)

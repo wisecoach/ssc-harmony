@@ -21,6 +21,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"github.com/harmony-one/harmony/ssc/api"
 	"io"
 	"log"
 	"math/big"
@@ -221,6 +222,9 @@ type BlockChainImpl struct {
 	pendingSlashes         slash.Records
 	maxGarbCollectedBlkNum int64
 	leaderRotationMeta     LeaderRotationMeta
+
+	SSCService           api.Service
+	lockableStateWrapper *vm.LockableState
 
 	options Options
 }
@@ -613,12 +617,12 @@ func (bc *BlockChainImpl) loadLastState() error {
 
 	// We don't need the following as we want the current header and block to be consistent
 	// Restore the last known head header
-	//currentHeader := currentBlock.Header()
-	//if head := rawdb.ReadHeadHeaderHash(bc.db); head != (common.Hash{}) {
+	// currentHeader := currentBlock.Header()
+	// if head := rawdb.ReadHeadHeaderHash(bc.db); head != (common.Hash{}) {
 	//	if header := bc.GetHeaderByHash(head); header != nil {
 	//		currentHeader = header
 	//	}
-	//}
+	// }
 	currentHeader := currentBlock.Header()
 	if err := bc.hc.SetCurrentHeader(currentHeader); err != nil {
 		return errors.Wrap(err, "headerChain SetCurrentHeader")
@@ -751,6 +755,9 @@ func (bc *BlockChainImpl) State() (*state.DB, error) {
 }
 
 func (bc *BlockChainImpl) StateAt(root common.Hash) (*state.DB, error) {
+	if root == (common.Hash{}) {
+		return nil, errors.New("state root is empty")
+	}
 	return state.New(root, bc.stateCache, bc.snaps)
 }
 
@@ -1756,7 +1763,7 @@ func (bc *BlockChainImpl) insertChain(chain types.Blocks, verifyHeaders bool) (i
 	}
 
 	// Start a parallel signature recovery (signer will fluke on fork transition, minimal perf loss)
-	//senderCacher.recoverFromBlocks(types.MakeSigner(bc.chainConfig, chain[0].Number()), chain)
+	// senderCacher.recoverFromBlocks(types.MakeSigner(bc.chainConfig, chain[0].Number()), chain)
 
 	// Iterate over the blocks and insert when the verifier permits
 	for i, block := range chain {
@@ -1789,15 +1796,15 @@ func (bc *BlockChainImpl) insertChain(chain types.Blocks, verifyHeaders bool) (i
 			// TODO: add fork choice mechanism
 			// Block competing with the canonical chain, store in the db, but don't process
 			// until the competitor TD goes above the canonical TD
-			//currentBlock := bc.CurrentBlock()
-			//localTd := bc.GetTd(currentBlock.Hash(), currentBlock.NumberU64())
-			//externTd := new(big.Int).Add(bc.GetTd(block.ParentHash(), block.NumberU64()-1), block.Difficulty())
-			//if localTd.Cmp(externTd) > 0 {
+			// currentBlock := bc.CurrentBlock()
+			// localTd := bc.GetTd(currentBlock.Hash(), currentBlock.NumberU64())
+			// externTd := new(big.Int).Add(bc.GetTd(block.ParentHash(), block.NumberU64()-1), block.Difficulty())
+			// if localTd.Cmp(externTd) > 0 {
 			//	if err = bc.WriteBlockWithoutState(block, externTd); err != nil {
 			//		return i, events, coalescedLogs, err
 			//	}
 			//	continue
-			//}
+			// }
 			// Competitor chain beat canonical, gather all blocks from the common ancestor
 			var winner []*types.Block
 
@@ -1971,6 +1978,17 @@ func (st *insertStats) report(chain []*types.Block, index int, cache common.Stor
 			end = chain[index]
 			txs = countTransactions(chain[st.lastIndex : index+1])
 		)
+		blocks := chain[st.lastIndex : index+1]
+		for _, b := range blocks {
+			for _, tx := range b.Transactions() {
+				hash := tx.Hash()
+				tx.ConvertToEth()
+				price := tx.GasPrice()
+				jsonBytes, _ := tx.MarshalJSON()
+
+				fmt.Printf("handle transaction: price=%v, hash=%v, msg=%v \n", price, hash, string(jsonBytes))
+			}
+		}
 
 		context := utils.Logger().With().
 			Int("blocks", st.processed).
@@ -3295,7 +3313,7 @@ func (bc *BlockChainImpl) SuperCommitteeForNextEpoch(
 	default:
 		// TODO: needs to make sure beacon chain sync works.
 		if isVerify {
-			//verify
+			// verify
 			shardState, err = header.GetShardState()
 			if err != nil {
 				return &shard.State{}, err
@@ -3307,7 +3325,7 @@ func (bc *BlockChainImpl) SuperCommitteeForNextEpoch(
 				beaconEpoch = shardState.Epoch
 			}
 		} else {
-			//propose
+			// propose
 			h := beacon.CurrentHeader()
 			if h.IsLastBlockInEpoch() {
 				beaconEpoch = beacon.CurrentHeader().Epoch()
@@ -3635,4 +3653,16 @@ func isUnrecoverableErr(err error) bool {
 	isLeveldbErr := strings.Contains(err.Error(), leveldbErrSpec)
 	isTooManyOpenFiles := strings.Contains(err.Error(), tooManyOpenFilesErrStr)
 	return isLeveldbErr && !isTooManyOpenFiles
+}
+
+func (bc *BlockChainImpl) GetSSCSerivce() api.Service {
+	return bc.SSCService
+}
+
+func (bc *BlockChainImpl) LockableState() (*vm.LockableState, error) {
+	db, err := bc.State()
+	if err != nil {
+		return nil, err
+	}
+	return bc.lockableStateWrapper.WithDB(db), nil
 }

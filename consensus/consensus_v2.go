@@ -230,7 +230,7 @@ func (consensus *Consensus) finalCommit() {
 	// In current code, we add signatures in block in tryCatchup, the block dump to explorer does not contains signatures
 	// but since explorer doesn't need signatures, it should be fine
 	// in future, we will move signatures to next block
-	//explorer.GetStorageInstance(consensus.leader.IP, consensus.leader.Port, true).Dump(block, beforeCatchupNum)
+	// explorer.GetStorageInstance(consensus.leader.IP, consensus.leader.Port, true).Dump(block, beforeCatchupNum)
 
 	if consensus.consensusTimeout[timeoutBootstrap].IsActive() {
 		consensus.consensusTimeout[timeoutBootstrap].Stop()
@@ -404,11 +404,11 @@ func (consensus *Consensus) tick() {
 			continue
 		}
 		if k != timeoutViewChange {
-			consensus.getLogger().Warn().Msg("[ConsensusMainLoop] Ops Consensus Timeout!!!")
+			consensus.getLogger().Warn().Msg("[ConsensusMainLoop] Ops Consensus CallTimeout!!!")
 			consensus.startViewChange()
 			break
 		} else {
-			consensus.getLogger().Warn().Msg("[ConsensusMainLoop] Ops View Change Timeout!!!")
+			consensus.getLogger().Warn().Msg("[ConsensusMainLoop] Ops View Change CallTimeout!!!")
 			consensus.startViewChange()
 			break
 		}
@@ -879,7 +879,7 @@ func (consensus *Consensus) generateVrfAndProof(newHeader *block.Header) error {
 
 // GenerateVdfAndProof generates new VDF/Proof from VRFs in the current epoch
 func (consensus *Consensus) GenerateVdfAndProof(newBlock *types.Block, vrfBlockNumbers []uint64) {
-	//derive VDF seed from VRFs generated in the current epoch
+	// derive VDF seed from VRFs generated in the current epoch
 	seed := [32]byte{}
 	for i := 0; i < consensus.VdfSeedSize(); i++ {
 		previousVrf := consensus.Blockchain().GetVrfByNumber(vrfBlockNumbers[i])
@@ -923,8 +923,8 @@ func (consensus *Consensus) ValidateVdfAndProof(headerObj *block.Header) bool {
 			Msg("[OnAnnounce] failed to read VRF block numbers for VDF computation")
 	}
 
-	//extra check to make sure there's no index out of range error
-	//it can happen if epoch is messed up, i.e. VDF ouput is generated in the next epoch
+	// extra check to make sure there's no index out of range error
+	// it can happen if epoch is messed up, i.e. VDF ouput is generated in the next epoch
 	if consensus.VdfSeedSize() > len(vrfBlockNumbers) {
 		return false
 	}

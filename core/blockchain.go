@@ -1,6 +1,7 @@
 package core
 
 import (
+	"github.com/harmony-one/harmony/ssc/api"
 	"math/big"
 
 	"github.com/ethereum/go-ethereum/common"
@@ -357,4 +358,13 @@ type BlockChain interface {
 	InitTiKV(conf *harmonyconfig.TiKVConfig)
 
 	// ========== Only For Tikv End ==========
+
+	// ========== Used for SSC CXTransaction Start ==========
+
+	// GetSSCSerivce returns the SSC service
+	GetSSCSerivce() api.Service
+	LockableState() (*vm.LockableState, error)
+
+	// ========== Used for SSC CXTransaction End ==========
+
 }

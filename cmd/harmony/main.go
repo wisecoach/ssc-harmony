@@ -370,6 +370,8 @@ func setupNodeAndRun(hc harmonyconfig.HarmonyConfig) {
 		HTTPPort:    hc.HTTP.RosettaPort,
 	}
 
+	fmt.Printf("node: %v, rpc address %v:%v\n", hc.General.DataDir, nodeConfig.IP, nodeConfig.RPCServer.HTTPPort)
+
 	if hc.Revert != nil && hc.Revert.RevertBefore != 0 && hc.Revert.RevertTo != 0 {
 		chain := currentNode.Blockchain()
 		if hc.Revert.RevertBeacon {
@@ -378,7 +380,7 @@ func setupNodeAndRun(hc harmonyconfig.HarmonyConfig) {
 		revert(chain, hc)
 	}
 
-	//// code to handle pre-image export, import and generation
+	// // code to handle pre-image export, import and generation
 	if hc.Preimage != nil {
 		if hc.Preimage.ImportFrom != "" {
 			if err := core.ImportPreimages(
@@ -1039,7 +1041,7 @@ func setupStagedSyncService(node *node.Node, host p2p.Host, hc harmonyconfig.Har
 			InsertHook: node.BeaconSyncHook,
 		}
 	}
-	//Setup stream sync service
+	// Setup stream sync service
 	s := stagedstreamsync.NewService(host, blockchains, node.Consensus, sConfig, hc.General.DataDir)
 
 	node.RegisterService(service.StagedStreamSync, s)

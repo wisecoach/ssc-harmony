@@ -2,6 +2,7 @@ package rpc
 
 import (
 	"context"
+	"fmt"
 	"reflect"
 
 	"github.com/prometheus/client_golang/prometheus"
@@ -70,9 +71,17 @@ func (s *PublicPoolService) wait(limiter *rate.Limiter, ctx context.Context) err
 // The sender is responsible for signing the transaction and using the correct nonce.
 func (s *PublicPoolService) SendRawTransaction(
 	ctx context.Context, encodedTx hexutil.Bytes,
-) (common.Hash, error) {
+) (hash common.Hash, err error) {
 	timer := DoMetricRPCRequest(SendRawTransaction)
 	defer DoRPCRequestDuration(SendRawTransaction, timer)
+
+	defer func() {
+		if err != nil {
+			fmt.Printf("Error: handle a raw transaction, err=%v\n", err.Error())
+		}
+	}()
+
+	fmt.Println("begin to handle a raw transaction")
 
 	// DOS prevention
 	if len(encodedTx) >= types.MaxEncodedPoolTransactionSize {

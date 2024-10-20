@@ -133,7 +133,7 @@ func (s *Service) Run() *http.Server {
 	s.router.Path("/node-sync").HandlerFunc(s.GetNodeSync)
 
 	// Do serving now.
-	utils.Logger().Info().Str("port", GetExplorerPort(s.Port)).Msg("[Explorer] Server started.")
+	utils.Logger().Info().Str("port", GetExplorerPort(s.Port)).Msg("[Explorer] Server started. addr: " + addr)
 	server := &http.Server{
 		Addr:         addr,
 		Handler:      s.router,

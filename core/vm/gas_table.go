@@ -56,12 +56,12 @@ func memoryGasCost(mem *Memory, newMemSize uint64) (uint64, error) {
 }
 
 // memoryCopierGas creates the gas functions for the following opcodes, and takes
-// the stack position of the operand which determines the size of the data to copy
+// the Stack position of the operand which determines the size of the data to copy
 // as argument:
-// CALLDATACOPY (stack position 2)
-// CODECOPY (stack position 2)
-// EXTCODECOPY (stack poition 3)
-// RETURNDATACOPY (stack position 2)
+// CALLDATACOPY (Stack position 2)
+// CODECOPY (Stack position 2)
+// EXTCODECOPY (Stack poition 3)
+// RETURNDATACOPY (Stack position 2)
 func memoryCopierGas(stackpos int) gasFunc {
 	return func(evm *EVM, contract *Contract, stack *Stack, mem *Memory, memorySize uint64) (uint64, error) {
 		// Gas for expanding the memory
@@ -95,8 +95,8 @@ var (
 
 func gasSStore(evm *EVM, contract *Contract, stack *Stack, mem *Memory, memorySize uint64) (uint64, error) {
 	var (
-		y, x    = stack.Back(1), stack.Back(0)
-		current = evm.StateDB.GetState(contract.Address(), common.BigToHash(x))
+		y, x       = stack.Back(1), stack.Back(0)
+		current, _ = evm.StateDB.GetState(contract.Address(), common.BigToHash(x))
 	)
 	// The legacy gas metering only takes into consideration the current state
 	// Legacy rules should be applied if we are in Petersburg (removal of EIP-1283)
@@ -182,8 +182,8 @@ func gasSStoreEIP2200(evm *EVM, contract *Contract, stack *Stack, mem *Memory, m
 	}
 	// Gas sentry honoured, do the actual gas calculation based on the stored value
 	var (
-		y, x    = stack.Back(1), stack.Back(0)
-		current = evm.StateDB.GetState(contract.Address(), common.BigToHash(x))
+		y, x       = stack.Back(1), stack.Back(0)
+		current, _ = evm.StateDB.GetState(contract.Address(), common.BigToHash(x))
 	)
 	value := common.BigToHash(y)
 

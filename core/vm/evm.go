@@ -17,6 +17,7 @@
 package vm
 
 import (
+	"github.com/harmony-one/harmony/ssc/api"
 	"math/big"
 	"sync/atomic"
 	"time"
@@ -61,7 +62,7 @@ type (
 	UndelegateFunc      func(db StateDB, rosettaTracer RosettaTracer, stakeMsg *stakingTypes.Undelegate) error
 	CollectRewardsFunc  func(db StateDB, rosettaTracer RosettaTracer, stakeMsg *stakingTypes.CollectRewards) error
 	// Used for migrating delegations via the staking precompile
-	//MigrateDelegationsFunc    func(db StateDB, migrationMsg *stakingTypes.MigrationMsg) ([]interface{}, error)
+	// MigrateDelegationsFunc    func(db StateDB, migrationMsg *stakingTypes.MigrationMsg) ([]interface{}, error)
 	CalculateMigrationGasFunc func(db StateDB, migrationMsg *stakingTypes.MigrationMsg, homestead bool, istanbul bool) (uint64, error)
 )
 
@@ -170,7 +171,9 @@ type Context struct {
 	Time        *big.Int       // Provides information for TIME
 	VRF         common.Hash    // Provides information for VRF
 
-	TxType types.TransactionType
+	TxType         types.TransactionType
+	TxHash         common.Hash
+	CrossCallIndex api.CallIndex
 
 	CreateValidator       CreateValidatorFunc
 	EditValidator         EditValidatorFunc
@@ -197,7 +200,7 @@ type EVM struct {
 	Context
 	// DB gives access to the underlying state
 	StateDB StateDB
-	// Depth is the current call stack
+	// Depth is the current call Stack
 	depth int
 
 	// chainConfig contains information about the current chain
@@ -236,7 +239,7 @@ func NewEVM(ctx Context, statedb StateDB, chainConfig *params.ChainConfig, vmCon
 		interpreters: make([]Interpreter, 0, 1),
 	}
 
-	//if chainConfig.IsS3(ctx.EpochNumber) {
+	// if chainConfig.IsS3(ctx.EpochNumber) {
 	//	to be implemented by EVM-C and Wagon PRs.
 	//	if vmConfig.EWASMInterpreter != "" {
 	//	 extIntOpts := strings.Split(vmConfig.EWASMInterpreter, ":")
@@ -250,7 +253,7 @@ func NewEVM(ctx Context, statedb StateDB, chainConfig *params.ChainConfig, vmCon
 	//		evm.interpreters = append(evm.interpreters, NewEWASMInterpreter(evm, vmConfig))
 	//	}
 	//	panic("No supported ewasm interpreter yet.")
-	//}
+	// }
 
 	// vmConfig.EVMInterpreter will be used by EVM-C, it won't be checked here
 	// as we always want to have the built-in EVM as the failover option.

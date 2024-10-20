@@ -57,6 +57,7 @@ const (
 	Delegate
 	Undelegate
 	CollectRewards
+	CXTransaction
 )
 
 // StakingTypeMap is the map from staking type to transactionType
@@ -92,6 +93,7 @@ type CoreTransaction interface {
 	Hash() common.Hash
 	Protected() bool
 	ChainID() *big.Int
+	CrossShard() bool
 }
 
 // Transaction struct.
@@ -124,6 +126,8 @@ func (txType TransactionType) String() string {
 		return "Undelegate"
 	} else if txType == CollectRewards {
 		return "CollectRewards"
+	} else if txType == CXTransaction {
+		return "CXTransaction"
 	}
 	return "Unknown"
 }
@@ -134,6 +138,7 @@ type txdata struct {
 	GasLimit     uint64          `json:"gas"        gencodec:"required"`
 	ShardID      uint32          `json:"shardID"    gencodec:"required"`
 	ToShardID    uint32          `json:"toShardID"  gencodec:"required"`
+	CrossShard   bool            `json:"crossShard" gencodec:"required"`
 	Recipient    *common.Address `json:"to"         rlp:"nil"` // nil means contract creation
 	Amount       *big.Int        `json:"value"      gencodec:"required"`
 	Payload      []byte          `json:"input"      gencodec:"required"`
@@ -432,6 +437,10 @@ func (tx *Transaction) Size() common.StorageSize {
 	rlp.Encode(&c, &tx.data)
 	tx.size.Store(common.StorageSize(c))
 	return common.StorageSize(c)
+}
+
+func (tx *Transaction) CrossShard() bool {
+	return tx.data.CrossShard
 }
 
 // IsEthCompatible returns whether the txn is ethereum compatible

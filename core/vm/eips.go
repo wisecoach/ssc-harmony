@@ -61,7 +61,8 @@ func enable1884(jt *JumpTable) {
 	}
 }
 
-func opSelfBalance(pc *uint64, interpreter *EVMInterpreter, contract *Contract, memory *Memory, stack *Stack) ([]byte, error) {
+func opSelfBalance(pc *uint64, inp Interpreter, contract *Contract, memory *Memory, stack *Stack) ([]byte, error) {
+	interpreter := inp.(*EVMInterpreter)
 	balance := interpreter.intPool.get().Set(interpreter.evm.StateDB.GetBalance(contract.Address()))
 	stack.push(balance)
 	return nil, nil
@@ -81,7 +82,8 @@ func enable1344(jt *JumpTable) {
 }
 
 // opChainID implements CHAINID opcode
-func opChainID(pc *uint64, interpreter *EVMInterpreter, contract *Contract, memory *Memory, stack *Stack) ([]byte, error) {
+func opChainID(pc *uint64, inp Interpreter, contract *Contract, memory *Memory, stack *Stack) ([]byte, error) {
+	interpreter := inp.(*EVMInterpreter)
 	var chainID *big.Int
 	if interpreter.evm.chainConfig.IsChainIdFix(interpreter.evm.EpochNumber) {
 		chainID = interpreter.intPool.get().Set(interpreter.evm.chainConfig.EthCompatibleChainID)

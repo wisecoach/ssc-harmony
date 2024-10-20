@@ -47,7 +47,7 @@ type LogFilter func(pc uint64, op OpCode) bool
 // LogConfig are the configuration options for structured logger the EVM
 type LogConfig struct {
 	DisableMemory  bool // disable memory capture
-	DisableStack   bool // disable stack capture
+	DisableStack   bool // disable Stack capture
 	DisableStorage bool // disable storage capture
 	Debug          bool // print output during capture end
 	Limit          int  // maximum length of output, but zero means unlimited
@@ -67,7 +67,7 @@ type StructLog struct {
 	GasCost         uint64                      `json:"gasCost"`
 	Memory          []byte                      `json:"memory"`
 	MemorySize      int                         `json:"memSize"`
-	Stack           []*big.Int                  `json:"stack"`
+	Stack           []*big.Int                  `json:"Stack"`
 	Storage         map[common.Hash]common.Hash `json:"-"`
 	Depth           int                         `json:"depth"`
 	RefundCounter   uint64                      `json:"refund"`
@@ -147,7 +147,7 @@ func (l *StructLogger) CaptureStart(env *EVM, from common.Address, to common.Add
 // CaptureState logs a new structured log message and pushes it out to the environment
 //
 // CaptureState also tracks SSTORE ops to track dirty values.
-func (l *StructLogger) CaptureState(env *EVM, pc uint64, op OpCode, gas, cost uint64, memory *Memory, stack *Stack, contract *Contract, depth int, err error) (HookAfter, error) {
+func (l *StructLogger) CaptureState(env *EVM, pc uint64, op OpCode, gas, cost uint64, memory *Memory, s *Stack, contract *Contract, depth int, err error) (HookAfter, error) {
 	// check if already accumulated the specified number of logs
 	if l.cfg.Limit != 0 && l.cfg.Limit <= len(l.logs) {
 		return nil, ErrTraceLimitReached
@@ -167,10 +167,10 @@ func (l *StructLogger) CaptureState(env *EVM, pc uint64, op OpCode, gas, cost ui
 
 	// capture SSTORE opcodes and determine the changed value and store
 	// it in the local storage container.
-	if op == SSTORE && stack.len() >= 2 {
+	if op == SSTORE && s.len() >= 2 {
 		var (
-			value   = common.BigToHash(stack.data[stack.len()-2])
-			address = common.BigToHash(stack.data[stack.len()-1])
+			value   = common.BigToHash(s.data[s.len()-2])
+			address = common.BigToHash(s.data[s.len()-1])
 		)
 		l.changedValues[contract.Address()][address] = value
 	}
@@ -180,11 +180,11 @@ func (l *StructLogger) CaptureState(env *EVM, pc uint64, op OpCode, gas, cost ui
 		mem = make([]byte, len(memory.Data()))
 		copy(mem, memory.Data())
 	}
-	// Copy a snapshot of the current stack state to a new buffer
+	// Copy a snapshot of the current Stack state to a new buffer
 	var stck []*big.Int
 	if !l.cfg.DisableStack {
-		stck = make([]*big.Int, len(stack.Data()))
-		for i, item := range stack.Data() {
+		stck = make([]*big.Int, len(s.Data()))
+		for i, item := range s.Data() {
 			stck[i] = new(big.Int).Set(item)
 		}
 	}
@@ -204,7 +204,7 @@ func (l *StructLogger) CaptureState(env *EVM, pc uint64, op OpCode, gas, cost ui
 
 	// create a new snapshot of the EVM.
 	log := &StructLog{pc, op, contract.CallerAddress, contract.Address(), gas, cost, mem, memory.Len(), stck, storage, depth, env.StateDB.GetRefund(), err, nil, nil, operatorEvent}
-	afterHook := func(memory *Memory, stack *Stack) {
+	afterHook := func(memory *Memory, s *Stack) {
 		// Copy a snapshot of the current memory state to a new buffer
 		var mem []byte
 		if !l.cfg.DisableMemory {
@@ -212,11 +212,11 @@ func (l *StructLogger) CaptureState(env *EVM, pc uint64, op OpCode, gas, cost ui
 			copy(mem, memory.Data())
 		}
 
-		// Copy a snapshot of the current stack state to a new buffer
+		// Copy a snapshot of the current Stack state to a new buffer
 		var stck []*big.Int
 		if !l.cfg.DisableStack {
-			stck = make([]*big.Int, len(stack.Data()))
-			for i, item := range stack.Data() {
+			stck = make([]*big.Int, len(s.Data()))
+			for i, item := range s.Data() {
 				stck[i] = new(big.Int).Set(item)
 			}
 		}

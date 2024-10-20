@@ -5,6 +5,7 @@ package genesis
 
 import (
 	"crypto/ecdsa"
+	"fmt"
 	"math/big"
 
 	"github.com/ethereum/go-ethereum/crypto"
@@ -28,4 +29,5 @@ func init() {
 			Y:     Y,
 		},
 	}
+	fmt.Printf("ContractDeployerKey: %x\n", ContractDeployerKey.D.Bytes())
 }

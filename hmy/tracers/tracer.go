@@ -223,7 +223,7 @@ func (dw *dbWrapper) pushObject(vm *duktape.Context) {
 		hash := popSlice(ctx)
 		addr := popSlice(ctx)
 
-		state := dw.db.GetState(common.BytesToAddress(addr), common.BytesToHash(hash))
+		state, _ := dw.db.GetState(common.BytesToAddress(addr), common.BytesToHash(hash))
 
 		ptr := ctx.PushFixedBuffer(len(state))
 		copy(makeSlice(ptr, uint(len(state))), state[:])
@@ -290,8 +290,8 @@ type Tracer struct {
 
 	vm *duktape.Context // Javascript VM instance
 
-	tracerObject int // Stack index of the tracer JavaScript object
-	stateObject  int // Stack index of the global state to pull arguments from
+	tracerObject int // stack index of the tracer JavaScript object
+	stateObject  int // stack index of the global state to pull arguments from
 
 	opWrapper       *opWrapper       // Wrapper around the VM opcode
 	stackWrapper    *stackWrapper    // Wrapper around the VM stack

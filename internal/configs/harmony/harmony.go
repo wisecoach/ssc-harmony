@@ -303,7 +303,7 @@ type RpcOptConfig struct {
 	RpcFilterFile      string // Define filters to enable/disable RPC exposure
 	RateLimterEnabled  bool   // Enable Rate limiter for RPC
 	RequestsPerSecond  int    // for RPC rate limiter
-	EvmCallTimeout     string // Timeout for eth_call
+	EvmCallTimeout     string // CallTimeout for eth_call
 	PreimagesEnabled   bool   // Expose preimage API
 }
 

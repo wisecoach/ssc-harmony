@@ -19,6 +19,7 @@ package core
 import (
 	"encoding/binary"
 	"fmt"
+	"github.com/harmony-one/harmony/ssc/api"
 	"math/big"
 	"time"
 
@@ -106,7 +107,8 @@ func (p *StateProcessor) Process(
 	[]*types.Log, UsedGas, reward.Reader, *state.DB, error,
 ) {
 	cacheKey := block.Hash()
-	if readCache {
+	// if readCache {
+	if false {
 		if cached, ok := p.resultCache.Get(cacheKey); ok {
 			// Return the cached result to avoid process the same block again.
 			// Only the successful results are cached in case for retry.
@@ -255,15 +257,17 @@ func getTransactionType(
 		(!config.AcceptsCrossTx(header.Epoch()) ||
 			tx.ShardID() == tx.ToShardID()) {
 		return types.SameShardTx
+	} else {
+		return types.CXTransaction
 	}
-	numShards := shard.Schedule.InstanceForEpoch(header.Epoch()).NumShards()
-	// Assuming here all the shards are consecutive from 0 to n-1, n is total number of shards
-	if tx.ShardID() != tx.ToShardID() &&
-		header.ShardID() == tx.ShardID() &&
-		tx.ToShardID() < numShards {
-		return types.SubtractionOnly
-	}
-	return types.InvalidTx
+	// numShards := shard.Schedule.InstanceForEpoch(header.Epoch()).NumShards()
+	// // Assuming here all the shards are consecutive from 0 to n-1, n is total number of shards
+	// if tx.ShardID() != tx.ToShardID() &&
+	// 	header.ShardID() == tx.ShardID() &&
+	// 	tx.ToShardID() < numShards {
+	// 	return types.SubtractionOnly
+	// }
+	// return types.InvalidTx
 }
 
 // ApplyTransaction attempts to apply a transaction to the given state database
@@ -283,7 +287,6 @@ func ApplyTransaction(bc ChainContext, author *common.Address, gp *GasPool, stat
 			config.CrossTxEpoch, header.Epoch(),
 		)
 	}
-
 	var signer types.Signer
 	if tx.IsEthCompatible() {
 		if !config.IsEthCompatible(header.Epoch()) {
@@ -329,6 +332,9 @@ func ApplyTransaction(bc ChainContext, author *common.Address, gp *GasPool, stat
 	*usedGas += result.UsedGas
 
 	failedExe := result.VMErr != nil
+	if result.VMErr != nil {
+		fmt.Printf("ApplyTransaction failed: err=%s\n", result.VMErr.Error())
+	}
 	// Create a new receipt for the transaction, storing the intermediate root and gas used by the tx
 	// based on the eip phase, we're passing whether the root touch-delete accounts.
 	receipt := types.NewReceipt(root, failedExe, *usedGas)
@@ -375,6 +381,45 @@ func ApplyTransaction(bc ChainContext, author *common.Address, gp *GasPool, stat
 	}
 
 	return receipt, cxReceipt, vmenv.StakeMsgs, result.UsedGas, err
+}
+
+func SimulateCXTransaction(service api.Service, bc ChainContext, author *common.Address, gp *GasPool, statedb *state.DB, header *block.Header, tx *types.Transaction, usedGas *uint64, cfg vm.Config) (*types.Receipt, *types.CXReceipt, []staking.StakeMsg, uint64, error) {
+	req := &api.CXTSimulationRequest{
+		Header: header,
+		Tx:     tx,
+		Author: author,
+	}
+	result := service.SimulateCXTransaction(req)
+	if result.Err != nil {
+		return nil, nil, nil, 0, result.Err
+	}
+	return result.Receipt, nil, make([]staking.StakeMsg, 0), result.UsedGas, nil
+}
+
+// ApplyCXTransaction
+//
+//	@Description:
+func ApplyCXTransaction(bc ChainContext, author *common.Address, gp *GasPool, statedb *state.DB, header *block.Header, tx *types.Transaction, usedGas *uint64, cfg vm.Config) (*types.Receipt, *types.CXReceipt, []staking.StakeMsg, uint64, error) {
+	panic("implement me")
+	// config := bc.Config()
+	// txType := getTransactionType(config, header, tx)
+	// var signer types.Signer
+	// if tx.IsEthCompatible() {
+	// 	if !config.IsEthCompatible(header.Epoch()) {
+	// 		return nil, nil, nil, 0, errors.New("ethereum compatible transactions not supported at current epoch")
+	// 	}
+	// 	signer = types.NewEIP155Signer(config.EthCompatibleChainID)
+	// } else {
+	// 	signer = types.MakeSigner(config, header.Epoch())
+	// }
+	// msg, err := tx.AsMessage(signer)
+	//
+	// // Create a new context to be used in the EVM environment
+	// context := NewEVMContext(msg, header, bc, author)
+	// context.TxType = txType
+	// // Create a new environment which holds all relevant information
+	// // about the transaction and calling mechanisms.
+	// vmenv := vm.NewEVM(context, statedb, config, cfg)
 }
 
 // ApplyStakingTransaction attempts to apply a staking transaction to the given state database
@@ -599,7 +644,7 @@ func MayBalanceMigration(
 					gasPool.SubGas(params.TxGasXShard)
 					return cx, nil
 				}
-				//return nil, errors.Wrap(ErrNoMigrationPossible, "MayBalanceMigration: cx is nil")
+				// return nil, errors.Wrap(ErrNoMigrationPossible, "MayBalanceMigration: cx is nil")
 				return nil, nil
 			}
 		}

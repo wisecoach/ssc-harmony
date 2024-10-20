@@ -81,7 +81,7 @@ type StateTransition struct {
 // Message represents a message sent to a contract.
 type Message interface {
 	From() common.Address
-	//FromFrontier() (common.Address, error)
+	// FromFrontier() (common.Address, error)
 	To() *common.Address
 
 	GasPrice() *big.Int
@@ -219,7 +219,6 @@ func (st *StateTransition) TransitionDb() (ExecutionResult, error) {
 	homestead := st.evm.ChainConfig().IsS3(st.evm.EpochNumber) // s3 includes homestead
 	istanbul := st.evm.ChainConfig().IsIstanbul(st.evm.EpochNumber)
 	contractCreation := msg.To() == nil
-
 	// Pay intrinsic gas
 	gas, err := vm.IntrinsicGas(st.data, contractCreation, homestead, istanbul, false)
 	if err != nil {
@@ -228,7 +227,6 @@ func (st *StateTransition) TransitionDb() (ExecutionResult, error) {
 	if err = st.useGas(gas); err != nil {
 		return ExecutionResult{}, fmt.Errorf("%w: have %d, want %d", ErrIntrinsicGas, st.gas, gas)
 	}
-
 	evm := st.evm
 
 	var ret []byte

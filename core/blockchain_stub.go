@@ -1,6 +1,7 @@
 package core
 
 import (
+	"github.com/harmony-one/harmony/ssc/api"
 	"math/big"
 
 	"github.com/harmony-one/harmony/core/state/snapshot"
@@ -31,6 +32,15 @@ var _ BlockChain = Stub{}
 
 type Stub struct {
 	Name string
+}
+
+func (a Stub) LockableState() (*vm.LockableState, error) {
+	return nil, errors.Errorf("method LockableState not implemented for %s", a.Name)
+}
+
+func (a Stub) GetSSCSerivce() api.Service {
+	// TODO implement me
+	panic("implement me")
 }
 
 func (a Stub) ValidateNewBlock(block *types.Block, beaconChain BlockChain) error {

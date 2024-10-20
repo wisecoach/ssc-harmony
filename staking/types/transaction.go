@@ -24,6 +24,7 @@ type txdata struct {
 	AccountNonce uint64   `json:"nonce"      gencodec:"required"`
 	Price        *big.Int `json:"gasPrice"   gencodec:"required"`
 	GasLimit     uint64   `json:"gas"        gencodec:"required"`
+	CrossShard   bool     `json:"crossShard" gencodec:"required"`
 	// Signature values
 	V *big.Int `json:"v" gencodec:"required"`
 	R *big.Int `json:"r" gencodec:"required"`
@@ -89,6 +90,7 @@ func NewStakingTransaction(
 		nonce,
 		big.NewInt(0).Set(gasPrice),
 		gasLimit,
+		false,
 		big.NewInt(0),
 		big.NewInt(0),
 		big.NewInt(0),
@@ -245,6 +247,10 @@ func (tx *StakingTransaction) Data() []byte {
 // Value ..
 func (tx *StakingTransaction) Value() *big.Int {
 	return new(big.Int).SetInt64(0)
+}
+
+func (tx *StakingTransaction) CrossShard() bool {
+	return tx.data.CrossShard
 }
 
 // Size ..
