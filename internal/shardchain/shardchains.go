@@ -139,13 +139,14 @@ func (sc *CollectionImpl) ShardChain(shardID uint32, options ...core.Options) (c
 	if opts.EpochChain {
 		bc, err = core.NewEpochChain(db, &chainConfig, sc.engine, vm.Config{})
 	} else {
+		lockableState := vm.NewLockableStateWrapper()
 		stateCache, err := initStateCache(db, sc, shardID)
 		if err != nil {
 			return nil, err
 		}
 		if shardID == shard.BeaconChainShardID {
 			bc, err = core.NewBlockChainWithOptions(
-				db, stateCache, bc, cacheConfig, &chainConfig, sc.engine, vm.Config{}, opts,
+				db, stateCache, bc, cacheConfig, &chainConfig, sc.engine, vm.Config{}, opts, lockableState,
 			)
 		} else {
 			beacon, ok := sc.pool[shard.BeaconChainShardID]
@@ -154,7 +155,7 @@ func (sc *CollectionImpl) ShardChain(shardID uint32, options ...core.Options) (c
 			}
 
 			bc, err = core.NewBlockChainWithOptions(
-				db, stateCache, beacon, cacheConfig, &chainConfig, sc.engine, vm.Config{}, opts,
+				db, stateCache, beacon, cacheConfig, &chainConfig, sc.engine, vm.Config{}, opts, lockableState,
 			)
 		}
 	}

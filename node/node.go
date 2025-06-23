@@ -4,6 +4,9 @@ import (
 	"bytes"
 	"context"
 	"fmt"
+	"github.com/ethereum/go-ethereum/metrics"
+	"github.com/harmony-one/harmony/core/vm"
+	"github.com/harmony-one/harmony/ssc/api"
 	"math/big"
 	"os"
 	"runtime/pprof"
@@ -45,7 +48,6 @@ import (
 	libp2p_peer "github.com/libp2p/go-libp2p/core/peer"
 	"github.com/pkg/errors"
 	"github.com/prometheus/client_golang/prometheus"
-	"github.com/rcrowley/go-metrics"
 	"golang.org/x/sync/semaphore"
 	protobuf "google.golang.org/protobuf/proto"
 )
@@ -60,7 +62,7 @@ const (
 const (
 	maxBroadcastNodes       = 10              // broadcast at most maxBroadcastNodes peers that need in sync
 	broadcastTimeout  int64 = 60 * 1000000000 // 1 mins
-	//SyncIDLength is the length of bytes for syncID
+	// SyncIDLength is the length of bytes for syncID
 	SyncIDLength = 20
 )
 
@@ -88,6 +90,7 @@ type ISync interface {
 
 // Node represents a protocol-participating node in the network
 type Node struct {
+	SSCService         api.Service
 	Consensus          *consensus.Consensus // Consensus object containing all Consensus related data (e.g. committee members, signatures, commits)
 	BeaconBlockChannel chan *types.Block    // The channel to send beacon blocks for non-beaconchain nodes
 
@@ -137,6 +140,21 @@ type Node struct {
 	registry *registry.Registry
 }
 
+func (node *Node) SetSSCService(sscService api.Service) {
+	node.SSCService = sscService
+	if node.Worker != nil {
+		node.Worker.SetSSCService(sscService)
+	}
+	if node.registry != nil {
+		bc := node.registry.GetBlockchain()
+		bc.SetSSCService(sscService)
+	}
+}
+
+func (node *Node) GetSSCService() api.Service {
+	return node.SSCService
+}
+
 // Blockchain returns the blockchain for the node's current shard.
 func (node *Node) Blockchain() core.BlockChain {
 	return node.registry.GetBlockchain()
@@ -151,13 +169,13 @@ func (node *Node) SyncInstance() ISync {
 func (node *Node) GetOrCreateSyncInstance(initiate bool) ISync {
 	if node.NodeConfig.StagedSync {
 		if initiate && node.stateStagedSync == nil {
-			utils.Logger().Info().Msg("initializing staged state sync")
+			// tempDelete utils.Logger().Info().Msg("initializing staged state sync")
 			node.stateStagedSync = node.createStagedSync(node.Blockchain())
 		}
 		return node.stateStagedSync
 	}
 	if initiate && node.stateSync == nil {
-		utils.Logger().Info().Msg("initializing legacy state sync")
+		// tempDelete utils.Logger().Info().Msg("initializing legacy state sync")
 		node.stateSync = node.createStateSync(node.Beaconchain())
 	}
 	return node.stateSync
@@ -187,7 +205,7 @@ func (node *Node) chain(shardID uint32, options core.Options) core.BlockChain {
 	if isEnablePruneBeaconChain && isNotBeaconChainValidator {
 		bc.EnablePruneBeaconChainFeature()
 	} else if isEnablePruneBeaconChain && !isNotBeaconChainValidator {
-		utils.Logger().Info().Msg("`IsEnablePruneBeaconChain` only available in validator node and shard 1-3")
+		// tempDelete utils.Logger().Info().Msg("`IsEnablePruneBeaconChain` only available in validator node and shard 1-3")
 	}
 	return bc
 }
@@ -205,7 +223,7 @@ func (node *Node) tryBroadcast(tx *types.Transaction) {
 	msg := proto_node.ConstructTransactionListMessageAccount(types.Transactions{tx})
 
 	shardGroupID := nodeconfig.NewGroupIDByShardID(nodeconfig.ShardID(tx.ShardID()))
-	utils.Logger().Info().Str("shardGroupID", string(shardGroupID)).Msg("tryBroadcast")
+	// tempDelete utils.Logger().Info().Str("shardGroupID", string(shardGroupID)).Msg("tryBroadcast")
 
 	for attempt := 0; attempt < NumTryBroadCast; attempt++ {
 		err := node.host.SendMessageToGroups([]nodeconfig.GroupID{shardGroupID}, p2p.ConstructMessage(msg))
@@ -223,7 +241,7 @@ func (node *Node) tryBroadcastStaking(stakingTx *staking.StakingTransaction) {
 	shardGroupID := nodeconfig.NewGroupIDByShardID(
 		nodeconfig.ShardID(shard.BeaconChainShardID),
 	) // broadcast to beacon chain
-	utils.Logger().Info().Str("shardGroupID", string(shardGroupID)).Msg("tryBroadcastStaking")
+	// tempDelete utils.Logger().Info().Str("shardGroupID", string(shardGroupID)).Msg("tryBroadcastStaking")
 
 	for attempt := 0; attempt < NumTryBroadCast; attempt++ {
 		if err := node.host.SendMessageToGroups([]nodeconfig.GroupID{shardGroupID},
@@ -236,7 +254,7 @@ func (node *Node) tryBroadcastStaking(stakingTx *staking.StakingTransaction) {
 }
 
 // Add new transactions to the pending transaction list.
-func addPendingTransactions(registry *registry.Registry, newTxs types.Transactions) []error {
+func (node *Node) addPendingTransactions(registry *registry.Registry, newTxs types.Transactions) []error {
 	var (
 		errs          []error
 		bc            = registry.GetBlockchain()
@@ -272,7 +290,30 @@ func addPendingTransactions(registry *registry.Registry, newTxs types.Transactio
 		}
 		poolTxs = append(poolTxs, tx)
 	}
-	errs = append(errs, registry.GetTxPool().AddRemotes(poolTxs)...)
+	txErrs := registry.GetTxPool().AddRemotes(poolTxs)
+
+	gasLimit := bc.CurrentHeader().Header.GasLimit()
+	// begin to stimulate the cross tx, if self is leader
+	if node.Consensus != nil && node.Consensus.IsLeader() {
+		for i, tx := range poolTxs {
+			if txErrs[i] == nil {
+				// if transaction is cross-shard tx and it is not the tx apply on chain
+				if tx.CrossShard() && vm.SSCAddrsApplyOnChain[*tx.To()] == nil {
+					utils.Logger().Info().Str("txHash", tx.Hash().Hex()).Msg("Pre-Simulating cross shard transaction")
+					req := &api.CXTSimulationRequest{
+						SimulationNum: 0,
+						Tx:            tx.(*types.Transaction),
+						TxHash:        tx.Hash().Bytes(),
+						From:          common.Address{},
+						GasPool:       gasLimit,
+					}
+					node.SSCService.SimulateCXTransaction(req)
+				}
+			}
+		}
+	}
+
+	errs = append(errs, txErrs...)
 	pendingCount, queueCount := txPool.Stats()
 	utils.Logger().Debug().
 		Interface("err", errs).
@@ -280,6 +321,7 @@ func addPendingTransactions(registry *registry.Registry, newTxs types.Transactio
 		Int("totalPending", pendingCount).
 		Int("totalQueued", queueCount).
 		Msg("[addPendingTransactions] Adding more transactions")
+
 	return errs
 }
 
@@ -292,12 +334,12 @@ func (node *Node) addPendingStakingTransactions(newStakingTxs staking.StakingTra
 				poolTxs = append(poolTxs, tx)
 			}
 			errs := node.TxPool.AddRemotes(poolTxs)
-			pendingCount, queueCount := node.TxPool.Stats()
-			utils.Logger().Info().
-				Int("length of newStakingTxs", len(poolTxs)).
-				Int("totalPending", pendingCount).
-				Int("totalQueued", queueCount).
-				Msg("Got more staking transactions")
+			// tempDelete pendingCount, queueCount := node.TxPool.Stats()
+			// tempDelete utils.Logger().Info().
+			// tempDelete 	Int("length of newStakingTxs", len(poolTxs)).
+			// tempDelete 	Int("totalPending", pendingCount).
+			// tempDelete 	Int("totalQueued", queueCount).
+			// tempDelete 	Msg("Got more staking transactions")
 			return errs
 		}
 		return []error{
@@ -318,17 +360,17 @@ func (node *Node) AddPendingStakingTransaction(
 		var err error
 		for i := range errs {
 			if errs[i] != nil {
-				utils.Logger().Info().
-					Err(errs[i]).
-					Msg("[AddPendingStakingTransaction] Failed adding new staking transaction")
+				// tempDelete utils.Logger().Info().
+				// tempDelete 	Err(errs[i]).
+				// tempDelete 	Msg("[AddPendingStakingTransaction] Failed adding new staking transaction")
 				err = errs[i]
 				break
 			}
 		}
 		if err == nil || node.BroadcastInvalidTx {
-			utils.Logger().Info().
-				Str("Hash", newStakingTx.Hash().Hex()).
-				Msg("Broadcasting Staking Tx")
+			// tempDelete utils.Logger().Info().
+			// tempDelete 	Str("Hash", newStakingTx.Hash().Hex()).
+			// tempDelete 	Msg("Broadcasting Staking Tx")
 			node.tryBroadcastStaking(newStakingTx)
 		}
 		return err
@@ -340,17 +382,17 @@ func (node *Node) AddPendingStakingTransaction(
 // This is only called from SDK.
 func (node *Node) AddPendingTransaction(newTx *types.Transaction) error {
 	if newTx.ShardID() == node.NodeConfig.ShardID {
-		errs := addPendingTransactions(node.registry, types.Transactions{newTx})
+		errs := node.addPendingTransactions(node.registry, types.Transactions{newTx})
 		var err error
 		for i := range errs {
 			if errs[i] != nil {
-				utils.Logger().Info().Err(errs[i]).Msg("[AddPendingTransaction] Failed adding new transaction")
+				// tempDelete utils.Logger().Info().Err(errs[i]).Msg("[AddPendingTransaction] Failed adding new transaction")
 				err = errs[i]
 				break
 			}
 		}
 		if err == nil || node.BroadcastInvalidTx {
-			utils.Logger().Info().Str("Hash", newTx.Hash().Hex()).Str("HashByType", newTx.HashByType().Hex()).Msg("Broadcasting Tx")
+			// tempDelete utils.Logger().Info().Str("Hash", newTx.Hash().Hex()).Str("HashByType", newTx.HashByType().Hex()).Msg("Broadcasting Tx")
 			node.tryBroadcast(newTx)
 		}
 		return err
@@ -479,7 +521,7 @@ func validateShardBoundMessage(consensus *consensus.Consensus, peer libp2p_peer.
 ) (*msg_pb.Message, *bls.SerializedPublicKey, bool, error) {
 	var (
 		m msg_pb.Message
-		//consensus = registry.GetConsensus()
+		// consensus = registry.GetConsensus()
 	)
 	if err := protobuf.Unmarshal(payload, &m); err != nil {
 		nodeConsensusMessageCounterVec.With(prometheus.Labels{"type": "invalid_unmarshal"}).Inc()
@@ -692,9 +734,9 @@ func (node *Node) StartPubSub() error {
 		topicNamed := allTopics[i].Name
 		isConsensusBound := allTopics[i].consensusBound
 
-		utils.Logger().Info().
-			Str("topic", topicNamed).
-			Msg("enabled topic validation pubsub messages")
+		// tempDelete utils.Logger().Info().
+		// tempDelete 	Str("topic", topicNamed).
+		// tempDelete 	Msg("enabled topic validation pubsub messages")
 
 		// register topic validator for each topic
 		if err := pubsub.RegisterTopicValidator(
@@ -970,6 +1012,12 @@ func New(
 	node.NodeConfig = nodeconfig.GetShardConfig(consensusObj.ShardID)
 	node.HarmonyConfig = harmonyconfig
 
+	// bytes, err := toml.Marshal(harmonyconfig)
+	// if err != nil {
+	// 	return nil
+	// }
+	// println(bytes)
+
 	if host != nil {
 		node.host = host
 		node.SelfPeer = host.GetSelfPeer()
@@ -1055,19 +1103,19 @@ func New(
 		node.Consensus.SetBlockNum(blockchain.CurrentBlock().NumberU64() + 1)
 	}
 
-	h := node.Blockchain().GetHeaderByNumber(0)
-	utils.Logger().Info().
-		Interface("genesis block header", h).
-		Msgf("Genesis block hash %s", h.Hash())
+	// tempDelete h := node.Blockchain().GetHeaderByNumber(0)
+	// tempDelete utils.Logger().Info().
+	// tempDelete 	Interface("genesis block header", h).
+	// tempDelete 	Msgf("Genesis block hash %s", h.Hash())
 	// Setup initial state of syncing.
 	node.peerRegistrationRecord = map[string]*syncConfig{}
 	// Broadcast double-signers reported by consensus
 	if node.Consensus != nil {
 		go func() {
 			for doubleSign := range node.Consensus.SlashChan {
-				utils.Logger().Info().
-					RawJSON("double-sign-candidate", []byte(doubleSign.String())).
-					Msg("double sign notified by consensus leader")
+				// tempDelete utils.Logger().Info().
+				// tempDelete 	RawJSON("double-sign-candidate", []byte(doubleSign.String())).
+				// tempDelete 	Msg("double sign notified by consensus leader")
 				// no point to broadcast the slash if we aren't even in the right epoch yet
 				if !node.Blockchain().Config().IsStaking(
 					node.Blockchain().CurrentHeader().Epoch(),
@@ -1118,13 +1166,13 @@ func New(
 				// if pending crosslink is older than 10 epochs, delete it
 				if pending.EpochF.Cmp(crossLinkEpochThreshold) <= 0 {
 					invalidToDelete = append(invalidToDelete, pending)
-					utils.Logger().Info().
-						Uint32("shard", pending.ShardID()).
-						Int64("epoch", pending.Epoch().Int64()).
-						Uint64("blockNum", pending.BlockNum()).
-						Int64("viewID", pending.ViewID().Int64()).
-						Interface("hash", pending.Hash()).
-						Msg("[PendingCrossLinksOnInit] delete old pending cross links")
+					// tempDelete utils.Logger().Info().
+					// tempDelete 	Uint32("shard", pending.ShardID()).
+					// tempDelete 	Int64("epoch", pending.Epoch().Int64()).
+					// tempDelete 	Uint64("blockNum", pending.BlockNum()).
+					// tempDelete 	Int64("viewID", pending.ViewID().Int64()).
+					// tempDelete 	Interface("hash", pending.Hash()).
+					// tempDelete 	Msg("[PendingCrossLinksOnInit] delete old pending cross links")
 				}
 			}
 
@@ -1190,21 +1238,21 @@ func (node *Node) ShutDown() {
 		utils.Logger().Error().Err(err).Msg("failed to stop RPC")
 	}
 
-	utils.Logger().Info().Msg("stopping rosetta")
+	// tempDelete utils.Logger().Info().Msg("stopping rosetta")
 	if err := node.StopRosetta(); err != nil {
 		utils.Logger().Error().Err(err).Msg("failed to stop rosetta")
 	}
 
-	utils.Logger().Info().Msg("stopping services")
+	// tempDelete utils.Logger().Info().Msg("stopping services")
 	if err := node.StopServices(); err != nil {
 		utils.Logger().Error().Err(err).Msg("failed to stop services")
 	}
 
 	// Currently pubSub need to be stopped after consensus.
-	utils.Logger().Info().Msg("stopping pub-sub")
+	// tempDelete utils.Logger().Info().Msg("stopping pub-sub")
 	node.StopPubSub()
 
-	utils.Logger().Info().Msg("stopping host")
+	// tempDelete utils.Logger().Info().Msg("stopping host")
 	if err := node.host.Close(); err != nil {
 		utils.Logger().Error().Err(err).Msg("failed to stop p2p host")
 	}

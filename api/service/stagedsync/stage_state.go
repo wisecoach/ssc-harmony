@@ -73,7 +73,7 @@ func (stg *StageStates) Exec(firstCycle bool, invalidBlockRevert bool, s *StageS
 	}
 	blocksBucketName := GetBucketName(DownloadedBlocksBucket, s.state.isBeacon)
 	isLastCycle := targetHeight >= maxPeersHeight
-	verifyAllSig := s.state.VerifyAllSig || isLastCycle //if it's last cycle, we have to check all signatures
+	verifyAllSig := s.state.VerifyAllSig || isLastCycle // if it's last cycle, we have to check all signatures
 	startTime := time.Now()
 	startBlock := currProgress
 	var newBlocks types.Blocks
@@ -177,7 +177,7 @@ func (stg *StageStates) Exec(firstCycle bool, invalidBlockRevert bool, s *StageS
 		// insert downloaded block into chain
 		headBeforeNewBlocks := stg.configs.bc.CurrentBlock().NumberU64()
 		headHashBeforeNewBlocks := stg.configs.bc.CurrentBlock().Hash()
-		_, err = stg.configs.bc.InsertChain(newBlocks, false) //TODO: verifyHeaders can be done here
+		_, err = stg.configs.bc.InsertChain(newBlocks, false) // TODO: verifyHeaders can be done here
 		if err != nil && !errors.Is(err, core.ErrKnownBlock) {
 			// TODO: handle chain rollback because of bad block
 			utils.Logger().Error().
@@ -186,9 +186,9 @@ func (stg *StageStates) Exec(firstCycle bool, invalidBlockRevert bool, s *StageS
 				Uint32("shard", block.ShardID()).
 				Msgf("[STAGED_SYNC] UpdateBlockAndStatus: Error adding new block to blockchain")
 			// rollback bc
-			utils.Logger().Info().
-				Interface("block", stg.configs.bc.CurrentBlock()).
-				Msg("[STAGED_SYNC] Rolling back last added blocks!")
+			// tempDelete utils.Logger().Info().
+			// tempDelete 	Interface("block", stg.configs.bc.CurrentBlock()).
+			// tempDelete 	Msg("[STAGED_SYNC] Rolling back last added blocks!")
 			if rbErr := stg.configs.bc.Rollback([]common.Hash{headHashBeforeNewBlocks}); rbErr != nil {
 				utils.Logger().Error().
 					Err(rbErr).
@@ -198,28 +198,28 @@ func (stg *StageStates) Exec(firstCycle bool, invalidBlockRevert bool, s *StageS
 			s.state.RevertTo(headBeforeNewBlocks, headHashBeforeNewBlocks)
 			return err
 		}
-		utils.Logger().Info().
-			Uint64("blockHeight", block.NumberU64()).
-			Uint64("blockEpoch", block.Epoch().Uint64()).
-			Str("blockHex", block.Hash().Hex()).
-			Uint32("ShardID", block.ShardID()).
-			Msg("[STAGED_SYNC] UpdateBlockAndStatus: New Block Added to Blockchain")
+		// tempDelete utils.Logger().Info().
+		// tempDelete 	Uint64("blockHeight", block.NumberU64()).
+		// tempDelete 	Uint64("blockEpoch", block.Epoch().Uint64()).
+		// tempDelete 	Str("blockHex", block.Hash().Hex()).
+		// tempDelete 	Uint32("ShardID", block.ShardID()).
+		// tempDelete 	Msg("[STAGED_SYNC] UpdateBlockAndStatus: New Block Added to Blockchain")
 
 		// update cur progress
 		currProgress = stg.configs.bc.CurrentBlock().NumberU64()
 
-		for i, tx := range block.StakingTransactions() {
-			utils.Logger().Info().
-				Msgf(
-					"StakingTxn %d: %s, %v", i, tx.StakingType().String(), tx.StakingMessage(),
-				)
-		}
+		// tempDelete for i, tx := range block.StakingTransactions() {
+		// tempDelete 	utils.Logger().Info().
+		// tempDelete 		Msgf(
+		// tempDelete 			"StakingTxn %d: %s, %v", i, tx.StakingType().String(), tx.StakingMessage(),
+		// tempDelete 		)
+		// tempDelete }
 
 		nBlock = 0
 		newBlocks = newBlocks[:0]
 		// log the stage progress in console
 		if stg.configs.logProgress {
-			//calculating block speed
+			// calculating block speed
 			dt := time.Now().Sub(startTime).Seconds()
 			speed := float64(0)
 			if dt > 0 {

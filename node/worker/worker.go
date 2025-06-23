@@ -3,6 +3,7 @@ package worker
 import (
 	"bytes"
 	"fmt"
+	"github.com/harmony-one/harmony/ssc/api"
 	"math/big"
 	"sort"
 	"time"
@@ -52,13 +53,14 @@ func (env *environment) CurrentHeader() *block.Header {
 // Worker is the main object which takes care of submitting new work to consensus engine
 // and gathering the sealing result.
 type Worker struct {
-	config   *params.ChainConfig
-	factory  blockfactory.Factory
-	chain    core.BlockChain
-	beacon   core.BlockChain
-	current  *environment // An environment for current running cycle.
-	gasFloor uint64
-	gasCeil  uint64
+	sscService api.Service
+	config     *params.ChainConfig
+	factory    blockfactory.Factory
+	chain      core.BlockChain
+	beacon     core.BlockChain
+	current    *environment // An environment for current running cycle.
+	gasFloor   uint64
+	gasCeil    uint64
 }
 
 // New create a new worker object.
@@ -93,6 +95,10 @@ func newWorker(config *params.ChainConfig, chain, beacon core.BlockChain) *Worke
 		gasFloor: 80000000,
 		gasCeil:  120000000,
 	}
+}
+
+func (w *Worker) SetSSCService(sscService api.Service) {
+	w.sscService = sscService
 }
 
 // CommitSortedTransactions commits transactions for new block.
@@ -210,7 +216,11 @@ func (w *Worker) CommitTransactions(
 	// HARMONY TXNS
 	normalTxns := types.NewTransactionsByPriceAndNonce(w.current.signer, w.current.ethSigner, pendingNormal)
 
+	startTime := time.Now()
+
 	w.CommitSortedTransactions(normalTxns, coinbase)
+
+	utils.Logger().Info().Str("duration", time.Since(startTime).String()).Msg("Leader apply transactions for duration")
 
 	// STAKING - only beaconchain process staking transaction
 	if w.chain.ShardID() == shard.BeaconChainShardID {
@@ -244,12 +254,12 @@ func (w *Worker) CommitTransactions(
 		}
 	}
 
-	utils.Logger().Info().
-		Int("newTxns", len(w.current.txs)).
-		Int("newStakingTxns", len(w.current.stakingTxs)).
-		Uint64("blockGasLimit", w.current.header.GasLimit()).
-		Uint64("blockGasUsed", w.current.header.GasUsed()).
-		Msg("Block gas limit and usage info")
+	// tempDelete utils.Logger().Info().
+	// tempDelete 	Int("newTxns", len(w.current.txs)).
+	// tempDelete 	Int("newStakingTxns", len(w.current.stakingTxs)).
+	// tempDelete 	Uint64("blockGasLimit", w.current.header.GasLimit()).
+	// tempDelete 	Uint64("blockGasUsed", w.current.header.GasUsed()).
+	// tempDelete 	Msg("Block gas limit and usage info")
 	return nil
 }
 
@@ -311,8 +321,9 @@ func (w *Worker) commitTransaction(
 			vm.Config{},
 		)
 	} else {
-		// simulate cross-shard transaction with SSCService
-		receipt, cx, stakeMsgs, _, err = core.SimulateCXTransaction(w.chain.GetSSCSerivce(), w.chain, &coinbase, w.current.gasPool, w.current.state, w.current.header, tx, &gasUsed, vm.Config{})
+		utils.Logger().Info().Msgf("Cross shard transaction: tx %s", tx.Hash().Hex())
+		// simulate cross-shard transaction with SSCService, use the blockchain current header, and state is not needed
+		receipt, cx, stakeMsgs, _, err = core.SimulateCXTransaction(w.sscService, w.chain, &coinbase, w.current.gasPool, w.current.state, w.chain.CurrentHeader(), tx, &gasUsed, vm.Config{})
 	}
 	w.current.header.SetGasUsed(gasUsed)
 	if err != nil {
@@ -610,7 +621,7 @@ func (w *Worker) FinalizeNewBlock(
 			if len(sig) > 0 && len(signers) > 0 {
 				sig2 := copyHeader.LastCommitSignature()
 				copy(sig2[:], sig[:])
-				utils.Logger().Info().Hex("sigs", sig).Hex("bitmap", signers).Msg("Setting commit sigs")
+				// utils.Logger().Info().Hex("sigs", sig).Hex("bitmap", signers).Msg("Setting commit sigs")
 				copyHeader.SetLastCommitSignature(sig2)
 				copyHeader.SetLastCommitBitmap(signers)
 			}

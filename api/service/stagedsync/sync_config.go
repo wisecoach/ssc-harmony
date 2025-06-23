@@ -181,7 +181,7 @@ func (sc *SyncConfig) SelectRandomPeers(peers []p2p.Peer, randSeed int64) int {
 			Msg("[STAGED_SYNC] not enough connected peers to sync, still sync will on going")
 		return numPeers
 	}
-	//shuffle peers list
+	// shuffle peers list
 	r := rand.New(rand.NewSource(randSeed))
 	r.Shuffle(numPeers, func(i, j int) { peers[i], peers[j] = peers[j], peers[i] })
 
@@ -231,11 +231,11 @@ func (sc *SyncConfig) RemovePeer(peer *SyncPeerConfig, reason string) {
 			break
 		}
 	}
-	utils.Logger().Info().
-		Str("peerIP", peer.ip).
-		Str("peerPortMsg", peer.port).
-		Str("reason", reason).
-		Msg("[STAGED_SYNC] remove GRPC peer")
+	// tempDelete utils.Logger().Info().
+	// tempDelete 	Str("peerIP", peer.ip).
+	// tempDelete 	Str("peerPortMsg", peer.port).
+	// tempDelete 	Str("reason", reason).
+	// tempDelete 	Msg("[STAGED_SYNC] remove GRPC peer")
 }
 
 // ReplacePeerWithReserved tries to replace a peer from reserved peer list

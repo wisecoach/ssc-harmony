@@ -2,6 +2,7 @@ package harmony
 
 import (
 	"fmt"
+	"math/big"
 	"reflect"
 	"strings"
 	"time"
@@ -40,6 +41,7 @@ type HarmonyConfig struct {
 	GPO        GasPriceOracleConfig
 	Preimage   *PreimageConfig
 	Cache      CacheConfig
+	SSC        SSCConfig
 }
 
 func (hc HarmonyConfig) ToRPCServerConfig() nodeconfig.RPCServerConfig {
@@ -99,6 +101,17 @@ func (hc HarmonyConfig) ToRPCServerConfig() nodeconfig.RPCServerConfig {
 	}
 }
 
+type SSCConfig struct {
+	PrivateKey               string
+	BLSKeyPath               string
+	SelfAddrHex              string
+	CallTimeout              time.Duration
+	CXTTimeout               time.Duration
+	SimulationCommitGasLimit uint64
+	SimulationCommitGasPrice *big.Int
+	LockExecutionOnce        bool
+}
+
 type DnsSync struct {
 	Port       int    // replaces: Network.DNSSyncPort
 	Zone       string // replaces: Network.DNSZone
@@ -153,6 +166,9 @@ type GeneralConfig struct {
 	TraceEnable            bool
 	EnablePruneBeaconChain bool
 	RunElasticMode         bool
+	GenesisConfigFile      string
+	ShardNum               int
+	ShardSize              int
 }
 
 type TiKVConfig struct {

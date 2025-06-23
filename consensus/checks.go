@@ -86,6 +86,8 @@ func (consensus *Consensus) onAnnounceSanityChecks(recvMsg *FBFTMessage) bool {
 				Str("logMsgBlockHash", logMsgs[0].BlockHash.Hex()).
 				Str("recvMsg", recvMsg.String()).
 				Str("LeaderKey", consensus.LeaderPubKey.Bytes.Hex()).
+				Uint64("blockNum", recvMsg.BlockNum).
+				Uint64("viewID", recvMsg.ViewID).
 				Msg("[OnAnnounce] Leader is malicious")
 			if consensus.isViewChangingMode() {
 				consensus.getLogger().Debug().Msg(

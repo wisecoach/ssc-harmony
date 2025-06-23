@@ -3,6 +3,7 @@ package vm
 import (
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/common/math"
+	"github.com/harmony-one/harmony/core/types"
 	"github.com/harmony-one/harmony/internal/params"
 	"github.com/harmony-one/harmony/shard"
 	"golang.org/x/crypto/sha3"
@@ -369,7 +370,7 @@ func newBaseInstructions() JumpTable {
 		},
 		SSTORE: {
 			execute:    opSstore_SSC_Base,
-			dynamicGas: gasSStore,
+			dynamicGas: gasSStore_SSC,
 			minStack:   minStack(2, 0),
 			maxStack:   maxStack(2, 0),
 			valid:      true,
@@ -427,329 +428,329 @@ func newBaseInstructions() JumpTable {
 			valid:       true,
 		},
 		PUSH2: {
-			execute:     makePush(2, 2),
+			execute:     makePush_SSC(2, 2),
 			constantGas: GasFastestStep,
 			minStack:    minStack(0, 1),
 			maxStack:    maxStack(0, 1),
 			valid:       true,
 		},
 		PUSH3: {
-			execute:     makePush(3, 3),
+			execute:     makePush_SSC(3, 3),
 			constantGas: GasFastestStep,
 			minStack:    minStack(0, 1),
 			maxStack:    maxStack(0, 1),
 			valid:       true,
 		},
 		PUSH4: {
-			execute:     makePush(4, 4),
+			execute:     makePush_SSC(4, 4),
 			constantGas: GasFastestStep,
 			minStack:    minStack(0, 1),
 			maxStack:    maxStack(0, 1),
 			valid:       true,
 		},
 		PUSH5: {
-			execute:     makePush(5, 5),
+			execute:     makePush_SSC(5, 5),
 			constantGas: GasFastestStep,
 			minStack:    minStack(0, 1),
 			maxStack:    maxStack(0, 1),
 			valid:       true,
 		},
 		PUSH6: {
-			execute:     makePush(6, 6),
+			execute:     makePush_SSC(6, 6),
 			constantGas: GasFastestStep,
 			minStack:    minStack(0, 1),
 			maxStack:    maxStack(0, 1),
 			valid:       true,
 		},
 		PUSH7: {
-			execute:     makePush(7, 7),
+			execute:     makePush_SSC(7, 7),
 			constantGas: GasFastestStep,
 			minStack:    minStack(0, 1),
 			maxStack:    maxStack(0, 1),
 			valid:       true,
 		},
 		PUSH8: {
-			execute:     makePush(8, 8),
+			execute:     makePush_SSC(8, 8),
 			constantGas: GasFastestStep,
 			minStack:    minStack(0, 1),
 			maxStack:    maxStack(0, 1),
 			valid:       true,
 		},
 		PUSH9: {
-			execute:     makePush(9, 9),
+			execute:     makePush_SSC(9, 9),
 			constantGas: GasFastestStep,
 			minStack:    minStack(0, 1),
 			maxStack:    maxStack(0, 1),
 			valid:       true,
 		},
 		PUSH10: {
-			execute:     makePush(10, 10),
+			execute:     makePush_SSC(10, 10),
 			constantGas: GasFastestStep,
 			minStack:    minStack(0, 1),
 			maxStack:    maxStack(0, 1),
 			valid:       true,
 		},
 		PUSH11: {
-			execute:     makePush(11, 11),
+			execute:     makePush_SSC(11, 11),
 			constantGas: GasFastestStep,
 			minStack:    minStack(0, 1),
 			maxStack:    maxStack(0, 1),
 			valid:       true,
 		},
 		PUSH12: {
-			execute:     makePush(12, 12),
+			execute:     makePush_SSC(12, 12),
 			constantGas: GasFastestStep,
 			minStack:    minStack(0, 1),
 			maxStack:    maxStack(0, 1),
 			valid:       true,
 		},
 		PUSH13: {
-			execute:     makePush(13, 13),
+			execute:     makePush_SSC(13, 13),
 			constantGas: GasFastestStep,
 			minStack:    minStack(0, 1),
 			maxStack:    maxStack(0, 1),
 			valid:       true,
 		},
 		PUSH14: {
-			execute:     makePush(14, 14),
+			execute:     makePush_SSC(14, 14),
 			constantGas: GasFastestStep,
 			minStack:    minStack(0, 1),
 			maxStack:    maxStack(0, 1),
 			valid:       true,
 		},
 		PUSH15: {
-			execute:     makePush(15, 15),
+			execute:     makePush_SSC(15, 15),
 			constantGas: GasFastestStep,
 			minStack:    minStack(0, 1),
 			maxStack:    maxStack(0, 1),
 			valid:       true,
 		},
 		PUSH16: {
-			execute:     makePush(16, 16),
+			execute:     makePush_SSC(16, 16),
 			constantGas: GasFastestStep,
 			minStack:    minStack(0, 1),
 			maxStack:    maxStack(0, 1),
 			valid:       true,
 		},
 		PUSH17: {
-			execute:     makePush(17, 17),
+			execute:     makePush_SSC(17, 17),
 			constantGas: GasFastestStep,
 			minStack:    minStack(0, 1),
 			maxStack:    maxStack(0, 1),
 			valid:       true,
 		},
 		PUSH18: {
-			execute:     makePush(18, 18),
+			execute:     makePush_SSC(18, 18),
 			constantGas: GasFastestStep,
 			minStack:    minStack(0, 1),
 			maxStack:    maxStack(0, 1),
 			valid:       true,
 		},
 		PUSH19: {
-			execute:     makePush(19, 19),
+			execute:     makePush_SSC(19, 19),
 			constantGas: GasFastestStep,
 			minStack:    minStack(0, 1),
 			maxStack:    maxStack(0, 1),
 			valid:       true,
 		},
 		PUSH20: {
-			execute:     makePush(20, 20),
+			execute:     makePush_SSC(20, 20),
 			constantGas: GasFastestStep,
 			minStack:    minStack(0, 1),
 			maxStack:    maxStack(0, 1),
 			valid:       true,
 		},
 		PUSH21: {
-			execute:     makePush(21, 21),
+			execute:     makePush_SSC(21, 21),
 			constantGas: GasFastestStep,
 			minStack:    minStack(0, 1),
 			maxStack:    maxStack(0, 1),
 			valid:       true,
 		},
 		PUSH22: {
-			execute:     makePush(22, 22),
+			execute:     makePush_SSC(22, 22),
 			constantGas: GasFastestStep,
 			minStack:    minStack(0, 1),
 			maxStack:    maxStack(0, 1),
 			valid:       true,
 		},
 		PUSH23: {
-			execute:     makePush(23, 23),
+			execute:     makePush_SSC(23, 23),
 			constantGas: GasFastestStep,
 			minStack:    minStack(0, 1),
 			maxStack:    maxStack(0, 1),
 			valid:       true,
 		},
 		PUSH24: {
-			execute:     makePush(24, 24),
+			execute:     makePush_SSC(24, 24),
 			constantGas: GasFastestStep,
 			minStack:    minStack(0, 1),
 			maxStack:    maxStack(0, 1),
 			valid:       true,
 		},
 		PUSH25: {
-			execute:     makePush(25, 25),
+			execute:     makePush_SSC(25, 25),
 			constantGas: GasFastestStep,
 			minStack:    minStack(0, 1),
 			maxStack:    maxStack(0, 1),
 			valid:       true,
 		},
 		PUSH26: {
-			execute:     makePush(26, 26),
+			execute:     makePush_SSC(26, 26),
 			constantGas: GasFastestStep,
 			minStack:    minStack(0, 1),
 			maxStack:    maxStack(0, 1),
 			valid:       true,
 		},
 		PUSH27: {
-			execute:     makePush(27, 27),
+			execute:     makePush_SSC(27, 27),
 			constantGas: GasFastestStep,
 			minStack:    minStack(0, 1),
 			maxStack:    maxStack(0, 1),
 			valid:       true,
 		},
 		PUSH28: {
-			execute:     makePush(28, 28),
+			execute:     makePush_SSC(28, 28),
 			constantGas: GasFastestStep,
 			minStack:    minStack(0, 1),
 			maxStack:    maxStack(0, 1),
 			valid:       true,
 		},
 		PUSH29: {
-			execute:     makePush(29, 29),
+			execute:     makePush_SSC(29, 29),
 			constantGas: GasFastestStep,
 			minStack:    minStack(0, 1),
 			maxStack:    maxStack(0, 1),
 			valid:       true,
 		},
 		PUSH30: {
-			execute:     makePush(30, 30),
+			execute:     makePush_SSC(30, 30),
 			constantGas: GasFastestStep,
 			minStack:    minStack(0, 1),
 			maxStack:    maxStack(0, 1),
 			valid:       true,
 		},
 		PUSH31: {
-			execute:     makePush(31, 31),
+			execute:     makePush_SSC(31, 31),
 			constantGas: GasFastestStep,
 			minStack:    minStack(0, 1),
 			maxStack:    maxStack(0, 1),
 			valid:       true,
 		},
 		PUSH32: {
-			execute:     makePush(32, 32),
+			execute:     makePush_SSC(32, 32),
 			constantGas: GasFastestStep,
 			minStack:    minStack(0, 1),
 			maxStack:    maxStack(0, 1),
 			valid:       true,
 		},
 		DUP1: {
-			execute:     makeDup(1),
+			execute:     makeDup_SSC(1),
 			constantGas: GasFastestStep,
 			minStack:    minDupStack(1),
 			maxStack:    maxDupStack(1),
 			valid:       true,
 		},
 		DUP2: {
-			execute:     makeDup(2),
+			execute:     makeDup_SSC(2),
 			constantGas: GasFastestStep,
 			minStack:    minDupStack(2),
 			maxStack:    maxDupStack(2),
 			valid:       true,
 		},
 		DUP3: {
-			execute:     makeDup(3),
+			execute:     makeDup_SSC(3),
 			constantGas: GasFastestStep,
 			minStack:    minDupStack(3),
 			maxStack:    maxDupStack(3),
 			valid:       true,
 		},
 		DUP4: {
-			execute:     makeDup(4),
+			execute:     makeDup_SSC(4),
 			constantGas: GasFastestStep,
 			minStack:    minDupStack(4),
 			maxStack:    maxDupStack(4),
 			valid:       true,
 		},
 		DUP5: {
-			execute:     makeDup(5),
+			execute:     makeDup_SSC(5),
 			constantGas: GasFastestStep,
 			minStack:    minDupStack(5),
 			maxStack:    maxDupStack(5),
 			valid:       true,
 		},
 		DUP6: {
-			execute:     makeDup(6),
+			execute:     makeDup_SSC(6),
 			constantGas: GasFastestStep,
 			minStack:    minDupStack(6),
 			maxStack:    maxDupStack(6),
 			valid:       true,
 		},
 		DUP7: {
-			execute:     makeDup(7),
+			execute:     makeDup_SSC(7),
 			constantGas: GasFastestStep,
 			minStack:    minDupStack(7),
 			maxStack:    maxDupStack(7),
 			valid:       true,
 		},
 		DUP8: {
-			execute:     makeDup(8),
+			execute:     makeDup_SSC(8),
 			constantGas: GasFastestStep,
 			minStack:    minDupStack(8),
 			maxStack:    maxDupStack(8),
 			valid:       true,
 		},
 		DUP9: {
-			execute:     makeDup(9),
+			execute:     makeDup_SSC(9),
 			constantGas: GasFastestStep,
 			minStack:    minDupStack(9),
 			maxStack:    maxDupStack(9),
 			valid:       true,
 		},
 		DUP10: {
-			execute:     makeDup(10),
+			execute:     makeDup_SSC(10),
 			constantGas: GasFastestStep,
 			minStack:    minDupStack(10),
 			maxStack:    maxDupStack(10),
 			valid:       true,
 		},
 		DUP11: {
-			execute:     makeDup(11),
+			execute:     makeDup_SSC(11),
 			constantGas: GasFastestStep,
 			minStack:    minDupStack(11),
 			maxStack:    maxDupStack(11),
 			valid:       true,
 		},
 		DUP12: {
-			execute:     makeDup(12),
+			execute:     makeDup_SSC(12),
 			constantGas: GasFastestStep,
 			minStack:    minDupStack(12),
 			maxStack:    maxDupStack(12),
 			valid:       true,
 		},
 		DUP13: {
-			execute:     makeDup(13),
+			execute:     makeDup_SSC(13),
 			constantGas: GasFastestStep,
 			minStack:    minDupStack(13),
 			maxStack:    maxDupStack(13),
 			valid:       true,
 		},
 		DUP14: {
-			execute:     makeDup(14),
+			execute:     makeDup_SSC(14),
 			constantGas: GasFastestStep,
 			minStack:    minDupStack(14),
 			maxStack:    maxDupStack(14),
 			valid:       true,
 		},
 		DUP15: {
-			execute:     makeDup(15),
+			execute:     makeDup_SSC(15),
 			constantGas: GasFastestStep,
 			minStack:    minDupStack(15),
 			maxStack:    maxDupStack(15),
 			valid:       true,
 		},
 		DUP16: {
-			execute:     makeDup(16),
+			execute:     makeDup_SSC(16),
 			constantGas: GasFastestStep,
 			minStack:    minDupStack(16),
 			maxStack:    maxDupStack(16),
@@ -868,7 +869,7 @@ func newBaseInstructions() JumpTable {
 			valid:       true,
 		},
 		LOG0: {
-			execute:    makeLog(0),
+			execute:    makeLog_SSC(0),
 			dynamicGas: makeGasLog(0),
 			minStack:   minStack(2, 0),
 			maxStack:   maxStack(2, 0),
@@ -877,7 +878,7 @@ func newBaseInstructions() JumpTable {
 			writes:     true,
 		},
 		LOG1: {
-			execute:    makeLog(1),
+			execute:    makeLog_SSC(1),
 			dynamicGas: makeGasLog(1),
 			minStack:   minStack(3, 0),
 			maxStack:   maxStack(3, 0),
@@ -886,7 +887,7 @@ func newBaseInstructions() JumpTable {
 			writes:     true,
 		},
 		LOG2: {
-			execute:    makeLog(2),
+			execute:    makeLog_SSC(2),
 			dynamicGas: makeGasLog(2),
 			minStack:   minStack(4, 0),
 			maxStack:   maxStack(4, 0),
@@ -895,7 +896,7 @@ func newBaseInstructions() JumpTable {
 			writes:     true,
 		},
 		LOG3: {
-			execute:    makeLog(3),
+			execute:    makeLog_SSC(3),
 			dynamicGas: makeGasLog(3),
 			minStack:   minStack(5, 0),
 			maxStack:   maxStack(5, 0),
@@ -904,7 +905,7 @@ func newBaseInstructions() JumpTable {
 			writes:     true,
 		},
 		LOG4: {
-			execute:    makeLog(4),
+			execute:    makeLog_SSC(4),
 			dynamicGas: makeGasLog(4),
 			minStack:   minStack(6, 0),
 			maxStack:   maxStack(6, 0),
@@ -926,7 +927,7 @@ func newBaseInstructions() JumpTable {
 		CALL: {
 			execute:     opCall_SSC_Base,
 			constantGas: params.CallGasFrontier,
-			dynamicGas:  gasCall,
+			dynamicGas:  gasCall_SSC,
 			minStack:    minStack(7, 1),
 			maxStack:    maxStack(7, 1),
 			memorySize:  memoryCall,
@@ -936,10 +937,30 @@ func newBaseInstructions() JumpTable {
 		CALLCODE: {
 			execute:     opCallCode_SSC_Base,
 			constantGas: params.CallGasFrontier,
-			dynamicGas:  gasCallCode,
+			dynamicGas:  gasCallCode_SSC,
 			minStack:    minStack(7, 1),
 			maxStack:    maxStack(7, 1),
 			memorySize:  memoryCall,
+			valid:       true,
+			returns:     true,
+		},
+		DELEGATECALL: {
+			execute:     opDelegateCall_SSC_Base,
+			dynamicGas:  gasDelegateCall_SSC,
+			constantGas: params.CallGasFrontier,
+			minStack:    minStack(6, 1),
+			maxStack:    maxStack(6, 1),
+			memorySize:  memoryDelegateCall,
+			valid:       true,
+			returns:     true,
+		},
+		STATICCALL: {
+			execute:     opStaticCall_SSC_Base,
+			constantGas: params.CallGasEIP150,
+			dynamicGas:  gasStaticCall_SSC,
+			minStack:    minStack(6, 1),
+			maxStack:    maxStack(6, 1),
+			memorySize:  memoryStaticCall,
 			valid:       true,
 			returns:     true,
 		},
@@ -954,12 +975,77 @@ func newBaseInstructions() JumpTable {
 		},
 		SELFDESTRUCT: {
 			execute:    opSuicide_SSC_Base,
-			dynamicGas: gasSelfdestruct,
+			dynamicGas: gasSelfdestruct_SSC,
 			minStack:   minStack(1, 0),
 			maxStack:   maxStack(1, 0),
 			halts:      true,
 			valid:      true,
 			writes:     true,
+		},
+		RETURNDATASIZE: {
+			execute:     opReturnDataSize_SSC_Base,
+			constantGas: GasQuickStep,
+			minStack:    minStack(0, 1),
+			maxStack:    maxStack(0, 1),
+			valid:       true,
+		},
+		RETURNDATACOPY: {
+			execute:     opReturnDataCopy_SSC_Base,
+			constantGas: GasFastestStep,
+			dynamicGas:  gasReturnDataCopy,
+			minStack:    minStack(3, 0),
+			maxStack:    maxStack(3, 0),
+			memorySize:  memoryReturnDataCopy,
+			valid:       true,
+		},
+		REVERT: {
+			execute:    opRevert_SSC_Base,
+			dynamicGas: gasRevert,
+			minStack:   minStack(2, 0),
+			maxStack:   maxStack(2, 0),
+			memorySize: memoryRevert,
+			valid:      true,
+			reverts:    true,
+			returns:    true,
+		},
+		SHL: {
+			execute:     opSHL_SSC_Base,
+			constantGas: GasFastestStep,
+			minStack:    minStack(2, 1),
+			maxStack:    maxStack(2, 1),
+			valid:       true,
+		},
+		SHR: {
+			execute:     opSHR_SSC_Base,
+			constantGas: GasFastestStep,
+			minStack:    minStack(2, 1),
+			maxStack:    maxStack(2, 1),
+			valid:       true,
+		},
+		SAR: {
+			execute:     opSAR_SSC_Base,
+			constantGas: GasFastestStep,
+			minStack:    minStack(2, 1),
+			maxStack:    maxStack(2, 1),
+			valid:       true,
+		},
+		EXTCODEHASH: {
+			execute:     opExtCodeHash_SSC_Base,
+			constantGas: params.ExtcodeHashGasConstantinople,
+			minStack:    minStack(1, 1),
+			maxStack:    maxStack(1, 1),
+			valid:       true,
+		},
+		CREATE2: {
+			execute:     opCreate2_SSC_Base,
+			constantGas: params.Create2Gas,
+			dynamicGas:  gasCreate2,
+			minStack:    minStack(4, 1),
+			maxStack:    maxStack(4, 1),
+			memorySize:  memoryCreate2,
+			valid:       true,
+			writes:      true,
+			returns:     true,
 		},
 	}
 }
@@ -1363,7 +1449,7 @@ func opAddress_SSC_Base(pc *uint64, inp Interpreter, contract *Contract, memory 
 
 func opOrigin_SSC_Base(pc *uint64, inp Interpreter, contract *Contract, memory *Memory, stack *Stack) ([]byte, error) {
 	interpreter := inp.(*SSCVMInterpreter)
-	stack.push(interpreter.intPool.get().SetBytes(interpreter.vm.Origin.Bytes()))
+	stack.push(interpreter.intPool.get().SetBytes(interpreter.vm.Context.Origin.Bytes()))
 	return nil, nil
 }
 
@@ -1423,20 +1509,25 @@ func opReturnDataCopy_SSC_Base(pc *uint64, inp Interpreter, contract *Contract, 
 	return nil, nil
 }
 
+// we cannnot get the code size of contract account in the other shard, just return 1 if account not found
 func opExtCodeSize_SSC_Base(pc *uint64, inp Interpreter, contract *Contract, memory *Memory, stack *Stack) ([]byte, error) {
 	interpreter := inp.(*SSCVMInterpreter)
 	slot := stack.peek()
 	address := common.BigToAddress(slot)
 	fixValidatorCode := interpreter.vm.chainRules.IsValidatorCodeFix &&
-		interpreter.vm.ShardID == shard.BeaconChainShardID &&
+		interpreter.vm.Context.ShardID == shard.BeaconChainShardID &&
 		interpreter.vm.StateDB.IsValidator(address)
 	if fixValidatorCode {
 		// https://github.com/ethereum/solidity/blob/develop/Changelog.md#081-2021-01-27
 		// per this link, <address>.code.length calls extcodesize on the address so this fix will work
-		slot.SetUint64(0)
+		slot.SetUint64(1)
 		return nil, nil
 	}
-	slot.SetUint64(uint64(interpreter.vm.StateDB.GetCodeSize(common.BigToAddress(slot))))
+	size := uint64(interpreter.vm.StateDB.GetCodeSize(address))
+	if size == 0 {
+		size = 1
+	}
+	slot.SetUint64(size)
 
 	return nil, nil
 }
@@ -1473,7 +1564,7 @@ func opExtCodeCopy_SSC_Base(pc *uint64, inp Interpreter, contract *Contract, mem
 	)
 	var code []byte
 	fixValidatorCode := interpreter.vm.chainRules.IsValidatorCodeFix &&
-		interpreter.vm.ShardID == shard.BeaconChainShardID &&
+		interpreter.vm.Context.ShardID == shard.BeaconChainShardID &&
 		interpreter.vm.StateDB.IsValidator(addr)
 	if fixValidatorCode {
 		// for EOAs that are not validators, statedb returns nil
@@ -1529,7 +1620,7 @@ func opExtCodeHash_SSC_Base(pc *uint64, inp Interpreter, contract *Contract, mem
 		slot.SetUint64(0)
 	} else {
 		fixValidatorCode := interpreter.vm.chainRules.IsValidatorCodeFix &&
-			interpreter.vm.ShardID == shard.BeaconChainShardID &&
+			interpreter.vm.Context.ShardID == shard.BeaconChainShardID &&
 			interpreter.vm.StateDB.IsValidator(address)
 		if fixValidatorCode {
 			slot.SetBytes(emptyCodeHash.Bytes())
@@ -1542,7 +1633,7 @@ func opExtCodeHash_SSC_Base(pc *uint64, inp Interpreter, contract *Contract, mem
 
 func opGasprice_SSC_Base(pc *uint64, inp Interpreter, contract *Contract, memory *Memory, stack *Stack) ([]byte, error) {
 	interpreter := inp.(*SSCVMInterpreter)
-	stack.push(interpreter.intPool.get().Set(interpreter.vm.GasPrice))
+	stack.push(interpreter.intPool.get().Set(interpreter.vm.Context.GasPrice))
 	return nil, nil
 }
 
@@ -1550,9 +1641,9 @@ func opBlockhash_SSC_Base(pc *uint64, inp Interpreter, contract *Contract, memor
 	interpreter := inp.(*SSCVMInterpreter)
 	num := stack.pop()
 
-	n := interpreter.intPool.get().Sub(interpreter.vm.BlockNumber, common.Big257)
-	if num.Cmp(n) > 0 && num.Cmp(interpreter.vm.BlockNumber) < 0 {
-		stack.push(interpreter.vm.GetHash(num.Uint64()).Big())
+	n := interpreter.intPool.get().Sub(interpreter.vm.Context.BlockNumber, common.Big257)
+	if num.Cmp(n) > 0 && num.Cmp(interpreter.vm.Context.BlockNumber) < 0 {
+		stack.push(interpreter.vm.Context.GetHash(num.Uint64()).Big())
 	} else {
 		stack.push(interpreter.intPool.getZero())
 	}
@@ -1562,19 +1653,19 @@ func opBlockhash_SSC_Base(pc *uint64, inp Interpreter, contract *Contract, memor
 
 func opCoinbase_SSC_Base(pc *uint64, inp Interpreter, contract *Contract, memory *Memory, stack *Stack) ([]byte, error) {
 	interpreter := inp.(*SSCVMInterpreter)
-	stack.push(interpreter.intPool.get().SetBytes(interpreter.vm.Coinbase.Bytes()))
+	stack.push(interpreter.intPool.get().SetBytes(interpreter.vm.Context.Coinbase.Bytes()))
 	return nil, nil
 }
 
 func opTimestamp_SSC_Base(pc *uint64, inp Interpreter, contract *Contract, memory *Memory, stack *Stack) ([]byte, error) {
 	interpreter := inp.(*SSCVMInterpreter)
-	stack.push(math.U256(interpreter.intPool.get().Set(interpreter.vm.Time)))
+	stack.push(math.U256(interpreter.intPool.get().Set(interpreter.vm.Context.Time)))
 	return nil, nil
 }
 
 func opNumber_SSC_Base(pc *uint64, inp Interpreter, contract *Contract, memory *Memory, stack *Stack) ([]byte, error) {
 	interpreter := inp.(*SSCVMInterpreter)
-	stack.push(math.U256(interpreter.intPool.get().Set(interpreter.vm.BlockNumber)))
+	stack.push(math.U256(interpreter.intPool.get().Set(interpreter.vm.Context.BlockNumber)))
 	return nil, nil
 }
 
@@ -1586,7 +1677,7 @@ func opDifficulty_SSC_Base(pc *uint64, inp Interpreter, contract *Contract, memo
 
 func opGasLimit_SSC_Base(pc *uint64, inp Interpreter, contract *Contract, memory *Memory, stack *Stack) ([]byte, error) {
 	interpreter := inp.(*SSCVMInterpreter)
-	stack.push(math.U256(interpreter.intPool.get().SetUint64(interpreter.vm.GasLimit)))
+	stack.push(math.U256(interpreter.intPool.get().SetUint64(interpreter.vm.Context.GasLimit)))
 	return nil, nil
 }
 
@@ -1678,7 +1769,7 @@ func opCreate_SSC_Base(pc *uint64, inp Interpreter, contract *Contract, memory *
 		input        = memory.GetCopy(offset.Int64(), size.Int64())
 		gas          = contract.Gas
 	)
-	if interpreter.vm.ChainConfig().IsS3(interpreter.vm.EpochNumber) {
+	if interpreter.vm.ChainConfig().IsS3(interpreter.vm.Context.EpochNumber) {
 		gas -= gas / 64
 	}
 
@@ -1688,7 +1779,7 @@ func opCreate_SSC_Base(pc *uint64, inp Interpreter, contract *Contract, memory *
 	// homestead we must check for CodeStoreOutOfGasError (homestead only
 	// rule) and treat as an error, if the ruleset is frontier we must
 	// ignore this error and pretend the operation was successful.
-	if interpreter.vm.ChainConfig().IsS3(interpreter.vm.EpochNumber) && suberr == ErrCodeStoreOutOfGas {
+	if interpreter.vm.ChainConfig().IsS3(interpreter.vm.Context.EpochNumber) && suberr == ErrCodeStoreOutOfGas {
 		stack.push(interpreter.intPool.getZero())
 	} else if suberr != nil && suberr != ErrCodeStoreOutOfGas {
 		stack.push(interpreter.intPool.getZero())
@@ -1899,6 +1990,35 @@ func opDelegateCall_SSC_Base(pc *uint64, inp Interpreter, contract *Contract, me
 	return ret, nil
 }
 
+func opStaticCall_SSC_Base(pc *uint64, inp Interpreter, contract *Contract, memory *Memory, stack *Stack) ([]byte, error) {
+	interpreter := inp.(*SSCVMInterpreter)
+	// Pop gas. The actual gas is in interpreter.evm.callGasTemp.
+	interpreter.intPool.put(stack.pop())
+	gas := interpreter.vm.callGasTemp
+	// Pop other call parameters.
+	addr, inOffset, inSize, retOffset, retSize := stack.pop(), stack.pop(), stack.pop(), stack.pop(), stack.pop()
+	toAddr := common.BigToAddress(addr)
+	// Get arguments from the memory.
+	args := memory.GetPtr(inOffset.Int64(), inSize.Int64())
+
+	ret, returnGas, err := interpreter.vm.StaticCall(contract, toAddr, args, gas)
+	if err != nil {
+		stack.push(interpreter.intPool.getZero())
+	} else {
+		stack.push(interpreter.intPool.get().SetUint64(1))
+	}
+	if err == nil || err == ErrExecutionReverted {
+		if contract.WithDataCopyFix {
+			ret = common.CopyBytes(ret)
+		}
+		memory.Set(retOffset.Uint64(), retSize.Uint64(), ret)
+	}
+	contract.Gas += returnGas
+
+	interpreter.intPool.put(addr, inOffset, inSize, retOffset, retSize)
+	return ret, nil
+}
+
 func opReturn_SSC_Base(pc *uint64, inp Interpreter, contract *Contract, memory *Memory, stack *Stack) ([]byte, error) {
 	interpreter := inp.(*SSCVMInterpreter)
 	offset, size := stack.pop(), stack.pop()
@@ -1906,4 +2026,270 @@ func opReturn_SSC_Base(pc *uint64, inp Interpreter, contract *Contract, memory *
 
 	interpreter.intPool.put(offset, size)
 	return ret, nil
+}
+
+// make log instruction function
+func makeLog_SSC(size int) executionFunc {
+	return func(pc *uint64, inp Interpreter, contract *Contract, memory *Memory, stack *Stack) ([]byte, error) {
+		interpreter := inp.(*SSCVMInterpreter)
+		topics := make([]common.Hash, size)
+		mStart, mSize := stack.pop(), stack.pop()
+		for i := 0; i < size; i++ {
+			topics[i] = common.BigToHash(stack.pop())
+		}
+
+		d := memory.GetCopy(mStart.Int64(), mSize.Int64())
+		interpreter.vm.StateDB.AddLog(&types.Log{
+			Address: contract.Address(),
+			Topics:  topics,
+			Data:    d,
+			// This is a non-consensus field, but assigned here because
+			// core/state doesn't know the current block number.
+			BlockNumber: interpreter.vm.Context.BlockNumber.Uint64(),
+		})
+
+		interpreter.intPool.put(mStart, mSize)
+		return nil, nil
+	}
+}
+
+// opPush1 is a specialized version of pushN
+func opPush1_SSC(pc *uint64, inp Interpreter, contract *Contract, memory *Memory, stack *Stack) ([]byte, error) {
+	interpreter := inp.(*SSCVMInterpreter)
+	var (
+		codeLen = uint64(len(contract.Code))
+		integer = interpreter.intPool.get()
+	)
+	*pc++
+	if *pc < codeLen {
+		stack.push(integer.SetUint64(uint64(contract.Code[*pc])))
+	} else {
+		stack.push(integer.SetUint64(0))
+	}
+	return nil, nil
+}
+
+// make push instruction function
+func makePush_SSC(size uint64, pushByteSize int) executionFunc {
+	return func(pc *uint64, inp Interpreter, contract *Contract, memory *Memory, stack *Stack) ([]byte, error) {
+
+		interpreter := inp.(*SSCVMInterpreter)
+		codeLen := len(contract.Code)
+
+		startMin := codeLen
+		if int(*pc+1) < startMin {
+			startMin = int(*pc + 1)
+		}
+
+		endMin := codeLen
+		if startMin+pushByteSize < endMin {
+			endMin = startMin + pushByteSize
+		}
+
+		integer := interpreter.intPool.get()
+		stack.push(integer.SetBytes(common.RightPadBytes(contract.Code[startMin:endMin], pushByteSize)))
+
+		*pc += size
+		return nil, nil
+	}
+}
+
+// make dup instruction function
+func makeDup_SSC(size int64) executionFunc {
+	return func(pc *uint64, interpreter Interpreter, contract *Contract, memory *Memory, stack *Stack) ([]byte, error) {
+		sscvmInterpreter := interpreter.(*SSCVMInterpreter)
+		stack.dup(sscvmInterpreter.intPool, int(size))
+		return nil, nil
+	}
+}
+
+func gasCall_SSC(vm VM, contract *Contract, stack *Stack, mem *Memory, memorySize uint64) (uint64, error) {
+	var (
+		gas            uint64
+		transfersValue = stack.Back(2).Sign() != 0
+		address        = common.BigToAddress(stack.Back(1))
+	)
+	sscvm := vm.(*SSCVM)
+	if sscvm.chainRules.IsS3 {
+		if transfersValue && sscvm.StateDB.Empty(address) {
+			gas += params.CallNewAccountGas
+		}
+	} else if !sscvm.StateDB.Exist(address) {
+		gas += params.CallNewAccountGas
+	}
+	if transfersValue {
+		gas += params.CallValueTransferGas
+	}
+	memoryGas, err := memoryGasCost(mem, memorySize)
+	if err != nil {
+		return 0, err
+	}
+	var overflow bool
+	if gas, overflow = math.SafeAdd(gas, memoryGas); overflow {
+		return 0, errGasUintOverflow
+	}
+
+	sscvm.callGasTemp, err = callGas(sscvm.chainRules.IsS3, contract.Gas, gas, stack.Back(0))
+	if err != nil {
+		return 0, err
+	}
+	if gas, overflow = math.SafeAdd(gas, sscvm.callGasTemp); overflow {
+		return 0, errGasUintOverflow
+	}
+	return gas, nil
+}
+
+func gasSStore_SSC(vm VM, contract *Contract, stack *Stack, mem *Memory, memorySize uint64) (uint64, error) {
+	sscvm := vm.(*SSCVM)
+	var (
+		y, x       = stack.Back(1), stack.Back(0)
+		current, _ = sscvm.StateDB.GetState(contract.Address(), common.BigToHash(x))
+	)
+	// The legacy gas metering only takes into consideration the current state
+	// Legacy rules should be applied if we are in Petersburg (removal of EIP-1283)
+	// OR Constantinople is not active
+	if sscvm.chainRules.IsS3 {
+		// This checks for 3 scenario's and calculates gas accordingly:
+		//
+		// 1. From a zero-value address to a non-zero value         (NEW VALUE)
+		// 2. From a non-zero value address to a zero-value address (DELETE)
+		// 3. From a non-zero to a non-zero                         (CHANGE)
+		switch {
+		case current == (common.Hash{}) && y.Sign() != 0: // 0 => non 0
+			return params.SstoreSetGas, nil
+		case current != (common.Hash{}) && y.Sign() == 0: // non 0 => 0
+			sscvm.StateDB.AddRefund(params.SstoreRefundGas)
+			return params.SstoreClearGas, nil
+		default: // non 0 => non 0 (or 0 => 0)
+			return params.SstoreResetGas, nil
+		}
+	}
+
+	// The new gas metering is based on net gas costs (EIP-1283):
+	//
+	// 1. If current value equals new value (this is a no-op), 200 gas is deducted.
+	// 2. If current value does not equal new value
+	//   2.1. If original value equals current value (this storage slot has not been changed by the current execution context)
+	//     2.1.1. If original value is 0, 20000 gas is deducted.
+	// 	   2.1.2. Otherwise, 5000 gas is deducted. If new value is 0, add 15000 gas to refund counter.
+	// 	2.2. If original value does not equal current value (this storage slot is dirty), 200 gas is deducted. Apply both of the following clauses.
+	// 	  2.2.1. If original value is not 0
+	//       2.2.1.1. If current value is 0 (also means that new value is not 0), remove 15000 gas from refund counter. We can prove that refund counter will never go below 0.
+	//       2.2.1.2. If new value is 0 (also means that current value is not 0), add 15000 gas to refund counter.
+	// 	  2.2.2. If original value equals new value (this storage slot is reset)
+	//       2.2.2.1. If original value is 0, add 19800 gas to refund counter.
+	// 	     2.2.2.2. Otherwise, add 4800 gas to refund counter.
+	value := common.BigToHash(y)
+	if current == value { // noop (1)
+		return params.NetSstoreNoopGas, nil
+	}
+	original := sscvm.StateDB.GetCommittedState(contract.Address(), common.BigToHash(x))
+	if original == current {
+		if original == (common.Hash{}) { // create slot (2.1.1)
+			return params.NetSstoreInitGas, nil
+		}
+		if value == (common.Hash{}) { // delete slot (2.1.2b)
+			sscvm.StateDB.AddRefund(params.NetSstoreClearRefund)
+		}
+		return params.NetSstoreCleanGas, nil // write existing slot (2.1.2)
+	}
+	if original != (common.Hash{}) {
+		if current == (common.Hash{}) { // recreate slot (2.2.1.1)
+			sscvm.StateDB.SubRefund(params.NetSstoreClearRefund)
+		} else if value == (common.Hash{}) { // delete slot (2.2.1.2)
+			sscvm.StateDB.AddRefund(params.NetSstoreClearRefund)
+		}
+	}
+	if original == value {
+		if original == (common.Hash{}) { // reset to original inexistent slot (2.2.2.1)
+			sscvm.StateDB.AddRefund(params.NetSstoreResetClearRefund)
+		} else { // reset to original existing slot (2.2.2.2)
+			sscvm.StateDB.AddRefund(params.NetSstoreResetRefund)
+		}
+	}
+	return params.NetSstoreDirtyGas, nil
+}
+
+func gasCallCode_SSC(vm VM, contract *Contract, stack *Stack, mem *Memory, memorySize uint64) (uint64, error) {
+	sscvm := vm.(*SSCVM)
+	memoryGas, err := memoryGasCost(mem, memorySize)
+	if err != nil {
+		return 0, err
+	}
+	var (
+		gas      uint64
+		overflow bool
+	)
+	if stack.Back(2).Sign() != 0 {
+		gas += params.CallValueTransferGas
+	}
+	if gas, overflow = math.SafeAdd(gas, memoryGas); overflow {
+		return 0, errGasUintOverflow
+	}
+	sscvm.callGasTemp, err = callGas(sscvm.chainRules.IsS3, contract.Gas, gas, stack.Back(0))
+	if err != nil {
+		return 0, err
+	}
+	if gas, overflow = math.SafeAdd(gas, sscvm.callGasTemp); overflow {
+		return 0, errGasUintOverflow
+	}
+	return gas, nil
+}
+
+func gasDelegateCall_SSC(vm VM, contract *Contract, stack *Stack, mem *Memory, memorySize uint64) (uint64, error) {
+	sscvm := vm.(*SSCVM)
+	gas, err := memoryGasCost(mem, memorySize)
+	if err != nil {
+		return 0, err
+	}
+	sscvm.callGasTemp, err = callGas(sscvm.chainRules.IsS3, contract.Gas, gas, stack.Back(0))
+	if err != nil {
+		return 0, err
+	}
+	var overflow bool
+	if gas, overflow = math.SafeAdd(gas, sscvm.callGasTemp); overflow {
+		return 0, errGasUintOverflow
+	}
+	return gas, nil
+}
+
+func gasStaticCall_SSC(vm VM, contract *Contract, stack *Stack, mem *Memory, memorySize uint64) (uint64, error) {
+	sscvm := vm.(*SSCVM)
+	gas, err := memoryGasCost(mem, memorySize)
+	if err != nil {
+		return 0, err
+	}
+	sscvm.callGasTemp, err = callGas(sscvm.chainRules.IsS3, contract.Gas, gas, stack.Back(0))
+	if err != nil {
+		return 0, err
+	}
+	var overflow bool
+	if gas, overflow = math.SafeAdd(gas, sscvm.callGasTemp); overflow {
+		return 0, errGasUintOverflow
+	}
+	return gas, nil
+}
+
+func gasSelfdestruct_SSC(vm VM, contract *Contract, stack *Stack, mem *Memory, memorySize uint64) (uint64, error) {
+	sscvm := vm.(*SSCVM)
+	var gas uint64
+	// EIP150 homestead gas reprice fork:
+	if sscvm.chainRules.IsS3 {
+		gas = params.SelfdestructGasEIP150
+		var address = common.BigToAddress(stack.Back(0))
+
+		if sscvm.chainRules.IsS3 {
+			// if empty and transfers value
+			if sscvm.StateDB.Empty(address) && sscvm.StateDB.GetBalance(contract.Address()).Sign() != 0 {
+				gas += params.CreateBySelfdestructGas
+			}
+		} else if !sscvm.StateDB.Exist(address) {
+			gas += params.CreateBySelfdestructGas
+		}
+	}
+
+	if !sscvm.StateDB.HasSuicided(contract.Address()) {
+		sscvm.StateDB.AddRefund(params.SelfdestructRefundGas)
+	}
+	return gas, nil
 }

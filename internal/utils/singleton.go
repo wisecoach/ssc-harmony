@@ -4,6 +4,7 @@ package utils
 
 import (
 	"fmt"
+	"io"
 	"os"
 	"path"
 	"strconv"
@@ -106,13 +107,16 @@ func setZeroLoggerFileOutput(filepath string, maxSize int, rotateCount int, rota
 	// Initialize ZeroLogger if it hasn't been already
 	// TODO: zerolog filename prefix can be removed once all loggers
 	// has been replaced
-	childLogger := Logger().Output(&lumberjack.Logger{
+
+	w := io.MultiWriter(os.Stdout, &lumberjack.Logger{
 		Filename:   fmt.Sprintf("%s/zerolog-%s", dir, filename),
 		MaxSize:    maxSize,
 		MaxBackups: rotateCount,
 		MaxAge:     rotateMaxAge,
 		Compress:   true,
 	})
+
+	childLogger := Logger().Output(w)
 	zeroLogger = &childLogger
 
 	return nil
@@ -148,7 +152,7 @@ func init() {
 func Logger() *zerolog.Logger {
 	if zeroLogger == nil {
 		zerolog.TimeFieldFormat = time.RFC3339Nano
-		writer := diode.NewWriter(os.Stderr, 1000, 10*time.Millisecond, func(missed int) {
+		writer := diode.NewWriter(os.Stdout, 1000, 10*time.Millisecond, func(missed int) {
 			fmt.Printf("Logger Dropped %d messages", missed)
 		})
 		logger := zerolog.New(zerolog.ConsoleWriter{Out: writer}).

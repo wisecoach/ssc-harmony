@@ -127,7 +127,7 @@ func (bh *beaconHelper) insertLastMileBlocks() (inserted int, bn uint64, err err
 			bn--
 			return
 		}
-		bh.logger.Info().Uint64("number", b.NumberU64()).Msg("Inserted block from beacon pub-sub")
+		// tempDelete bh.logger.Info().Uint64("number", b.NumberU64()).Msg("Inserted block from beacon pub-sub")
 
 		if bh.insertHook != nil {
 			bh.insertHook()

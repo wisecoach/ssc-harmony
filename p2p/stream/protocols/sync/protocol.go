@@ -172,7 +172,7 @@ func (p *Protocol) Match(targetID protocol.ID) bool {
 
 // HandleStream is the stream handle function being registered to libp2p.
 func (p *Protocol) HandleStream(raw libp2p_network.Stream) {
-	p.logger.Info().Str("stream", raw.ID()).Msg("handle new sync stream")
+	// tempDelete p.logger.Info().Str("stream", raw.ID()).Msg("handle new sync stream")
 	st := p.wrapStream(raw)
 	if err := p.sm.NewStream(st); err != nil {
 		// Possibly we have reach the hard limit of the stream
@@ -180,8 +180,8 @@ func (p *Protocol) HandleStream(raw libp2p_network.Stream) {
 			Msg("failed to add new stream")
 		return
 	}
-	//to get my ID use raw.Conn().LocalPeer().String()
-	p.logger.Info().Msgf("Connected to %s (%s)", raw.Conn().RemotePeer().String(), st.ProtoID())
+	// to get my ID use raw.Conn().LocalPeer().String()
+	// tempDelete p.logger.Info().Msgf("Connected to %s (%s)", raw.Conn().RemotePeer().String(), st.ProtoID())
 	st.run()
 }
 
@@ -269,11 +269,11 @@ func (p *Protocol) protoIDByVersionForShardNodes(v *version.Version) sttypes.Pro
 func (p *Protocol) RemoveStream(stID sttypes.StreamID) {
 	st, exist := p.sm.GetStreamByID(stID)
 	if exist && st != nil {
-		//TODO: log this incident with reason
+		// TODO: log this incident with reason
 		st.Close()
-		p.logger.Info().
-			Str("stream ID", string(stID)).
-			Msg("stream removed")
+		// tempDelete p.logger.Info().
+		// tempDelete 	Str("stream ID", string(stID)).
+		// tempDelete 	Msg("stream removed")
 	}
 }
 
@@ -281,11 +281,11 @@ func (p *Protocol) StreamFailed(stID sttypes.StreamID, reason string) {
 	st, exist := p.sm.GetStreamByID(stID)
 	if exist && st != nil {
 		st.AddFailedTimes(FaultRecoveryThreshold)
-		p.logger.Info().
-			Str("stream ID", string(st.ID())).
-			Int("num failures", st.FailedTimes()).
-			Str("reason", reason).
-			Msg("stream failed")
+		// tempDelete p.logger.Info().
+		// tempDelete 	Str("stream ID", string(st.ID())).
+		// tempDelete 	Int("num failures", st.FailedTimes()).
+		// tempDelete 	Str("reason", reason).
+		// tempDelete 	Msg("stream failed")
 		if st.FailedTimes() >= MaxStreamFailures {
 			st.Close()
 			p.logger.Warn().

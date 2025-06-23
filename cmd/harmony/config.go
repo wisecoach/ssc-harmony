@@ -125,6 +125,8 @@ func parseNetworkType(nt string) nodeconfig.NetworkType {
 		return nodeconfig.Localnet
 	case "devnet", "dev":
 		return nodeconfig.Devnet
+	case "exprnet":
+		return nodeconfig.Exprnet
 	default:
 		return ""
 	}

@@ -202,10 +202,10 @@ func (s *StagedSync) IsAfter(stage1, stage2 SyncStageID) bool {
 
 // RevertTo reverts the stage to a specific height
 func (s *StagedSync) RevertTo(revertPoint uint64, invalidBlock common.Hash) {
-	utils.Logger().Info().
-		Interface("invalidBlock", invalidBlock).
-		Uint64("revertPoint", revertPoint).
-		Msgf("[STAGED_SYNC] Reverting blocks")
+	// tempDelete utils.Logger().Info().
+	// tempDelete 	Interface("invalidBlock", invalidBlock).
+	// tempDelete 	Uint64("revertPoint", revertPoint).
+	// tempDelete 	Msgf("[STAGED_SYNC] Reverting blocks")
 	s.revertPoint = &revertPoint
 	s.invalidBlock = invalidBlock
 }
@@ -452,8 +452,8 @@ func printLogs(tx kv.RwTx, timings []Timing) error {
 		}
 	}
 	if len(logCtx) > 0 {
-		utils.Logger().Info().
-			Msgf("[STAGED_SYNC] Timings (slower than 50ms) %v", logCtx...)
+		// tempDelete utils.Logger().Info().
+		// tempDelete 	Msgf("[STAGED_SYNC] Timings (slower than 50ms) %v", logCtx...)
 	}
 
 	if tx == nil {
@@ -470,8 +470,8 @@ func printLogs(tx kv.RwTx, timings []Timing) error {
 			}
 			bucketSizes = append(bucketSizes, bucket, ByteCount(sz))
 		}
-		utils.Logger().Info().
-			Msgf("[STAGED_SYNC] Tables %v", bucketSizes...)
+		// tempDelete utils.Logger().Info().
+		// tempDelete 	Msgf("[STAGED_SYNC] Tables %v", bucketSizes...)
 	}
 	tx.CollectMetrics()
 	return nil
@@ -491,14 +491,14 @@ func (s *StagedSync) runStage(stage *Stage, db kv.RwDB, tx kv.RwTx, firstCycle b
 			Msgf("[STAGED_SYNC] stage failed")
 		return fmt.Errorf("[%s] %w", s.LogPrefix(), err)
 	}
-	utils.Logger().Info().
-		Msgf("[STAGED_SYNC] stage %s executed successfully", stage.ID)
+	// tempDelete utils.Logger().Info().
+	// tempDelete 	Msgf("[STAGED_SYNC] stage %s executed successfully", stage.ID)
 
 	took := time.Since(start)
 	if took > 60*time.Second {
-		logPrefix := s.LogPrefix()
-		utils.Logger().Info().
-			Msgf("[STAGED_SYNC] [%s] DONE in %d", logPrefix, took)
+		// tempDelete logPrefix := s.LogPrefix()
+		// tempDelete 	utils.Logger().Info().
+		// tempDelete 		Msgf("[STAGED_SYNC] [%s] DONE in %d", logPrefix, took)
 
 	}
 	s.timings = append(s.timings, Timing{stage: stage.ID, took: took})
@@ -532,9 +532,9 @@ func (s *StagedSync) revertStage(firstCycle bool, stage *Stage, db kv.RwDB, tx k
 
 	took := time.Since(start)
 	if took > 60*time.Second {
-		logPrefix := s.LogPrefix()
-		utils.Logger().Info().
-			Msgf("[STAGED_SYNC] [%s] Revert done in %d", logPrefix, took)
+		// tempDelete logPrefix := s.LogPrefix()
+		// tempDelete utils.Logger().Info().
+		// tempDelete 	Msgf("[STAGED_SYNC] [%s] Revert done in %d", logPrefix, took)
 	}
 	s.timings = append(s.timings, Timing{isRevert: true, stage: stage.ID, took: took})
 	return nil
@@ -542,8 +542,8 @@ func (s *StagedSync) revertStage(firstCycle bool, stage *Stage, db kv.RwDB, tx k
 
 func (s *StagedSync) pruneStage(firstCycle bool, stage *Stage, db kv.RwDB, tx kv.RwTx) error {
 	start := time.Now()
-	utils.Logger().Info().
-		Msgf("[STAGED_SYNC] CleanUp... stage %s", stage.ID)
+	// tempDelete utils.Logger().Info().
+	// tempDelete 	Msgf("[STAGED_SYNC] CleanUp... stage %s", stage.ID)
 
 	stageState, err := s.StageState(stage.ID, tx, db)
 	if err != nil {
@@ -569,8 +569,8 @@ func (s *StagedSync) pruneStage(firstCycle bool, stage *Stage, db kv.RwDB, tx kv
 		utils.Logger().Trace().
 			Msgf("[STAGED_SYNC] [%s] CleanUp done in %d", logPrefix, took)
 
-		utils.Logger().Info().
-			Msgf("[STAGED_SYNC] [%s] CleanUp done in %d", logPrefix, took)
+		// tempDelete utils.Logger().Info().
+		// tempDelete 	Msgf("[STAGED_SYNC] [%s] CleanUp done in %d", logPrefix, took)
 	}
 	s.timings = append(s.timings, Timing{isCleanUp: true, stage: stage.ID, took: took})
 	return nil
@@ -663,10 +663,10 @@ func (ss *StagedSync) AddNewBlock(peerHash []byte, block *types.Block) {
 	pc.mux.Lock()
 	defer pc.mux.Unlock()
 	pc.newBlocks = append(pc.newBlocks, block)
-	utils.Logger().Debug().
-		Int("total", len(pc.newBlocks)).
-		Uint64("blockHeight", block.NumberU64()).
-		Msg("[STAGED_SYNC] new block received")
+	// tempDelete utils.Logger().Debug().
+	// tempDelete 	Int("total", len(pc.newBlocks)).
+	// tempDelete 	Uint64("blockHeight", block.NumberU64()).
+	// tempDelete 	Msg("[STAGED_SYNC] new block received")
 }
 
 // CreateSyncConfig creates SyncConfig for StateSync object.
@@ -684,11 +684,11 @@ func (ss *StagedSync) CreateSyncConfig(peers []p2p.Peer, shardID uint32, selfPee
 		return errors.New("[STAGED_SYNC] no peers to connect to")
 	}
 
-	utils.Logger().Debug().
-		Str("self peer ID", string(selfPeerID)).
-		Int("peers count", len(peers)).
-		Int("target size", targetSize).
-		Msg("[STAGED_SYNC] CreateSyncConfig: len of peers")
+	// tempDelete utils.Logger().Debug().
+	// tempDelete 	Str("self peer ID", string(selfPeerID)).
+	// tempDelete 	Int("peers count", len(peers)).
+	// tempDelete 	Int("target size", targetSize).
+	// tempDelete 	Msg("[STAGED_SYNC] CreateSyncConfig: len of peers")
 
 	if ss.syncConfig != nil {
 		ss.syncConfig.CloseConnections()
@@ -728,9 +728,9 @@ func (ss *StagedSync) CreateSyncConfig(peers []p2p.Peer, shardID uint32, selfPee
 	// select main peers
 	ss.syncConfig.peers = ss.syncConfig.peers[:targetSize]
 
-	utils.Logger().Info().
-		Int("len", len(ss.syncConfig.peers)).
-		Msg("[STAGED_SYNC] Finished making connection to peers")
+	// tempDelete utils.Logger().Info().
+	// tempDelete 	Int("len", len(ss.syncConfig.peers)).
+	// tempDelete 	Msg("[STAGED_SYNC] Finished making connection to peers")
 
 	return nil
 }
@@ -776,7 +776,7 @@ func (ss *StagedSync) getConsensusHashes(startHash []byte, size uint32, bgMode b
 					// replace it with reserved peer (in bg mode don't replace because maybe other stages still are using this node)
 					if bgMode {
 						bgModeError = ErrSomeNodesNotReady
-						brk = true //finish whole peers loop
+						brk = true // finish whole peers loop
 					} else {
 						if !peerConfig.client.IsConnecting() {
 							ss.syncConfig.ReplacePeerWithReserved(peerConfig, "not ready to download consensus hashes")
@@ -794,7 +794,7 @@ func (ss *StagedSync) getConsensusHashes(startHash []byte, size uint32, bgMode b
 				// replace it with reserved peer (in bg mode don't replace because maybe other stages still are using this node)
 				if bgMode {
 					bgModeError = ErrSomeNodesBlockHashFail
-					brk = true //finish whole peers loop
+					brk = true // finish whole peers loop
 				} else {
 					isBrokenPeer := peerConfig.AddFailedTime(downloadBlocksRetryLimit)
 					if isBrokenPeer {
@@ -803,12 +803,12 @@ func (ss *StagedSync) getConsensusHashes(startHash []byte, size uint32, bgMode b
 				}
 				return
 			}
-			utils.Logger().Info().
-				Uint32("queried blockHash size", size).
-				Int("got blockHashSize", len(response.Payload)).
-				Str("PeerIP", peerConfig.ip).
-				Bool("background Mode", bgMode).
-				Msg("[STAGED_SYNC] GetBlockHashes")
+			// tempDelete utils.Logger().Info().
+			// tempDelete 	Uint32("queried blockHash size", size).
+			// tempDelete 	Int("got blockHashSize", len(response.Payload)).
+			// tempDelete 	Str("PeerIP", peerConfig.ip).
+			// tempDelete 	Bool("background Mode", bgMode).
+			// tempDelete 	Msg("[STAGED_SYNC] GetBlockHashes")
 
 			if len(response.Payload) > int(size+1) {
 				utils.Logger().Warn().
@@ -889,7 +889,7 @@ func (ss *StagedSync) getInvalidPeersByBlockHashes(tx kv.RwTx) (map[string]bool,
 			continue
 		}
 
-		//consider invalid peer if it hasn't sent this block hash
+		// consider invalid peer if it hasn't sent this block hash
 		for _, p := range ss.syncConfig.peers {
 			hasBlockHash := hmap.peers[string(p.peerHash)]
 			if !hasBlockHash {
@@ -928,9 +928,9 @@ func (ss *StagedSync) generateStateSyncTaskQueue(bc core.BlockChain, tx kv.RwTx)
 	if !allTasksAddedToQueue {
 		return ErrAddTaskFailed
 	}
-	utils.Logger().Info().
-		Int64("length", ss.stateSyncTaskQueue.Len()).
-		Msg("[STAGED_SYNC] generateStateSyncTaskQueue: finished")
+	// tempDelete utils.Logger().Info().
+	// tempDelete 	Int64("length", ss.stateSyncTaskQueue.Len()).
+	// tempDelete 	Msg("[STAGED_SYNC] generateStateSyncTaskQueue: finished")
 	return nil
 }
 
@@ -1075,9 +1075,9 @@ func (ss *StagedSync) UpdateBlockAndStatus(block *types.Block, bc core.BlockChai
 				Msgf("[STAGED_SYNC] UpdateBlockAndStatus: failed verifying signatures for new block")
 
 			if !verifyAllSig {
-				utils.Logger().Info().
-					Interface("block", bc.CurrentBlock()).
-					Msg("[STAGED_SYNC] UpdateBlockAndStatus: Rolling back last 99 blocks!")
+				// tempDelete utils.Logger().Info().
+				// tempDelete 	Interface("block", bc.CurrentBlock()).
+				// tempDelete 	Msg("[STAGED_SYNC] UpdateBlockAndStatus: Rolling back last 99 blocks!")
 				for i := uint64(0); i < ss.VerifyHeaderBatchSize-1; i++ {
 					if rbErr := bc.Rollback([]common.Hash{bc.CurrentBlock().Hash()}); rbErr != nil {
 						utils.Logger().Error().
@@ -1103,19 +1103,19 @@ func (ss *StagedSync) UpdateBlockAndStatus(block *types.Block, bc core.BlockChai
 		return err
 	default:
 	}
-	utils.Logger().Info().
-		Uint64("blockHeight", block.NumberU64()).
-		Uint64("blockEpoch", block.Epoch().Uint64()).
-		Str("blockHex", block.Hash().Hex()).
-		Uint32("ShardID", block.ShardID()).
-		Msg("[STAGED_SYNC] UpdateBlockAndStatus: New Block Added to Blockchain")
+	// tempDelete utils.Logger().Info().
+	// tempDelete 	Uint64("blockHeight", block.NumberU64()).
+	// tempDelete 	Uint64("blockEpoch", block.Epoch().Uint64()).
+	// tempDelete 	Str("blockHex", block.Hash().Hex()).
+	// tempDelete 	Uint32("ShardID", block.ShardID()).
+	// tempDelete 	Msg("[STAGED_SYNC] UpdateBlockAndStatus: New Block Added to Blockchain")
 
-	for i, tx := range block.StakingTransactions() {
-		utils.Logger().Info().
-			Msgf(
-				"StakingTxn %d: %s, %v", i, tx.StakingType().String(), tx.StakingMessage(),
-			)
-	}
+	// tempDelete for i, tx := range block.StakingTransactions() {
+	// tempDelete 	utils.Logger().Info().
+	// tempDelete 		Msgf(
+	// tempDelete 			"StakingTxn %d: %s, %v", i, tx.StakingType().String(), tx.StakingMessage(),
+	// tempDelete 		)
+	// tempDelete }
 	return nil
 }
 
@@ -1179,10 +1179,10 @@ func (ss *StagedSync) getMaxPeerHeight() (uint64, error) {
 				ss.syncConfig.RemovePeer(peerConfig, "GetBlockChainHeight failed")
 				return
 			}
-			utils.Logger().Info().
-				Str("peerIP", peerConfig.ip).
-				Uint64("blockHeight", response.BlockHeight).
-				Msg("[STAGED_SYNC] getMaxPeerHeight")
+			// tempDelete utils.Logger().Info().
+			// tempDelete 	Str("peerIP", peerConfig.ip).
+			// tempDelete 	Uint64("blockHeight", response.BlockHeight).
+			// tempDelete 	Msg("[STAGED_SYNC] getMaxPeerHeight")
 			lock.Lock()
 			if response != nil {
 				if maxHeight == uint64(math.MaxUint64) || maxHeight < response.BlockHeight {
@@ -1303,12 +1303,12 @@ func (ss *StagedSync) isSynchronized(doubleCheck bool) SyncCheckResult {
 		if otherHeight1 < lastHeight {
 			heightDiff = 0 //
 		}
-		utils.Logger().Info().
-			Uint64("OtherHeight", otherHeight1).
-			Uint64("lastHeight", lastHeight).
-			Uint64("heightDiff", heightDiff).
-			Bool("wasOutOfSync", wasOutOfSync).
-			Msg("[STAGED_SYNC] Checking sync status")
+		// tempDelete utils.Logger().Info().
+		// tempDelete 	Uint64("OtherHeight", otherHeight1).
+		// tempDelete 	Uint64("lastHeight", lastHeight).
+		// tempDelete 	Uint64("heightDiff", heightDiff).
+		// tempDelete 	Bool("wasOutOfSync", wasOutOfSync).
+		// tempDelete 	Msg("[STAGED_SYNC] Checking sync status")
 		return SyncCheckResult{
 			IsSynchronized: !wasOutOfSync,
 			OtherHeight:    otherHeight1,
@@ -1325,13 +1325,13 @@ func (ss *StagedSync) isSynchronized(doubleCheck bool) SyncCheckResult {
 	currentHeight := ss.Blockchain().CurrentBlock().NumberU64()
 
 	isOutOfSync := currentHeight+inSyncThreshold < otherHeight2
-	utils.Logger().Info().
-		Uint64("OtherHeight1", otherHeight1).
-		Uint64("OtherHeight2", otherHeight2).
-		Uint64("lastHeight", lastHeight).
-		Uint64("currentHeight", currentHeight).
-		Bool("isOutOfSync", isOutOfSync).
-		Msg("[STAGED_SYNC] Double checking sync status")
+	// tempDelete utils.Logger().Info().
+	// tempDelete 	Uint64("OtherHeight1", otherHeight1).
+	// tempDelete 	Uint64("OtherHeight2", otherHeight2).
+	// tempDelete 	Uint64("lastHeight", lastHeight).
+	// tempDelete 	Uint64("currentHeight", currentHeight).
+	// tempDelete 	Bool("isOutOfSync", isOutOfSync).
+	// tempDelete 	Msg("[STAGED_SYNC] Double checking sync status")
 	// Only confirm out of sync when the node has lower height and didn't move in heights for 2 consecutive checks
 	heightDiff := otherHeight2 - lastHeight
 	if otherHeight2 < lastHeight {

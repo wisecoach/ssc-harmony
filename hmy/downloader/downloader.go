@@ -166,7 +166,7 @@ func (d *Downloader) waitForBootFinish() {
 	t := time.NewTicker(10 * time.Second)
 	defer t.Stop()
 	for {
-		d.logger.Info().Msg("waiting for initial bootstrap discovery")
+		// tempDelete d.logger.Info().Msg("waiting for initial bootstrap discovery")
 		select {
 		case <-t.C:
 			trigger()
@@ -213,11 +213,11 @@ func (d *Downloader) loop() {
 				time.Sleep(1 * time.Second)
 				continue
 			}
-			d.logger.Info().Int("block added", addedBN).
-				Uint64("current height", d.bc.CurrentBlock().NumberU64()).
-				Bool("initSync", initSync).
-				Uint32("shard", d.bc.ShardID()).
-				Msg("sync finished")
+			// tempDelete d.logger.Info().Int("block added", addedBN).
+			// tempDelete 	Uint64("current height", d.bc.CurrentBlock().NumberU64()).
+			// tempDelete 	Bool("initSync", initSync).
+			// tempDelete 	Uint32("shard", d.bc.ShardID()).
+			// tempDelete 	Msg("sync finished")
 
 			if addedBN != 0 {
 				// If block number has been changed, trigger another sync
@@ -237,13 +237,13 @@ func (d *Downloader) loop() {
 
 func (d *Downloader) doDownload(initSync bool) (n int, err error) {
 	if initSync {
-		d.logger.Info().Uint64("current number", d.bc.CurrentBlock().NumberU64()).
-			Uint32("shard ID", d.bc.ShardID()).Msg("start long range sync")
+		// tempDelete d.logger.Info().Uint64("current number", d.bc.CurrentBlock().NumberU64()).
+		// tempDelete 	Uint32("shard ID", d.bc.ShardID()).Msg("start long range sync")
 
 		n, err = d.doLongRangeSync()
 	} else {
-		d.logger.Info().Uint64("current number", d.bc.CurrentBlock().NumberU64()).
-			Uint32("shard ID", d.bc.ShardID()).Msg("start short range sync")
+		// tempDelete d.logger.Info().Uint64("current number", d.bc.CurrentBlock().NumberU64()).
+		// tempDelete 	Uint32("shard ID", d.bc.ShardID()).Msg("start short range sync")
 
 		n, err = d.doShortRangeSync()
 	}

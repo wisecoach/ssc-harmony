@@ -26,7 +26,7 @@ var listener net.Listener
 // TODO (dm): optimize rosetta to use single flight & use extra caching type DB to avoid re-processing data
 func StartServers(hmy *hmy.Harmony, config nodeconfig.RosettaServerConfig, limiterEnable bool, rateLimit int) error {
 	if !config.HTTPEnabled {
-		utils.Logger().Info().Msg("Rosetta http server disabled...")
+		// tempDelete utils.Logger().Info().Msg("Rosetta http server disabled...")
 		return nil
 	}
 
@@ -44,10 +44,10 @@ func StartServers(hmy *hmy.Harmony, config nodeconfig.RosettaServerConfig, limit
 	}
 
 	router := recoverMiddleware(server.CorsMiddleware(loggerMiddleware(getRouter(serverAsserter, hmy, limiterEnable, rateLimit))))
-	utils.Logger().Info().
-		Int("port", config.HTTPPort).
-		Str("ip", config.HTTPIp).
-		Msg("Starting Rosetta server")
+	// tempDelete utils.Logger().Info().
+	// tempDelete 	Int("port", config.HTTPPort).
+	// tempDelete 	Str("ip", config.HTTPIp).
+	// tempDelete 	Msg("Starting Rosetta server")
 	endpoint := fmt.Sprintf("%s:%d", config.HTTPIp, config.HTTPPort)
 	if listener, err = net.Listen("tcp", endpoint); err != nil {
 		return err
@@ -131,7 +131,7 @@ func loggerMiddleware(router http.Handler) http.Handler {
 			r.RequestURI,
 			time.Since(start),
 		)
-		utils.Logger().Info().Msg(msg)
+		// tempDelete utils.Logger().Info().Msg(msg)
 		// Print to stdout for quick check of rosetta activity
 		fmt.Printf("%s %s\n", time.Now().Format("2006-01-02 15:04:05"), msg)
 	})

@@ -69,15 +69,15 @@ func (lsi *lrSyncIter) doLongRangeSync() error {
 		return err
 	}
 	if curBN := lsi.bc.CurrentBlock().NumberU64(); bn <= curBN {
-		lsi.logger.Info().Uint64("current number", curBN).Uint64("target number", bn).
-			Msg("early return of long range sync")
+		// tempDelete lsi.logger.Info().Uint64("current number", curBN).Uint64("target number", bn).
+		// tempDelete 	Msg("early return of long range sync")
 		return nil
 	}
 
 	lsi.d.startSyncing()
 	defer lsi.d.finishSyncing()
 
-	lsi.logger.Info().Uint64("target number", bn).Msg("estimated remote current number")
+	// tempDelete lsi.logger.Info().Uint64("target number", bn).Msg("estimated remote current number")
 	lsi.d.status.setTargetBN(bn)
 
 	return lsi.fetchAndInsertBlocks(bn)

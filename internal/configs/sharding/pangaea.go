@@ -81,13 +81,13 @@ var pangaeaReshardingEpoch = []*big.Int{
 	params.PangaeaChainConfig.StakingEpoch,
 }
 
-var pangaeaV0 = MustNewInstance(
+var pangaeaV0 = MustNewInstance(false,
 	4, 30, 30, 0, numeric.OneDec(), genesis.TNHarmonyAccounts,
 	genesis.TNFoundationalAccounts, emptyAllowlist, nil,
 	numeric.ZeroDec(), ethCommon.Address{},
 	pangaeaReshardingEpoch, PangaeaSchedule.BlocksPerEpoch(),
 )
-var pangaeaV1 = MustNewInstance(
+var pangaeaV1 = MustNewInstance(false,
 	4, 110, 30, 0, numeric.MustNewDecFromStr("0.68"),
 	genesis.TNHarmonyAccounts, genesis.TNFoundationalAccounts,
 	emptyAllowlist, nil, numeric.ZeroDec(), ethCommon.Address{},

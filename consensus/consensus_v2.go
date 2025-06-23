@@ -137,9 +137,9 @@ func (consensus *Consensus) HandleMessageUpdate(ctx context.Context, peer libp2p
 func (consensus *Consensus) finalCommit() {
 	numCommits := consensus.decider.SignersCount(quorum.Commit)
 
-	consensus.getLogger().Info().
-		Int64("NumCommits", numCommits).
-		Msg("[finalCommit] Finalizing Consensus")
+	// tempDelete consensus.getLogger().Info().
+	// tempDelete 	Int64("NumCommits", numCommits).
+	// tempDelete 	Msg("[finalCommit] Finalizing Consensus")
 	beforeCatchupNum := consensus.getBlockNum()
 
 	leaderPriKey, err := consensus.getConsensusLeaderPrivateKey()
@@ -174,7 +174,7 @@ func (consensus *Consensus) finalCommit() {
 		consensus.getLogger().Warn().Err(err).Msg("[finalCommit] failed verifying last commit sig")
 		return
 	}
-	consensus.getLogger().Info().Hex("new", commitSigAndBitmap).Msg("[finalCommit] Overriding commit signatures!!")
+	// tempDelete consensus.getLogger().Info().Hex("new", commitSigAndBitmap).Msg("[finalCommit] Overriding commit signatures!!")
 
 	if err := consensus.Blockchain().WriteCommitSig(block.NumberU64(), commitSigAndBitmap); err != nil {
 		consensus.getLogger().Warn().Err(err).Msg("[finalCommit] failed writting commit sig")
@@ -195,12 +195,12 @@ func (consensus *Consensus) finalCommit() {
 			p2p.ConstructMessage(msgToSend)); err != nil {
 			consensus.getLogger().Warn().Err(err).Msg("[finalCommit] Cannot send committed message")
 		} else {
-			consensus.getLogger().Info().
-				Hex("blockHash", curBlockHash[:]).
-				Uint64("blockNum", consensus.BlockNum()).
-				Msg("[finalCommit] Sent Committed Message")
+			// tempDelete consensus.getLogger().Info().
+			// tempDelete 	Hex("blockHash", curBlockHash[:]).
+			// tempDelete 	Uint64("blockNum", consensus.BlockNum()).
+			// tempDelete 	Msg("[finalCommit] Sent Committed Message")
 		}
-		consensus.getLogger().Info().Msg("[finalCommit] Start consensus timer")
+		// tempDelete consensus.getLogger().Info().Msg("[finalCommit] Start consensus timer")
 		consensus.consensusTimeout[timeoutConsensus].Start()
 	} else {
 		// delayed send
@@ -210,11 +210,11 @@ func (consensus *Consensus) finalCommit() {
 				nodeconfig.NewGroupIDByShardID(nodeconfig.ShardID(consensus.ShardID)),
 			},
 			p2p.ConstructMessage(msgToSend))
-		consensus.getLogger().Info().
-			Hex("blockHash", curBlockHash[:]).
-			Uint64("blockNum", consensus.BlockNum()).
-			Hex("lastCommitSig", commitSigAndBitmap).
-			Msg("[finalCommit] Queued Committed Message")
+		// tempDelete consensus.getLogger().Info().
+		// tempDelete 	Hex("blockHash", curBlockHash[:]).
+		// tempDelete 	Uint64("blockNum", consensus.BlockNum()).
+		// tempDelete 	Hex("lastCommitSig", commitSigAndBitmap).
+		// tempDelete 	Msg("[finalCommit] Queued Committed Message")
 	}
 
 	block.SetCurrentCommitSig(commitSigAndBitmap)
@@ -234,17 +234,17 @@ func (consensus *Consensus) finalCommit() {
 
 	if consensus.consensusTimeout[timeoutBootstrap].IsActive() {
 		consensus.consensusTimeout[timeoutBootstrap].Stop()
-		consensus.getLogger().Info().Msg("[finalCommit] stop bootstrap timer only once")
+		// tempDelete consensus.getLogger().Info().Msg("[finalCommit] stop bootstrap timer only once")
 	}
 
-	consensus.getLogger().Info().
-		Uint64("blockNum", block.NumberU64()).
-		Uint64("epochNum", block.Epoch().Uint64()).
-		Uint64("ViewId", block.Header().ViewID().Uint64()).
-		Str("blockHash", block.Hash().String()).
-		Int("numTxns", len(block.Transactions())).
-		Int("numStakingTxns", len(block.StakingTransactions())).
-		Msg("HOORAY!!!!!!! CONSENSUS REACHED!!!!!!!")
+	// tempDelete consensus.getLogger().Info().
+	// tempDelete 	Uint64("blockNum", block.NumberU64()).
+	// tempDelete 	Uint64("epochNum", block.Epoch().Uint64()).
+	// tempDelete 	Uint64("ViewId", block.Header().ViewID().Uint64()).
+	// tempDelete 	Str("blockHash", block.Hash().String()).
+	// tempDelete 	Int("numTxns", len(block.Transactions())).
+	// tempDelete 	Int("numStakingTxns", len(block.StakingTransactions())).
+	// tempDelete 	Msg("HOORAY!!!!!!! CONSENSUS REACHED!!!!!!!")
 
 	consensus.UpdateLeaderMetrics(float64(numCommits), float64(block.NumberU64()))
 
@@ -254,7 +254,7 @@ func (consensus *Consensus) finalCommit() {
 		if block.IsLastBlockInEpoch() {
 			// No pipelining
 			go func() {
-				consensus.getLogger().Info().Msg("[finalCommit] sending block proposal signal")
+				// tempDelete consensus.getLogger().Info().Msg("[finalCommit] sending block proposal signal")
 				consensus.ReadySignal(NewProposal(SyncProposal))
 			}()
 		} else {
@@ -302,7 +302,7 @@ func (consensus *Consensus) BlockCommitSigs(blockNum uint64) ([]byte, error) {
 func (consensus *Consensus) Start(
 	stopChan chan struct{},
 ) {
-	consensus.GetLogger().Info().Time("time", time.Now()).Msg("[ConsensusMainLoop] Consensus started")
+	// tempDelete consensus.GetLogger().Info().Time("time", time.Now()).Msg("[ConsensusMainLoop] Consensus started")
 	go func() {
 		ticker := time.NewTicker(250 * time.Millisecond)
 		defer ticker.Stop()
@@ -318,7 +318,7 @@ func (consensus *Consensus) Start(
 
 	consensus.mutex.Lock()
 	consensus.consensusTimeout[timeoutBootstrap].Start()
-	consensus.getLogger().Info().Msg("[ConsensusMainLoop] Start bootstrap timeout (only once)")
+	// tempDelete consensus.getLogger().Info().Msg("[ConsensusMainLoop] Start bootstrap timeout (only once)")
 	// Set up next block due time.
 	consensus.NextBlockDue = time.Now().Add(consensus.BlockPeriod)
 	consensus.mutex.Unlock()
@@ -329,7 +329,7 @@ func (consensus *Consensus) StartChannel() {
 	consensus.isInitialLeader = consensus.isLeader()
 	if consensus.isInitialLeader {
 		consensus.start = true
-		consensus.getLogger().Info().Time("time", time.Now()).Msg("[ConsensusMainLoop] Send ReadySignal")
+		// tempDelete consensus.getLogger().Info().Time("time", time.Now()).Msg("[ConsensusMainLoop] Send ReadySignal")
 		consensus.mutex.Unlock()
 		consensus.ReadySignal(NewProposal(SyncProposal))
 		return
@@ -338,33 +338,33 @@ func (consensus *Consensus) StartChannel() {
 }
 
 func (consensus *Consensus) syncReadyChan() {
-	consensus.getLogger().Info().Msg("[ConsensusMainLoop] syncReadyChan")
+	// tempDelete consensus.getLogger().Info().Msg("[ConsensusMainLoop] syncReadyChan")
 	if consensus.getBlockNum() < consensus.Blockchain().CurrentHeader().Number().Uint64()+1 {
 		consensus.setBlockNum(consensus.Blockchain().CurrentHeader().Number().Uint64() + 1)
 		consensus.setViewIDs(consensus.Blockchain().CurrentHeader().ViewID().Uint64() + 1)
 		mode := consensus.updateConsensusInformation()
 		consensus.current.SetMode(mode)
-		consensus.getLogger().Info().Msg("[syncReadyChan] Start consensus timer")
+		// tempDelete consensus.getLogger().Info().Msg("[syncReadyChan] Start consensus timer")
 		consensus.consensusTimeout[timeoutConsensus].Start()
-		consensus.getLogger().Info().Str("Mode", mode.String()).Msg("Node is IN SYNC")
+		// tempDelete consensus.getLogger().Info().Str("Mode", mode.String()).Msg("Node is IN SYNC")
 		consensusSyncCounterVec.With(prometheus.Labels{"consensus": "in_sync"}).Inc()
 	} else if consensus.mode() == Syncing {
 		// Corner case where sync is triggered before `onCommitted` and there is a race
 		// for block insertion between consensus and downloader.
 		mode := consensus.updateConsensusInformation()
 		consensus.setMode(mode)
-		consensus.getLogger().Info().Msg("[syncReadyChan] Start consensus timer")
+		// tempDelete consensus.getLogger().Info().Msg("[syncReadyChan] Start consensus timer")
 		consensus.consensusTimeout[timeoutConsensus].Start()
 		consensusSyncCounterVec.With(prometheus.Labels{"consensus": "in_sync"}).Inc()
 	}
 }
 
 func (consensus *Consensus) syncNotReadyChan(reason string) {
-	mode := consensus.current.Mode()
+	// tempDelete mode := consensus.current.Mode()
 	consensus.setBlockNum(consensus.Blockchain().CurrentHeader().Number().Uint64() + 1)
 	consensus.current.SetMode(Syncing)
-	consensus.getLogger().Info().Msgf("[ConsensusMainLoop] syncNotReadyChan, prev %s, reason %s", mode.String(), reason)
-	consensus.getLogger().Info().Msgf("[ConsensusMainLoop] Node is OUT OF SYNC, reason: %s", reason)
+	// tempDelete consensus.getLogger().Info().Msgf("[ConsensusMainLoop] syncNotReadyChan, prev %s, reason %s", mode.String(), reason)
+	// tempDelete consensus.getLogger().Info().Msgf("[ConsensusMainLoop] Node is OUT OF SYNC, reason: %s", reason)
 	consensusSyncCounterVec.With(prometheus.Labels{"consensus": "out_of_sync"}).Inc()
 }
 
@@ -416,9 +416,9 @@ func (consensus *Consensus) tick() {
 }
 
 func (consensus *Consensus) BlockChannel(newBlock *types.Block) {
-	consensus.GetLogger().Info().
-		Uint64("MsgBlockNum", newBlock.NumberU64()).
-		Msg("[ConsensusMainLoop] Received Proposed New Block!")
+	// tempDelete consensus.GetLogger().Info().
+	// tempDelete 	Uint64("MsgBlockNum", newBlock.NumberU64()).
+	// tempDelete 	Msg("[ConsensusMainLoop] Received Proposed New Block!")
 
 	if newBlock.NumberU64() < consensus.BlockNum() {
 		consensus.getLogger().Warn().Uint64("newBlockNum", newBlock.NumberU64()).
@@ -426,7 +426,7 @@ func (consensus *Consensus) BlockChannel(newBlock *types.Block) {
 		return
 	}
 	// Sleep to wait for the full block time
-	consensus.GetLogger().Info().Msg("[ConsensusMainLoop] Waiting for Block Time")
+	// tempDelete consensus.GetLogger().Info().Msg("[ConsensusMainLoop] Waiting for Block Time")
 	time.AfterFunc(time.Until(consensus.NextBlockDue), func() {
 		consensus.StartFinalityCount()
 		consensus.mutex.Lock()
@@ -437,12 +437,12 @@ func (consensus *Consensus) BlockChannel(newBlock *types.Block) {
 		startTime = time.Now()
 		consensus.msgSender.Reset(newBlock.NumberU64())
 
-		consensus.getLogger().Info().
-			Int("numTxs", len(newBlock.Transactions())).
-			Int("numStakingTxs", len(newBlock.StakingTransactions())).
-			Time("startTime", startTime).
-			Int64("publicKeys", consensus.decider.ParticipantsCount()).
-			Msg("[ConsensusMainLoop] STARTING CONSENSUS")
+		// tempDelete consensus.getLogger().Info().
+		// tempDelete 	Int("numTxs", len(newBlock.Transactions())).
+		// tempDelete 	Int("numStakingTxs", len(newBlock.StakingTransactions())).
+		// tempDelete 	Time("startTime", startTime).
+		// tempDelete 	Int64("publicKeys", consensus.decider.ParticipantsCount()).
+		// tempDelete 	Msg("[ConsensusMainLoop] STARTING CONSENSUS")
 		consensus.announce(newBlock)
 	})
 }
@@ -560,28 +560,28 @@ func (consensus *Consensus) preCommitAndPropose(blk *types.Block) error {
 			p2p.ConstructMessage(msgToSend)); err != nil {
 			consensus.GetLogger().Warn().Err(err).Msg("[preCommitAndPropose] Cannot send committed message")
 		} else {
-			consensus.GetLogger().Info().
-				Str("blockHash", blk.Hash().Hex()).
-				Uint64("blockNum", consensus.BlockNum()).
-				Hex("lastCommitSig", bareMinimumCommit).
-				Msg("[preCommitAndPropose] Sent Committed Message")
+			// tempDelete consensus.GetLogger().Info().
+			// tempDelete 	Str("blockHash", blk.Hash().Hex()).
+			// tempDelete 	Uint64("blockNum", consensus.BlockNum()).
+			// tempDelete 	Hex("lastCommitSig", bareMinimumCommit).
+			// tempDelete 	Msg("[preCommitAndPropose] Sent Committed Message")
 		}
 
 		if _, err := consensus.Blockchain().InsertChain([]*types.Block{blk}, !consensus.FBFTLog().IsBlockVerified(blk.Hash())); err != nil {
 			switch {
 			case errors.Is(err, core.ErrKnownBlock):
-				consensus.GetLogger().Info().Msg("[preCommitAndPropose] Block already known")
+				// tempDelete consensus.GetLogger().Info().Msg("[preCommitAndPropose] Block already known")
 			default:
 				consensus.GetLogger().Error().Err(err).Msg("[preCommitAndPropose] Failed to add block to chain")
 				return
 			}
 		}
 		consensus.mutex.Lock()
-		consensus.getLogger().Info().Msg("[preCommitAndPropose] Start consensus timer")
+		// tempDelete consensus.getLogger().Info().Msg("[preCommitAndPropose] Start consensus timer")
 		consensus.consensusTimeout[timeoutConsensus].Start()
 
 		// Send signal to Node to propose the new block for consensus
-		consensus.getLogger().Info().Msg("[preCommitAndPropose] sending block proposal signal")
+		// tempDelete consensus.getLogger().Info().Msg("[preCommitAndPropose] sending block proposal signal")
 		consensus.mutex.Unlock()
 		consensus.ReadySignal(NewProposal(AsyncProposal))
 	}()
@@ -633,7 +633,7 @@ func (consensus *Consensus) tryCatchup() error {
 			consensus.getLogger().Err(err).Msg("[TryCatchup] failed block verifier")
 			return err
 		}
-		consensus.getLogger().Info().Msg("[TryCatchup] Adding block to chain")
+		// tempDelete consensus.getLogger().Info().Msg("[TryCatchup] Adding block to chain")
 		if err := consensus.commitBlock(blk, msgs[i]); err != nil {
 			consensus.getLogger().Error().Err(err).Msg("[TryCatchup] Failed to add block to chain")
 			return err
@@ -642,9 +642,9 @@ func (consensus *Consensus) tryCatchup() error {
 		// TODO: Remove this when removing dns sync and stream sync is fully up
 		case consensus.VerifiedNewBlock <- blk:
 		default:
-			consensus.getLogger().Info().
-				Str("blockHash", blk.Hash().String()).
-				Msg("[TryCatchup] consensus verified block send to chan failed")
+			// tempDelete consensus.getLogger().Info().
+			// tempDelete 	Str("blockHash", blk.Hash().String()).
+			// tempDelete 	Msg("[TryCatchup] consensus verified block send to chan failed")
 			continue
 		}
 	}
@@ -670,9 +670,9 @@ func (consensus *Consensus) commitBlock(blk *types.Block, committedMsg *FBFTMess
 		consensus.PostConsensusJob(blk)
 	}()
 	consensus.setupForNewConsensus(blk, committedMsg)
-	utils.Logger().Info().Uint64("blockNum", blk.NumberU64()).
-		Str("hash", blk.Header().Hash().Hex()).
-		Msg("Added New Block to Blockchain!!!")
+	// tempDelete utils.Logger().Info().Uint64("blockNum", blk.NumberU64()).
+	// tempDelete 	Str("hash", blk.Header().Hash().Hex()).
+	// tempDelete 	Msg("Added New Block to Blockchain!!!")
 
 	return nil
 }
@@ -691,7 +691,7 @@ func (consensus *Consensus) rotateLeader(epoch *big.Int, defaultKey *bls.PublicK
 		return defaultKey
 	}
 	const blocksCountAliveness = 4
-	utils.Logger().Info().Msgf("[Rotating leader] epoch: %v rotation:%v external rotation %v", epoch.Uint64(), bc.Config().IsLeaderRotationInternalValidators(epoch), bc.Config().IsLeaderRotationExternalValidatorsAllowed(epoch))
+	// utils.Logger().Info().Msgf("[Rotating leader] epoch: %v rotation:%v external rotation %v", epoch.Uint64(), bc.Config().IsLeaderRotationInternalValidators(epoch), bc.Config().IsLeaderRotationExternalValidatorsAllowed(epoch))
 	ss, err := bc.ReadShardState(epoch)
 	if err != nil {
 		utils.Logger().Error().Err(err).Msg("Failed to read shard state")
@@ -801,11 +801,11 @@ func (consensus *Consensus) setupForNewConsensus(blk *types.Block, committedMsg 
 		if next := consensus.rotateLeader(epoch, committedMsg.SenderPubkeys[0]); next != nil {
 			prev := consensus.getLeaderPubKey()
 			consensus.setLeaderPubKey(next)
-			if consensus.isLeader() {
-				utils.Logger().Info().Msgf("We are block %d, I am the new leader %s", blk.NumberU64(), next.Bytes.Hex())
-			} else {
-				utils.Logger().Info().Msgf("We are block %d, the leader is %s", blk.NumberU64(), next.Bytes.Hex())
-			}
+			// tempDelete if consensus.isLeader() {
+			// tempDelete 	utils.Logger().Info().Msgf("We are block %d, I am the new leader %s", blk.NumberU64(), next.Bytes.Hex())
+			// tempDelete } else {
+			// tempDelete 	utils.Logger().Info().Msgf("We are block %d, the leader is %s", blk.NumberU64(), next.Bytes.Hex())
+			// tempDelete }
 			if consensus.isLeader() && !consensus.getLeaderPubKey().Object.IsEqual(prev.Object) {
 				// leader changed
 				blockPeriod := consensus.BlockPeriod
@@ -827,10 +827,10 @@ func (consensus *Consensus) setupForNewConsensus(blk *types.Block, committedMsg 
 
 func (consensus *Consensus) postCatchup(initBN uint64) {
 	if initBN < consensus.getBlockNum() {
-		consensus.getLogger().Info().
-			Uint64("From", initBN).
-			Uint64("To", consensus.getBlockNum()).
-			Msg("[TryCatchup] Caught up!")
+		// tempDelete consensus.getLogger().Info().
+		// tempDelete 	Uint64("From", initBN).
+		// tempDelete 	Uint64("To", consensus.getBlockNum()).
+		// tempDelete 	Msg("[TryCatchup] Caught up!")
 		consensus.switchPhase("TryCatchup", FBFTAnnounce)
 	}
 	// catch up and skip from view change trap
@@ -868,11 +868,11 @@ func (consensus *Consensus) generateVrfAndProof(newHeader *block.Header) error {
 
 	newHeader.SetVrf(append(vrf[:], proof...))
 
-	consensus.getLogger().Info().
-		Uint64("BlockNum", newHeader.Number().Uint64()).
-		Uint64("Epoch", newHeader.Epoch().Uint64()).
-		Hex("VRF+Proof", newHeader.Vrf()).
-		Msg("[GenerateVrfAndProof] Leader generated a VRF")
+	// tempDelete consensus.getLogger().Info().
+	// tempDelete 	Uint64("BlockNum", newHeader.Number().Uint64()).
+	// tempDelete 	Uint64("Epoch", newHeader.Epoch().Uint64()).
+	// tempDelete 	Hex("VRF+Proof", newHeader.Vrf()).
+	// tempDelete 	Msg("[GenerateVrfAndProof] Leader generated a VRF")
 
 	return nil
 }
@@ -888,22 +888,22 @@ func (consensus *Consensus) GenerateVdfAndProof(newBlock *types.Block, vrfBlockN
 		}
 	}
 
-	consensus.getLogger().Info().
-		Uint64("MsgBlockNum", newBlock.NumberU64()).
-		Uint64("Epoch", newBlock.Header().Epoch().Uint64()).
-		Int("Num of VRF", len(vrfBlockNumbers)).
-		Msg("[ConsensusMainLoop] VDF computation started")
+	// tempDelete consensus.getLogger().Info().
+	// tempDelete 	Uint64("MsgBlockNum", newBlock.NumberU64()).
+	// tempDelete 	Uint64("Epoch", newBlock.Header().Epoch().Uint64()).
+	// tempDelete 	Int("Num of VRF", len(vrfBlockNumbers)).
+	// tempDelete 	Msg("[ConsensusMainLoop] VDF computation started")
 
 	// TODO ek – limit concurrency
 	go func() {
 		vdf := vdf_go.New(shard.Schedule.VdfDifficulty(), seed)
 		outputChannel := vdf.GetOutputChannel()
-		start := time.Now()
+		// tempDelete start := time.Now()
 		vdf.Execute()
-		duration := time.Since(start)
-		consensus.GetLogger().Info().
-			Dur("duration", duration).
-			Msg("[ConsensusMainLoop] VDF computation finished")
+		// tempDelete duration := time.Since(start)
+		// tempDelete consensus.GetLogger().Info().
+		// tempDelete 	Dur("duration", duration).
+		// tempDelete 	Msg("[ConsensusMainLoop] VDF computation finished")
 		output := <-outputChannel
 
 		// The first 516 bytes are the VDF+proof and the last 32 bytes are XORed VRF as seed
@@ -941,10 +941,10 @@ func (consensus *Consensus) ValidateVdfAndProof(headerObj *block.Header) bool {
 	vdfOutput := [516]byte{}
 	copy(vdfOutput[:], headerObj.Vdf())
 	if vdfObject.Verify(vdfOutput) {
-		consensus.getLogger().Info().
-			Str("MsgBlockNum", headerObj.Number().String()).
-			Int("Num of VRF", consensus.VdfSeedSize()).
-			Msg("[OnAnnounce] validated a new VDF")
+		// tempDelete consensus.getLogger().Info().
+		// tempDelete 	Str("MsgBlockNum", headerObj.Number().String()).
+		// tempDelete 	Int("Num of VRF", consensus.VdfSeedSize()).
+		// tempDelete 	Msg("[OnAnnounce] validated a new VDF")
 
 	} else {
 		consensus.getLogger().Warn().

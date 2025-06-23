@@ -97,7 +97,7 @@ func NewService(cfg Config, additionalHandlers ...Handler) *Service {
 
 func newService(cfg Config, additionalHandlers ...Handler) *Service {
 	if !cfg.Enabled {
-		utils.Logger().Info().Msg("Prometheus http server disabled...")
+		// tempDelete utils.Logger().Info().Msg("Prometheus http server disabled...")
 		return nil
 	}
 

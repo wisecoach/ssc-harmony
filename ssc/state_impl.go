@@ -15,7 +15,12 @@ func (s *sscService) GetRWSet(txHash common.Hash) *api.RWSet {
 		return nil
 	}
 
-	return state.SimulationCallStates.Get(state.CallIndex).RWSet
+	callState := state.SimulationCallStates[state.SimulationNum].Get(state.CallIndex)
+	if callState == nil {
+		return nil
+	}
+
+	return callState.RWSet
 }
 
 func (s *sscService) EndCTX(txHash common.Hash) {
@@ -29,11 +34,11 @@ func (s *sscService) CreateAccount(txHash common.Hash, address common.Address) {
 	rwset.CurrentState.Balance[address] = new(big.Int)
 }
 
-func (s *sscService) SubBalance(txHash common.Hash, address common.Address, balance *big.Int) {
+func (s *sscService) SubBalance(db api.StateDB, txHash common.Hash, address common.Address, balance *big.Int) {
 	rwset := s.GetRWSet(txHash)
 	bal := rwset.CurrentState.Balance[address]
 	if bal == nil {
-		bal = s.db.GetBalance(address)
+		bal = db.GetBalance(address)
 		rwset.ReadState.Balance[address] = bal
 	}
 	newBal := bal.Sub(bal, balance)
@@ -41,11 +46,11 @@ func (s *sscService) SubBalance(txHash common.Hash, address common.Address, bala
 	rwset.WriteState.Balance[address] = newBal
 }
 
-func (s *sscService) AddBalance(txHash common.Hash, address common.Address, balance *big.Int) {
+func (s *sscService) AddBalance(db api.StateDB, txHash common.Hash, address common.Address, balance *big.Int) {
 	rwset := s.GetRWSet(txHash)
 	bal := rwset.CurrentState.Balance[address]
 	if bal == nil {
-		bal = s.db.GetBalance(address)
+		bal = db.GetBalance(address)
 		rwset.ReadState.Balance[address] = bal
 	}
 	newBal := bal.Add(bal, balance)
@@ -53,25 +58,27 @@ func (s *sscService) AddBalance(txHash common.Hash, address common.Address, bala
 	rwset.WriteState.Balance[address] = newBal
 }
 
-func (s *sscService) GetBalance(txHash common.Hash, address common.Address) *big.Int {
+func (s *sscService) GetBalance(db api.StateDB, txHash common.Hash, address common.Address) *big.Int {
 	rwset := s.GetRWSet(txHash)
 	bal := rwset.CurrentState.Balance[address]
 	if bal == nil {
-		bal = s.db.GetBalance(address)
+		bal = db.GetBalance(address)
 		rwset.ReadState.Balance[address] = bal
 		rwset.CurrentState.Balance[address] = bal
 	}
 	return bal
 }
 
-func (s *sscService) GetState(txHash common.Hash, address common.Address, key common.Hash) (common.Hash, error) {
+func (s *sscService) GetState(db api.StateDB, txHash common.Hash, address common.Address, key common.Hash) (common.Hash, error) {
 	rwset := s.GetRWSet(txHash)
-	if rwset.CurrentState.State[address] == nil {
-		rwset.CurrentState.State[address] = make(map[common.Hash]common.Hash)
+	if rwset.ReadState.State[address] == nil {
 		rwset.ReadState.State[address] = make(map[common.Hash]common.Hash)
 	}
+	if rwset.CurrentState.State[address] == nil {
+		rwset.CurrentState.State[address] = make(map[common.Hash]common.Hash)
+	}
 	if value, exists := rwset.CurrentState.State[address][key]; !exists {
-		val, _ := s.db.GetState(address, key)
+		val, _ := db.GetState(address, key)
 		rwset.CurrentState.State[address][key] = val
 		rwset.ReadState.State[address][key] = val
 		return val, nil
@@ -80,24 +87,18 @@ func (s *sscService) GetState(txHash common.Hash, address common.Address, key co
 	}
 }
 
-func (s *sscService) SetState(txHash common.Hash, address common.Address, key common.Hash, value common.Hash) error {
+func (s *sscService) SetState(db api.StateDB, txHash common.Hash, address common.Address, key common.Hash, value common.Hash) error {
 	rwset := s.GetRWSet(txHash)
 	if rwset.CurrentState.State[address] == nil {
 		rwset.CurrentState.State[address] = make(map[common.Hash]common.Hash)
+	}
+	if rwset.WriteState.State[address] == nil {
 		rwset.WriteState.State[address] = make(map[common.Hash]common.Hash)
 	}
 	rwset.CurrentState.State[address][key] = value
 	rwset.WriteState.State[address][key] = value
 	return nil
 }
-
-// func (s *sscService) InitSimulationContext(simulation *api.CXTSimulation) {
-// 	txHash := common.BytesToHash(simulation.TxHash)
-// 	s.executionVerifyContexts[txHash] = &api.ExecutionVerifyContext{
-// 		Simulation:   simulation,
-// 		CurrentState: newStateSet(),
-// 	}
-// }
 
 func (s *sscService) SubSimuBalance(txHash common.Hash, address common.Address, amount *big.Int) error {
 	verifyContext := s.executionVerifyContexts[txHash]
@@ -139,35 +140,31 @@ func (s *sscService) GetSimuBalance(txHash common.Hash, address common.Address) 
 
 func (s *sscService) GetSimuState(txHash common.Hash, address common.Address, key common.Hash) (common.Hash, error) {
 	verifyContext := s.executionVerifyContexts[txHash]
-	if verifyContext.CurrentState.State[address] == nil {
-		state, exists := verifyContext.CallStateMap[verifyContext.CallIndex.ToString()].RWSet.ReadState.State[address]
-		if !exists {
-			return common.Hash{}, api.ErrInvalidExecution
-		}
-		verifyContext.CurrentState.State[address] = state
+	if verifyContext.CurrentState.State[address] != nil {
+		return verifyContext.CurrentState.State[address][key], nil
 	}
-	return verifyContext.CurrentState.State[address][key], nil
+	state, exists := verifyContext.CallStateMap[verifyContext.CallIndex.ToString()].RWSet.ReadState.State[address]
+	if !exists {
+		return common.Hash{}, api.ErrInvalidExecution
+	}
+	return state[key], nil
 }
 
 func (s *sscService) SetSimuState(txHash common.Hash, address common.Address, key common.Hash, value common.Hash) error {
 	verifyContext := s.executionVerifyContexts[txHash]
 	if verifyContext.CurrentState.State[address] == nil {
-		state, exists := verifyContext.CallStateMap[verifyContext.CallIndex.ToString()].RWSet.ReadState.State[address]
-		if !exists {
-			return api.ErrInvalidExecution
-		}
-		verifyContext.CurrentState.State[address] = state
+		verifyContext.CurrentState.State[address] = make(map[common.Hash]common.Hash)
 	}
 	verifyContext.CurrentState.State[address][key] = value
 	return nil
 }
 
-func (s *sscService) GetResult(txHash common.Hash) (result []byte, usedGas uint64, err error) {
+func (s *sscService) GetResult(txHash common.Hash) (result []byte, leftOverGas uint64, err error) {
 	verifyContext := s.executionVerifyContexts[txHash]
 	if verifyContext == nil {
 		return nil, 0, api.ErrInvalidExecution
 	}
 	ret := verifyContext.DependentResults[verifyContext.CurrentIndex]
 	verifyContext.CurrentIndex++
-	return ret.Result, ret.UsedGas, nil
+	return ret.Result, ret.LeftOverGas, nil
 }

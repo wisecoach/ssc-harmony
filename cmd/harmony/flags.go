@@ -2,6 +2,7 @@ package main
 
 import (
 	"fmt"
+	"math/big"
 	"strconv"
 	"strings"
 	"time"
@@ -31,6 +32,9 @@ var (
 		legacyIsArchiveFlag,
 		legacyDataDirFlag,
 
+		genesisConfigFileFlag,
+		shardNumFlag,
+		shardSizeFlag,
 		taraceFlag,
 	}
 
@@ -286,6 +290,17 @@ var (
 		metricsETHFlag,
 		metricsExpensiveETHFlag,
 	}
+
+	sscFlags = []cli.Flag{
+		cxtTimeoutFlag,
+		callTimeoutFlag,
+		lockExecutionOnceFlag,
+		blsKeyPathFlag,
+		privateKeyFlag,
+		selfAddrHexFlag,
+		simulationCommitGasLimitFlag,
+		simulationCommitGasPriceFlag,
+	}
 )
 
 var (
@@ -361,6 +376,23 @@ var (
 		Deprecated: "use --datadir",
 	}
 
+	genesisConfigFileFlag = cli.StringFlag{
+		Name:     "general.genesis-config-file",
+		Usage:    "genesis config file path",
+		DefValue: "",
+	}
+
+	shardNumFlag = cli.IntFlag{
+		Name:     "shard_num",
+		Usage:    "number of shards",
+		DefValue: 2,
+	}
+	shardSizeFlag = cli.IntFlag{
+		Name:     "shard_size",
+		Usage:    "number of nodes in each shard",
+		DefValue: 4,
+	}
+
 	taraceFlag = cli.BoolFlag{
 		Name:     "tracing",
 		Usage:    "indicates if full transaction tracing should be enabled",
@@ -395,6 +427,7 @@ func getRootFlags() []cli.Flag {
 	flags = append(flags, shardDataFlags...)
 	flags = append(flags, gpoFlags...)
 	flags = append(flags, metricsFlags...)
+	flags = append(flags, sscFlags...)
 
 	return flags
 }
@@ -432,6 +465,18 @@ func applyGeneralFlags(cmd *cobra.Command, config *harmonyconfig.HarmonyConfig) 
 		config.General.DataDir = cli.GetStringFlagValue(cmd, dataDirFlag)
 	} else if cli.IsFlagChanged(cmd, legacyDataDirFlag) {
 		config.General.DataDir = cli.GetStringFlagValue(cmd, legacyDataDirFlag)
+	}
+
+	if cli.IsFlagChanged(cmd, genesisConfigFileFlag) {
+		config.General.GenesisConfigFile = cli.GetStringFlagValue(cmd, genesisConfigFileFlag)
+	}
+
+	if cli.IsFlagChanged(cmd, shardNumFlag) {
+		config.General.ShardNum = cli.GetIntFlagValue(cmd, shardNumFlag)
+	}
+
+	if cli.IsFlagChanged(cmd, shardSizeFlag) {
+		config.General.ShardSize = cli.GetIntFlagValue(cmd, shardSizeFlag)
 	}
 
 	if cli.IsFlagChanged(cmd, isOfflineFlag) {
@@ -2226,5 +2271,52 @@ func applyCacheFlags(cmd *cobra.Command, cfg *harmonyconfig.HarmonyConfig) {
 	}
 	if cli.IsFlagChanged(cmd, cacheSnapshotWait) {
 		cfg.Cache.SnapshotWait = cli.GetBoolFlagValue(cmd, cacheSnapshotWait)
+	}
+}
+
+// sscFlags
+var (
+	cxtTimeoutFlag               = cli.StringFlag{Name: "ssc.cxt-timeout", Usage: "timeout for context", DefValue: defaultConfig.SSC.CXTTimeout.String()}
+	callTimeoutFlag              = cli.StringFlag{Name: "ssc.call-timeout", Usage: "timeout for call", DefValue: defaultConfig.SSC.CallTimeout.String()}
+	lockExecutionOnceFlag        = cli.BoolFlag{Name: "ssc.lock-execution-once", Usage: "lock execution once", DefValue: defaultConfig.SSC.LockExecutionOnce}
+	blsKeyPathFlag               = cli.StringFlag{Name: "ssc.bls-key-path", Usage: "bls key path", DefValue: defaultConfig.SSC.BLSKeyPath}
+	privateKeyFlag               = cli.StringFlag{Name: "ssc.private-key-path", Usage: "private key path", DefValue: defaultConfig.SSC.PrivateKey}
+	selfAddrHexFlag              = cli.StringFlag{Name: "ssc.self-addr-hex", Usage: "self address hex", DefValue: defaultConfig.SSC.SelfAddrHex}
+	simulationCommitGasLimitFlag = cli.Uint64Flag{Name: "ssc.simulation-commit-gas-limit", Usage: "simulation commit gas limit", DefValue: defaultConfig.SSC.SimulationCommitGasLimit}
+	simulationCommitGasPriceFlag = cli.Uint64Flag{Name: "ssc.simulation-commit-gas-price", Usage: "simulation commit gas price", DefValue: defaultConfig.SSC.SimulationCommitGasPrice.Uint64()}
+)
+
+func applySSCFlags(cmd *cobra.Command, cfg *harmonyconfig.HarmonyConfig) {
+	if cli.IsFlagChanged(cmd, cxtTimeoutFlag) {
+		value, err := time.ParseDuration(cli.GetStringFlagValue(cmd, cxtTimeoutFlag))
+		if err != nil {
+			panic(fmt.Sprintf("Invalid value ssc.cxt-timeout: %v", err))
+		}
+		cfg.SSC.CXTTimeout = value
+	}
+	if cli.IsFlagChanged(cmd, callTimeoutFlag) {
+		value, err := time.ParseDuration(cli.GetStringFlagValue(cmd, callTimeoutFlag))
+		if err != nil {
+			panic(fmt.Sprintf("Invalid value ssc.call-timeout: %v", err))
+		}
+		cfg.SSC.CallTimeout = value
+	}
+	if cli.IsFlagChanged(cmd, lockExecutionOnceFlag) {
+		cfg.SSC.LockExecutionOnce = cli.GetBoolFlagValue(cmd, lockExecutionOnceFlag)
+	}
+	if cli.IsFlagChanged(cmd, blsKeyPathFlag) {
+		cfg.SSC.BLSKeyPath = cli.GetStringFlagValue(cmd, blsKeyPathFlag)
+	}
+	if cli.IsFlagChanged(cmd, privateKeyFlag) {
+		cfg.SSC.PrivateKey = cli.GetStringFlagValue(cmd, privateKeyFlag)
+	}
+	if cli.IsFlagChanged(cmd, selfAddrHexFlag) {
+		cfg.SSC.SelfAddrHex = cli.GetStringFlagValue(cmd, selfAddrHexFlag)
+	}
+	if cli.IsFlagChanged(cmd, simulationCommitGasLimitFlag) {
+		cfg.SSC.SimulationCommitGasLimit = cli.GetUint64FlagValue(cmd, simulationCommitGasLimitFlag)
+	}
+	if cli.IsFlagChanged(cmd, simulationCommitGasPriceFlag) {
+		cfg.SSC.SimulationCommitGasPrice = big.NewInt(int64(cli.GetUint64FlagValue(cmd, simulationCommitGasPriceFlag)))
 	}
 }

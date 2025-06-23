@@ -194,7 +194,7 @@ func (rm *requestManager) loop() {
 			rm.refreshStreams()
 
 		case <-rm.stopC:
-			rm.logger.Info().Msg("request manager stopped")
+			// tempDelete rm.logger.Info().Msg("request manager stopped")
 			rm.close()
 			return
 		}
@@ -362,11 +362,11 @@ func (rm *requestManager) refreshStreams() {
 	added, removed := checkStreamUpdates(rm.streams, rm.sm.GetStreams())
 
 	for _, st := range added {
-		rm.logger.Info().Str("streamID", string(st.ID())).Msg("adding new stream")
+		// tempDelete rm.logger.Info().Str("streamID", string(st.ID())).Msg("adding new stream")
 		rm.addNewStream(st)
 	}
 	for _, st := range removed {
-		rm.logger.Info().Str("streamID", string(st.ID())).Msg("removing stream")
+		// tempDelete rm.logger.Info().Str("streamID", string(st.ID())).Msg("removing stream")
 		rm.removeStream(st)
 	}
 }

@@ -19,6 +19,15 @@ func formKey(address common.Address, key common.Hash) lockKey {
 	return lockKey(address.Hex() + key.Hex())
 }
 
+func NewLockableStateWrapper() *LockableState {
+	return &LockableState{
+		lockedStates:          make(map[lockKey]common.Hash),
+		callIndex2lockedState: make(map[common.Hash]map[string]map[common.Address]map[common.Hash]common.Hash),
+		lockedAddBalance:      make(map[common.Hash]map[string]map[common.Address]*big.Int),
+		lockedSubBalance:      make(map[common.Hash]map[string]map[common.Address]*big.Int),
+	}
+}
+
 type LockableState struct {
 	*state.DB
 
@@ -71,6 +80,7 @@ func (s *LockableState) GetStateWithLock(txHash common.Hash, callIndex api.CallI
 		s.callIndex2lockedState[txHash][callIndex.ToString()][address] = make(map[common.Hash]common.Hash)
 	}
 	s.callIndex2lockedState[txHash][callIndex.ToString()][address][key], _ = s.DB.GetState(address, key)
+	s.lockedStates[formKey(address, key)] = txHash
 	return s.DB.GetState(address, key)
 }
 
@@ -89,6 +99,7 @@ func (s *LockableState) SetStateWithLock(txHash common.Hash, callIndex api.CallI
 		s.callIndex2lockedState[txHash][callIndex.ToString()][address] = make(map[common.Hash]common.Hash)
 	}
 	s.callIndex2lockedState[txHash][callIndex.ToString()][address][key], _ = s.DB.GetState(address, key)
+	s.lockedStates[formKey(address, key)] = txHash
 	return s.DB.SetState(address, key, value)
 }
 
@@ -120,7 +131,7 @@ func (s *LockableState) SubBalanceWithLock(txHash common.Hash, callIndex api.Cal
 	return nil
 }
 
-func (s *LockableState) Commit(txHash common.Hash) {
+func (s *LockableState) Commit(unlock bool, txHash common.Hash) {
 	// release freeze balance, add balance
 	if s.lockedAddBalance[txHash] != nil {
 		for _, addBalance := range s.lockedAddBalance[txHash] {
@@ -129,8 +140,10 @@ func (s *LockableState) Commit(txHash common.Hash) {
 			}
 		}
 	}
-	delete(s.lockedAddBalance, txHash)
-	delete(s.lockedSubBalance, txHash)
+	if unlock {
+		delete(s.lockedAddBalance, txHash)
+		delete(s.lockedSubBalance, txHash)
+	}
 
 	if s.callIndex2lockedState[txHash] != nil {
 		stateMap := make(map[common.Address]map[common.Hash]common.Hash)
@@ -145,12 +158,17 @@ func (s *LockableState) Commit(txHash common.Hash) {
 			}
 		}
 		for address, keyValues := range stateMap {
-			for key, _ := range keyValues {
-				delete(s.lockedStates, formKey(address, key))
+			for key, value := range keyValues {
+				if unlock {
+					delete(s.lockedStates, formKey(address, key))
+				}
+				s.DB.SetState(address, key, value)
 			}
 		}
 	}
-	delete(s.callIndex2lockedState, txHash)
+	if unlock {
+		delete(s.callIndex2lockedState, txHash)
+	}
 }
 
 func (s *LockableState) RollbackCall(txHash common.Hash, index api.CallIndex) {
@@ -184,7 +202,7 @@ func (s *LockableState) RollbackCall(txHash common.Hash, index api.CallIndex) {
 	delete(s.lockedSubBalance[txHash], index.ToString())
 }
 
-func (s *LockableState) Rollback(txHash common.Hash) {
+func (s *LockableState) Rollback(unlock bool, txHash common.Hash) {
 	// release freeze balance, sub balance
 	if s.lockedAddBalance[txHash] != nil {
 		for _, addBalance := range s.lockedSubBalance[txHash] {
@@ -193,8 +211,10 @@ func (s *LockableState) Rollback(txHash common.Hash) {
 			}
 		}
 	}
-	delete(s.lockedAddBalance, txHash)
-	delete(s.lockedSubBalance, txHash)
+	if unlock {
+		delete(s.lockedAddBalance, txHash)
+		delete(s.lockedSubBalance, txHash)
+	}
 
 	if s.callIndex2lockedState[txHash] != nil {
 		lockState := s.callIndex2lockedState[txHash]

@@ -90,13 +90,17 @@ func (st *SSCStateTransition) buyGas() error {
 func (st *SSCStateTransition) preCheck() error {
 	// Make sure this transaction's nonce is correct.
 	if st.msg.CheckNonce() {
+		// just check the nonce if is lower
 		nonce := st.state.GetNonce(st.msg.From())
-
-		if nonce < st.msg.Nonce() {
-			return ErrNonceTooHigh
-		} else if nonce > st.msg.Nonce() {
+		if nonce > st.msg.Nonce() {
 			return ErrNonceTooLow
 		}
+
+		// if nonce < st.msg.Nonce() {
+		// 	return ErrNonceTooHigh
+		// } else if nonce > st.msg.Nonce() {
+		// 	return ErrNonceTooLow
+		// }
 	}
 	return st.buyGas()
 }

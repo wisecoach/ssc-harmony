@@ -56,6 +56,7 @@ const (
 	Stressnet = "stressnet"
 	Devnet    = "devnet"
 	Localnet  = "localnet"
+	Exprnet   = "exprnet"
 )
 
 // ChainConfig returns the chain configuration for the network type.
@@ -71,6 +72,8 @@ func (t NetworkType) ChainConfig() params.ChainConfig {
 		return *params.StressnetChainConfig
 	case Localnet:
 		return *params.LocalnetChainConfig
+	case Exprnet:
+		return *params.ExprnetChainConfig
 	default:
 		return *params.TestnetChainConfig
 	}
@@ -133,6 +136,8 @@ type ConfigType struct {
 		Hooks *webhooks.Hooks
 	}
 	TraceEnable bool
+
+	GenesisConfigFile string
 }
 
 // RPCServerConfig is the config for rpc listen addresses

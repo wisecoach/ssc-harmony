@@ -18,7 +18,9 @@
 package state
 
 import (
+	"encoding/json"
 	"fmt"
+	"github.com/harmony-one/harmony/ssc/api"
 	"math/big"
 	"sort"
 	"time"
@@ -488,6 +490,50 @@ func (db *DB) SetState(addr common.Address, key, value common.Hash) error {
 		Object.SetState(db.db, key, value)
 	}
 	return nil
+}
+
+func (db *DB) GetSSCConfig() *api.ShardSimulateCommitteeConfig {
+	byteSize, err := db.GetState(api.SSCPrecompileContractAddr, api.CommitteesByteSize)
+	if err != nil {
+		return nil
+	}
+	if !byteSize.Big().IsInt64() {
+		return nil
+	}
+	size := int(byteSize.Big().Int64())
+	committeesBytes := make([]byte, 0, size)
+	batchNum := size / common.HashLength
+	if size%common.HashLength != 0 {
+		batchNum++
+	}
+	for i := 0; i < batchNum; i++ {
+		key := common.BigToHash(api.CommitteeOffset.Big().Add(api.CommitteeOffset.Big(), big.NewInt(int64(i))))
+		value, _ := db.GetState(api.SSCPrecompileContractAddr, key)
+		committeesBytes = append(committeesBytes, value.Bytes()...)
+	}
+	committeesBytes = committeesBytes[:size]
+	config := &api.ShardSimulateCommitteeConfig{}
+	err = json.Unmarshal(committeesBytes, &config)
+	if err != nil {
+		return nil
+	}
+	return config
+}
+
+func (db *DB) SetSSCConfig(config *api.ShardSimulateCommitteeConfig) {
+	committeesBytes, err := json.Marshal(config)
+	if err != nil {
+		return
+	}
+	size := len(committeesBytes)
+	byteSize := big.NewInt(int64(size))
+	committeesBytes = append(committeesBytes, make([]byte, common.HashLength-size%common.HashLength)...)
+	db.SetState(api.SSCPrecompileContractAddr, api.CommitteesByteSize, common.BigToHash(byteSize))
+	for i := 0; i < len(committeesBytes)/common.HashLength; i++ {
+		key := common.BigToHash(api.CommitteeOffset.Big().Add(api.CommitteeOffset.Big(), big.NewInt(int64(i))))
+		value := common.BytesToHash(committeesBytes[i*common.HashLength : (i+1)*common.HashLength])
+		db.SetState(api.SSCPrecompileContractAddr, key, value)
+	}
 }
 
 // SetStorage replaces the entire storage for the specified account with given

@@ -25,8 +25,8 @@ func getMaxPeerHeight(syncConfig *SyncConfig) (uint64, error) {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			//debug
-			// utils.Logger().Debug().Bool("isBeacon", isBeacon).Str("peerIP", peerConfig.ip).Str("peerPort", peerConfig.port).Msg("[Sync]getMaxPeerHeight")
+			// debug
+			// tempDelete utils.Logger().Debug().Bool("isBeacon", isBeacon).Str("peerIP", peerConfig.ip).Str("peerPort", peerConfig.port).Msg("[Sync]getMaxPeerHeight")
 			response, err := peerConfig.client.GetBlockChainHeight()
 			if err != nil {
 				utils.Logger().Warn().Err(err).Str("peerIP", peerConfig.peer.IP).Str("peerPort", peerConfig.peer.Port).Msg("[Sync]GetBlockChainHeight failed")
@@ -36,10 +36,10 @@ func getMaxPeerHeight(syncConfig *SyncConfig) (uint64, error) {
 
 			if response != nil {
 				lock.Lock()
-				utils.Logger().Info().
-					Str("peerIP", peerConfig.peer.IP).
-					Uint64("blockHeight", response.BlockHeight).
-					Msg("[SYNC] getMaxPeerHeight")
+				// tempDelete utils.Logger().Info().
+				// tempDelete 	Str("peerIP", peerConfig.peer.IP).
+				// tempDelete 	Uint64("blockHeight", response.BlockHeight).
+				// tempDelete 	Msg("[SYNC] getMaxPeerHeight")
 				if response.BlockHeight < math.MaxUint32 { // That's enough for decades.
 					if maxHeight == uint64(math.MaxUint64) || maxHeight < response.BlockHeight {
 						maxHeight = response.BlockHeight
@@ -121,10 +121,10 @@ func createSyncConfig(syncConfig *SyncConfig, peers []p2p.Peer, shardID uint32, 
 			}
 		}
 	}
-	utils.Logger().Info().
-		Int("len", len(syncConfig.peers)).
-		Uint32("shardID", shardID).
-		Msg("[SYNC] Finished making connection to peers")
+	// tempDelete utils.Logger().Info().
+	// tempDelete 	Int("len", len(syncConfig.peers)).
+	// tempDelete 	Uint32("shardID", shardID).
+	// tempDelete 	Msg("[SYNC] Finished making connection to peers")
 
 	return syncConfig, nil
 }

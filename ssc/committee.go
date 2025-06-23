@@ -2,8 +2,12 @@ package ssc
 
 import (
 	"encoding/binary"
+	"fmt"
 	"github.com/ethereum/go-ethereum/common"
+	"github.com/harmony-one/harmony/core"
+	"github.com/harmony-one/harmony/internal/utils"
 	"github.com/harmony-one/harmony/ssc/api"
+	"github.com/rs/zerolog"
 	"math/big"
 	"sync"
 )
@@ -16,15 +20,49 @@ type CommitteeMechanism struct {
 	Candidates   map[common.Address]*api.Candidate
 	Validators   map[uint32]map[common.Address]*api.Validator
 
-	lock sync.RWMutex
+	bc core.BlockChain
+
+	logger *zerolog.Logger
+	lock   sync.RWMutex
 }
 
-func NewCommitteeMechanism(selfShard uint32, currentEpoch api.Epoch) *CommitteeMechanism {
-	return &CommitteeMechanism{
+func NewCommitteeMechanism(selfAddr common.Address, selfShard uint32, bc core.BlockChain) *CommitteeMechanism {
+	cm := &CommitteeMechanism{
+		SelfAddr:     selfAddr,
 		SelfShard:    selfShard,
-		CurrentEpoch: currentEpoch,
+		CurrentEpoch: 0,
 		Committees:   make(map[uint32]*api.ShardSimulateCommittee),
+		Candidates:   make(map[common.Address]*api.Candidate),
+		Validators:   make(map[uint32]map[common.Address]*api.Validator),
+		bc:           bc,
+		logger:       utils.Logger(),
+		lock:         sync.RWMutex{},
 	}
+	cm.LoadFromState()
+	return cm
+}
+
+func (cm *CommitteeMechanism) LoadFromState() {
+	db, err := cm.bc.State()
+	if err != nil {
+		cm.logger.Err(err).Msg("load committees from state db failed")
+		return
+	}
+	config := db.GetSSCConfig()
+	if config == nil {
+		cm.logger.Error().Msg("SSCConfig is nil")
+		return
+	}
+	for _, committee := range config.Committees {
+		// tempDelete cm.logger.Info().Msgf("load committee %d", committee.ShardID)
+		cm.Committees[committee.ShardID] = committee
+	}
+	if cm.Committees[cm.SelfShard] == nil {
+		fmt.Printf("self shard %d, Committees len = %d, committee is nil\n", cm.SelfShard, len(cm.Committees))
+		// cm.logger.Error().Msgf("self shard %d committee is nil", cm.SelfShard)
+		return
+	}
+	cm.CurrentEpoch = cm.Committees[cm.SelfShard].Epoch
 }
 
 func (cm *CommitteeMechanism) GetLeader(shardId uint32, txhash common.Hash) *api.Member {
@@ -58,6 +96,13 @@ func (cm *CommitteeMechanism) GetValidators(shardId uint32) map[common.Address]*
 	defer cm.lock.RUnlock()
 
 	return cm.Validators[shardId]
+}
+
+func (cm *CommitteeMechanism) UpdateValidators(shardId uint32, validators map[common.Address]*api.Validator) {
+	cm.lock.Lock()
+	defer cm.lock.Unlock()
+
+	cm.Validators[shardId] = validators
 }
 
 func (cm *CommitteeMechanism) Stake(address common.Address, stake *big.Int) {

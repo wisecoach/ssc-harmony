@@ -174,6 +174,7 @@ func (d *txdata) CopyFrom(d2 *txdata) {
 	d.GasLimit = d2.GasLimit
 	d.ShardID = d2.ShardID
 	d.ToShardID = d2.ToShardID
+	d.CrossShard = d2.CrossShard
 	d.Recipient = copyAddr(d2.Recipient)
 	d.Amount = new(big.Int).Set(d2.Amount)
 	d.Payload = append(d2.Payload[:0:0], d2.Payload...)
@@ -245,6 +246,7 @@ func newCrossShardTransaction(nonce uint64, to *common.Address, shardID uint32, 
 		Recipient:    to,
 		ShardID:      shardID,
 		ToShardID:    toShardID,
+		CrossShard:   true,
 		Payload:      data,
 		Amount:       new(big.Int),
 		GasLimit:     gasLimit,

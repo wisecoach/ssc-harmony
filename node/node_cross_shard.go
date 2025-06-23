@@ -17,7 +17,7 @@ import (
 // destination shards
 func BroadcastCXReceipts(newBlock *types.Block, consensus *consensus.Consensus) {
 	commitSigAndBitmap := newBlock.GetCurrentCommitSig()
-	//#### Read payload data from committed msg
+	// #### Read payload data from committed msg
 	if len(commitSigAndBitmap) <= 96 {
 		utils.Logger().Debug().Int("commitSigAndBitmapLen", len(commitSigAndBitmap)).Msg("[BroadcastCXReceipts] commitSigAndBitmap Not Enough Length")
 		return
@@ -28,13 +28,13 @@ func BroadcastCXReceipts(newBlock *types.Block, consensus *consensus.Consensus) 
 	copy(commitSig[:], commitSigAndBitmap[offset:offset+96])
 	offset += 96
 	copy(commitBitmap[:], commitSigAndBitmap[offset:])
-	//#### END Read payload data from committed msg
+	// #### END Read payload data from committed msg
 
 	epoch := newBlock.Header().Epoch()
 	shardingConfig := shard.Schedule.InstanceForEpoch(epoch)
 	shardNum := int(shardingConfig.NumShards())
 	myShardID := consensus.ShardID
-	utils.Logger().Info().Int("shardNum", shardNum).Uint32("myShardID", myShardID).Uint64("blockNum", newBlock.NumberU64()).Msg("[BroadcastCXReceipts]")
+	// utils.Logger().Info().Int("shardNum", shardNum).Uint32("myShardID", myShardID).Uint64("blockNum", newBlock.NumberU64()).Msg("[BroadcastCXReceipts]")
 
 	for i := 0; i < shardNum; i++ {
 		if i == int(myShardID) {

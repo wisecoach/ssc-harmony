@@ -191,15 +191,15 @@ func (consensus *Consensus) ProposeNewBlock(commitSigs chan []byte) (*types.Bloc
 					len(crossLinksToPropose), len(allPending),
 				)
 		} else {
-			utils.Logger().Warn().Err(err).Msgf(
-				"[ProposeNewBlock] Unable to Read PendingCrossLinks, number of crosslinks: %d",
-				len(allPending),
-			)
+			// tempDelete utils.Logger().Warn().Err(err).Msgf(
+			// tempDelete 	"[ProposeNewBlock] Unable to Read PendingCrossLinks, number of crosslinks: %d",
+			// tempDelete 	len(allPending),
+			// tempDelete )
 		}
 		if n, err := consensus.Blockchain().DeleteFromPendingCrossLinks(invalidToDelete); err != nil {
-			utils.Logger().Error().
-				Err(err).
-				Msg("[ProposeNewBlock] invalid pending cross links failed")
+			// tempDelete utils.Logger().Error().
+			// tempDelete 	Err(err).
+			// tempDelete 	Msg("[ProposeNewBlock] invalid pending cross links failed")
 		} else if len(invalidToDelete) > 0 {
 			utils.Logger().Info().
 				Int("not-deleted", n).
@@ -237,7 +237,7 @@ func (consensus *Consensus) ProposeNewBlock(commitSigs chan []byte) (*types.Bloc
 		return nil, err
 	}
 
-	utils.Logger().Info().Msg("[ProposeNewBlock] verifying the new block header")
+	// utils.Logger().Info().Msg("[ProposeNewBlock] verifying the new block header")
 	err = core.NewBlockValidator(consensus.Blockchain()).ValidateHeader(finalizedBlock, true)
 
 	if err != nil {
@@ -431,11 +431,11 @@ func (consensus *Consensus) WaitForConsensusReadyV2(stopChan chan struct{}, stop
 			case proposal := <-consensus.GetReadySignal():
 				for retryCount := 0; retryCount < 3 && consensus.IsLeader(); retryCount++ {
 					time.Sleep(SleepPeriod)
-					utils.Logger().Info().
-						Uint64("blockNum", consensus.Blockchain().CurrentBlock().NumberU64()+1).
-						Bool("asyncProposal", proposal.Type == AsyncProposal).
-						Str("called", proposal.Caller).
-						Msg("PROPOSING NEW BLOCK ------------------------------------------------")
+					// utils.Logger().Info().
+					// 	Uint64("blockNum", consensus.Blockchain().CurrentBlock().NumberU64()+1).
+					// 	Bool("asyncProposal", proposal.Type == AsyncProposal).
+					// 	Str("called", proposal.Caller).
+					// 	Msg("PROPOSING NEW BLOCK ------------------------------------------------")
 
 					// Prepare last commit signatures
 					newCommitSigsChan := make(chan []byte)
@@ -447,11 +447,11 @@ func (consensus *Consensus) WaitForConsensusReadyV2(stopChan chan struct{}, stop
 						}
 						select {
 						case <-time.After(waitTime):
-							if waitTime == 0 {
-								utils.Logger().Info().Msg("[ProposeNewBlock] Sync block proposal, reading commit sigs directly from DB")
-							} else {
-								utils.Logger().Info().Msg("[ProposeNewBlock] CallTimeout waiting for commit sigs, reading directly from DB")
-							}
+							// tempDelete if waitTime == 0 {
+							// tempDelete 	utils.Logger().Info().Msg("[ProposeNewBlock] Sync block proposal, reading commit sigs directly from DB")
+							// tempDelete } else {
+							// tempDelete 	utils.Logger().Info().Msg("[ProposeNewBlock] CallTimeout waiting for commit sigs, reading directly from DB")
+							// tempDelete }
 							sigs, err := consensus.BlockCommitSigs(consensus.Blockchain().CurrentBlock().NumberU64())
 
 							if err != nil {
@@ -460,7 +460,7 @@ func (consensus *Consensus) WaitForConsensusReadyV2(stopChan chan struct{}, stop
 								newCommitSigsChan <- sigs
 							}
 						case commitSigs := <-consensus.GetCommitSigChannel():
-							utils.Logger().Info().Msg("[ProposeNewBlock] received commit sigs asynchronously")
+							// tempDelete utils.Logger().Info().Msg("[ProposeNewBlock] received commit sigs asynchronously")
 							if len(commitSigs) > bls.BLSSignatureSizeInBytes {
 								newCommitSigsChan <- commitSigs
 							}
@@ -468,14 +468,14 @@ func (consensus *Consensus) WaitForConsensusReadyV2(stopChan chan struct{}, stop
 					}()
 					newBlock, err := consensus.ProposeNewBlock(newCommitSigsChan)
 					if err == nil {
-						utils.Logger().Info().
-							Uint64("blockNum", newBlock.NumberU64()).
-							Uint64("epoch", newBlock.Epoch().Uint64()).
-							Uint64("viewID", newBlock.Header().ViewID().Uint64()).
-							Int("numTxs", newBlock.Transactions().Len()).
-							Int("numStakingTxs", newBlock.StakingTransactions().Len()).
-							Int("crossShardReceipts", newBlock.IncomingReceipts().Len()).
-							Msgf("=========Successfully Proposed New Block, shard: %d epoch: %d number: %d ==========", newBlock.ShardID(), newBlock.Epoch().Uint64(), newBlock.NumberU64())
+						// tempDelete utils.Logger().Info().
+						// tempDelete 	Uint64("blockNum", newBlock.NumberU64()).
+						// tempDelete 	Uint64("epoch", newBlock.Epoch().Uint64()).
+						// tempDelete 	Uint64("viewID", newBlock.Header().ViewID().Uint64()).
+						// tempDelete 	Int("numTxs", newBlock.Transactions().Len()).
+						// tempDelete 	Int("numStakingTxs", newBlock.StakingTransactions().Len()).
+						// tempDelete 	Int("crossShardReceipts", newBlock.IncomingReceipts().Len()).
+						// tempDelete 	Msgf("=========Successfully Proposed New Block, shard: %d epoch: %d number: %d ==========", newBlock.ShardID(), newBlock.Epoch().Uint64(), newBlock.NumberU64())
 
 						// Send the new block to Consensus so it can be confirmed.
 						consensus.BlockChannel(newBlock)

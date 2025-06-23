@@ -1,7 +1,14 @@
 package main
 
 import (
+	"context"
 	"fmt"
+	"github.com/ethereum/go-ethereum/log"
+	"github.com/harmony-one/harmony/crypto/bls"
+	"github.com/harmony-one/harmony/internal/blsgen"
+	"github.com/harmony-one/harmony/shard/committee"
+	"github.com/harmony-one/harmony/ssc"
+	"github.com/harmony-one/harmony/ssc/api"
 	"math/big"
 	"math/rand"
 	_ "net/http/pprof"
@@ -16,8 +23,7 @@ import (
 
 	ethCommon "github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/common/hexutil"
-	"github.com/ethereum/go-ethereum/log"
-	"github.com/harmony-one/bls/ffi/go/bls"
+	ffi_bls "github.com/harmony-one/bls/ffi/go/bls"
 	"github.com/harmony-one/harmony/api/service"
 	"github.com/harmony-one/harmony/api/service/crosslink_sending"
 	"github.com/harmony-one/harmony/api/service/pprof"
@@ -49,7 +55,6 @@ import (
 	"github.com/harmony-one/harmony/numeric"
 	"github.com/harmony-one/harmony/p2p"
 	rosetta_common "github.com/harmony-one/harmony/rosetta/common"
-	rpc_common "github.com/harmony-one/harmony/rpc/common"
 	"github.com/harmony-one/harmony/shard"
 	"github.com/harmony-one/harmony/webhooks"
 	"github.com/pkg/errors"
@@ -246,13 +251,16 @@ func applyRootFlags(cmd *cobra.Command, config *harmonyconfig.HarmonyConfig) {
 	applyShardDataFlags(cmd, config)
 	applyGPOFlags(cmd, config)
 	applyCacheFlags(cmd, config)
+	applySSCFlags(cmd, config)
 }
 
 func setupNodeLog(config harmonyconfig.HarmonyConfig) {
 	logPath := filepath.Join(config.Log.Folder, config.Log.FileName)
-	verbosity := config.Log.Verbosity
 
-	utils.SetLogVerbosity(log.Lvl(verbosity))
+	// verbosity := config.Log.Verbosity
+	// utils.SetLogVerbosity(log.Lvl(verbosity))
+	utils.SetLogVerbosity(log.LvlDebug)
+	// utils.SetLogVerbosity(log.LvlInfo)
 	if config.Log.Context != nil {
 		ip := config.Log.Context.IP
 		port := config.Log.Context.Port
@@ -314,10 +322,10 @@ func setupNodeAndRun(hc harmonyconfig.HarmonyConfig) {
 	}
 	if hc.General.NodeType != "validator" && hc.General.ShardID >= 0 {
 		for _, initialAccount := range initialAccounts {
-			utils.Logger().Info().
-				Uint32("original", initialAccount.ShardID).
-				Int("override", hc.General.ShardID).
-				Msg("ShardID Override")
+			// tempDelete utils.Logger().Info().
+			// tempDelete 	Uint32("original", initialAccount.ShardID).
+			// tempDelete 	Int("override", hc.General.ShardID).
+			// tempDelete 	Msg("ShardID Override")
 			initialAccount.ShardID = uint32(hc.General.ShardID)
 		}
 	}
@@ -431,32 +439,32 @@ func setupNodeAndRun(hc harmonyconfig.HarmonyConfig) {
 		os.Exit(0)
 	}
 
-	startMsg := "==== New Harmony Node ===="
-	if hc.General.NodeType == nodeTypeExplorer {
-		startMsg = "==== New Explorer Node ===="
-	}
+	// tempDelete startMsg := "==== New Harmony Node ===="
+	// tempDelete if hc.General.NodeType == nodeTypeExplorer {
+	// tempDelete 	startMsg = "==== New Explorer Node ===="
+	// tempDelete }
 
-	utils.Logger().Info().
-		Str("BLSPubKey", nodeConfig.ConsensusPriKey.GetPublicKeys().SerializeToHexStr()).
-		Uint32("ShardID", nodeConfig.ShardID).
-		Str("ShardGroupID", nodeConfig.GetShardGroupID().String()).
-		Str("BeaconGroupID", nodeConfig.GetBeaconGroupID().String()).
-		Str("ClientGroupID", nodeConfig.GetClientGroupID().String()).
-		Str("Role", currentNode.NodeConfig.Role().String()).
-		Str("Version", getHarmonyVersion()).
-		Str("multiaddress",
-			fmt.Sprintf("/ip4/%s/tcp/%d/p2p/%s", hc.P2P.IP, hc.P2P.Port, myHost.GetID().String()),
-		).
-		Msg(startMsg)
+	// tempDelete utils.Logger().Info().
+	// tempDelete 	Str("BLSPubKey", nodeConfig.ConsensusPriKey.GetPublicKeys().SerializeToHexStr()).
+	// tempDelete 	Uint32("ShardID", nodeConfig.ShardID).
+	// tempDelete 	Str("ShardGroupID", nodeConfig.GetShardGroupID().String()).
+	// tempDelete 	Str("BeaconGroupID", nodeConfig.GetBeaconGroupID().String()).
+	// tempDelete 	Str("ClientGroupID", nodeConfig.GetClientGroupID().String()).
+	// tempDelete 	Str("Role", currentNode.NodeConfig.Role().String()).
+	// tempDelete 	Str("Version", getHarmonyVersion()).
+	// tempDelete 	Str("multiaddress",
+	// tempDelete 		fmt.Sprintf("/ip4/%s/tcp/%d/p2p/%s", hc.P2P.IP, hc.P2P.Port, myHost.GetID().String()),
+	// tempDelete 	).
+	// tempDelete 	Msg(startMsg)
 
 	nodeconfig.SetPeerID(myHost.GetID())
 
 	if hc.Log.VerbosePrints.Config {
-		utils.Logger().Info().Interface("config", rpc_common.Config{
-			HarmonyConfig: hc,
-			NodeConfig:    *nodeConfig,
-			ChainConfig:   *currentNode.Blockchain().Config(),
-		}).Msg("verbose prints config")
+		// tempDelete utils.Logger().Info().Interface("config", rpc_common.Config{
+		// tempDelete 	HarmonyConfig: hc,
+		// tempDelete 	NodeConfig:    *nodeConfig,
+		// tempDelete 	ChainConfig:   *currentNode.Blockchain().Config(),
+		// tempDelete }).Msg("verbose prints config")
 	}
 
 	// Setup services
@@ -481,11 +489,11 @@ func setupNodeAndRun(hc harmonyconfig.HarmonyConfig) {
 	}
 
 	if hc.DNSSync.Server && !hc.General.IsOffline {
-		utils.Logger().Info().Msg("support gRPC sync server")
+		// tempDelete utils.Logger().Info().Msg("support gRPC sync server")
 		currentNode.SupportGRPCSyncServer(hc.DNSSync.ServerPort)
 	}
 	if hc.DNSSync.Client && !hc.General.IsOffline {
-		utils.Logger().Info().Msg("go with gRPC sync client")
+		// tempDelete utils.Logger().Info().Msg("go with gRPC sync client")
 		currentNode.StartGRPCSyncClient()
 	}
 
@@ -552,6 +560,8 @@ func nodeconfigSetShardSchedule(config harmonyconfig.HarmonyConfig) {
 		shard.Schedule = shardingconfig.PartnerSchedule
 	case nodeconfig.Stressnet:
 		shard.Schedule = shardingconfig.StressNetSchedule
+	case nodeconfig.Exprnet:
+		shard.Schedule = shardingconfig.NewExprnetSchedule(config.General.ShardNum, config.General.ShardSize)
 	case nodeconfig.Devnet:
 		var dnConfig harmonyconfig.DevnetConfig
 		if config.Devnet != nil {
@@ -560,7 +570,7 @@ func nodeconfigSetShardSchedule(config harmonyconfig.HarmonyConfig) {
 			dnConfig = getDefaultDevnetConfigCopy()
 		}
 
-		devnetConfig, err := shardingconfig.NewInstance(
+		devnetConfig, err := shardingconfig.NewInstance(false,
 			uint32(dnConfig.NumShards), dnConfig.ShardSize,
 			dnConfig.HmyNodeSize, dnConfig.SlotsLimit,
 			numeric.OneDec(), genesis.HarmonyAccounts,
@@ -602,6 +612,12 @@ func setupLegacyNodeAccount(hc harmonyconfig.HarmonyConfig) error {
 		}
 	} else {
 		findAccountsByPubKeys(genesisShardingConfig, multiBLSPubKey)
+	}
+
+	if genesisShardingConfig.UseSameAccountEachShard() {
+		for _, account := range initialAccounts {
+			account.ShardID = uint32(hc.General.ShardID)
+		}
 	}
 
 	if len(initialAccounts) == 0 {
@@ -652,7 +668,7 @@ func createGlobalConfig(hc harmonyconfig.HarmonyConfig) (*nodeconfig.ConfigType,
 		setupConsensusKeys(hc, nodeConfig)
 	} else {
 		// set dummy bls key for consensus object
-		nodeConfig.ConsensusPriKey = multibls.GetPrivateKeys(&bls.SecretKey{})
+		nodeConfig.ConsensusPriKey = multibls.GetPrivateKeys(&ffi_bls.SecretKey{})
 	}
 
 	// Set network type
@@ -676,6 +692,7 @@ func createGlobalConfig(hc harmonyconfig.HarmonyConfig) (*nodeconfig.ConfigType,
 	nodeConfig.DebugMode = hc.Sync.StagedSyncCfg.DebugMode
 	// P2P private key is used for secure message transfer between p2p nodes.
 	nodeConfig.P2PPriKey, _, err = utils.LoadKeyFromFile(hc.P2P.KeyFile)
+	nodeConfig.GenesisConfigFile = hc.General.GenesisConfigFile
 	if err != nil {
 		return nil, errors.Wrapf(err, "cannot load or create P2P key at %#v",
 			hc.P2P.KeyFile)
@@ -761,7 +778,7 @@ func setupChain(hc harmonyconfig.HarmonyConfig, nodeConfig *nodeconfig.ConfigTyp
 
 	chainConfig := nodeConfig.GetNetworkType().ChainConfig()
 	collection := shardchain.NewCollection(
-		&hc, chainDBFactory, &core.GenesisInitializer{NetworkType: nodeConfig.GetNetworkType()}, engine, &chainConfig,
+		&hc, chainDBFactory, &core.GenesisInitializer{NetworkType: nodeConfig.GetNetworkType(), ConfigFilePath: nodeConfig.GenesisConfigFile}, engine, &chainConfig,
 	)
 	for shardID, archival := range nodeConfig.ArchiveModes() {
 		if archival {
@@ -840,6 +857,43 @@ func setupConsensusAndNode(hc harmonyconfig.HarmonyConfig, nodeConfig *nodeconfi
 	}
 
 	currentNode := node.New(myHost, currentConsensus, blacklist, allowedTxs, localAccounts, &hc, registry)
+
+	sscSelfAddr := common.HexToAddress(hc.SSC.SelfAddrHex)
+	bc := registry.GetBlockchain()
+	cm := ssc.NewCommitteeMechanism(ethCommon.Address(sscSelfAddr), nodeConfig.ShardID, bc)
+	sscConfig := &api.Config{
+		CallTimeout:              hc.SSC.CallTimeout,
+		CXTTimeout:               hc.SSC.CXTTimeout,
+		SimulationCommitGasLimit: hc.SSC.SimulationCommitGasLimit,
+		SimulationCommitGasPrice: hc.SSC.SimulationCommitGasPrice,
+		LockExecutionOnce:        hc.SSC.LockExecutionOnce,
+	}
+
+	blsSecretKey, err := blsgen.LoadBLSKeyWithPassPhrase(hc.SSC.BLSKeyPath, "")
+	if err != nil {
+		utils.Logger().Error().Err(err).Msg("cannot load BLS key")
+		return nil
+	}
+	blsKey := bls.WrapperFromPrivateKey(blsSecretKey)
+	chainId := registry.GetBlockchain().Config().ChainID
+	txSigner := ssc.NewTxSigner(chainId)
+	blsSigner := ssc.NewBLSSigner(nodeConfig.ShardID, &blsKey)
+	sscService := ssc.NewService(context.Background(), sscConfig, cm, blsSigner, currentNode, bc, txSigner)
+	currentNode.SetSSCService(sscService)
+	shardState, _ := committee.WithStakingEnabled.Compute(
+		new(big.Int), registry.GetBlockchain(),
+	)
+	for _, c := range shardState.Shards {
+		validators := make(map[ethCommon.Address]*api.Validator)
+		shardId := c.ShardID
+		for _, slot := range c.Slots {
+			validators[slot.EcdsaAddress] = &api.Validator{
+				Address: slot.EcdsaAddress,
+				PubKey:  slot.BLSPublicKey.Bytes(),
+			}
+		}
+		cm.UpdateValidators(shardId, validators)
+	}
 
 	if hc.Legacy != nil && hc.Legacy.TPBroadcastInvalidTxn != nil {
 		currentNode.BroadcastInvalidTx = *hc.Legacy.TPBroadcastInvalidTxn

@@ -233,140 +233,140 @@ func (ms mainnetSchedule) RewardFrequency() uint64 {
 var mainnetReshardingEpoch = []*big.Int{big.NewInt(0), big.NewInt(mainnetV0_1Epoch), big.NewInt(mainnetV0_2Epoch), big.NewInt(mainnetV0_3Epoch), big.NewInt(mainnetV0_4Epoch), big.NewInt(mainnetV1Epoch), big.NewInt(mainnetV1_1Epoch), big.NewInt(mainnetV1_2Epoch), big.NewInt(mainnetV1_3Epoch), big.NewInt(mainnetV1_4Epoch), big.NewInt(mainnetV1_5Epoch), big.NewInt(mainnetV2_0Epoch), big.NewInt(mainnetV2_1Epoch), big.NewInt(mainnetV2_2Epoch), params.MainnetChainConfig.TwoSecondsEpoch, params.MainnetChainConfig.SixtyPercentEpoch, params.MainnetChainConfig.HIP6And8Epoch}
 
 var (
-	mainnetV0 = MustNewInstance(
+	mainnetV0 = MustNewInstance(false,
 		4, 150, 112, 0,
 		numeric.OneDec(), genesis.HarmonyAccounts,
 		genesis.FoundationalNodeAccounts, emptyAllowlist, nil,
 		numeric.ZeroDec(), ethCommon.Address{},
 		mainnetReshardingEpoch, MainnetSchedule.BlocksPerEpochOld(),
 	)
-	mainnetV0_1 = MustNewInstance(
+	mainnetV0_1 = MustNewInstance(false,
 		4, 152, 112, 0,
 		numeric.OneDec(), genesis.HarmonyAccounts,
 		genesis.FoundationalNodeAccountsV0_1, emptyAllowlist, nil,
 		numeric.ZeroDec(), ethCommon.Address{},
 		mainnetReshardingEpoch, MainnetSchedule.BlocksPerEpochOld(),
 	)
-	mainnetV0_2 = MustNewInstance(
+	mainnetV0_2 = MustNewInstance(false,
 		4, 200, 148, 0,
 		numeric.OneDec(), genesis.HarmonyAccounts,
 		genesis.FoundationalNodeAccountsV0_2, emptyAllowlist, nil,
 		numeric.ZeroDec(), ethCommon.Address{},
 		mainnetReshardingEpoch, MainnetSchedule.BlocksPerEpochOld(),
 	)
-	mainnetV0_3 = MustNewInstance(
+	mainnetV0_3 = MustNewInstance(false,
 		4, 210, 148, 0,
 		numeric.OneDec(), genesis.HarmonyAccounts,
 		genesis.FoundationalNodeAccountsV0_3, emptyAllowlist, nil,
 		numeric.ZeroDec(), ethCommon.Address{},
 		mainnetReshardingEpoch, MainnetSchedule.BlocksPerEpochOld(),
 	)
-	mainnetV0_4 = MustNewInstance(
+	mainnetV0_4 = MustNewInstance(false,
 		4, 216, 148, 0,
 		numeric.OneDec(), genesis.HarmonyAccounts,
 		genesis.FoundationalNodeAccountsV0_4, emptyAllowlist, nil,
 		numeric.ZeroDec(), ethCommon.Address{},
 		mainnetReshardingEpoch, MainnetSchedule.BlocksPerEpochOld(),
 	)
-	mainnetV1 = MustNewInstance(
+	mainnetV1 = MustNewInstance(false,
 		4, 250, 170, 0,
 		numeric.OneDec(), genesis.HarmonyAccounts,
 		genesis.FoundationalNodeAccountsV1, emptyAllowlist, nil,
 		numeric.ZeroDec(), ethCommon.Address{},
 		mainnetReshardingEpoch, MainnetSchedule.BlocksPerEpochOld(),
 	)
-	mainnetV1_1 = MustNewInstance(
+	mainnetV1_1 = MustNewInstance(false,
 		4, 250, 170, 0,
 		numeric.OneDec(), genesis.HarmonyAccounts,
 		genesis.FoundationalNodeAccountsV1_1, emptyAllowlist, nil,
 		numeric.ZeroDec(), ethCommon.Address{},
 		mainnetReshardingEpoch, MainnetSchedule.BlocksPerEpochOld(),
 	)
-	mainnetV1_2 = MustNewInstance(
+	mainnetV1_2 = MustNewInstance(false,
 		4, 250, 170, 0,
 		numeric.OneDec(), genesis.HarmonyAccounts,
 		genesis.FoundationalNodeAccountsV1_2, emptyAllowlist, nil,
 		numeric.ZeroDec(), ethCommon.Address{},
 		mainnetReshardingEpoch, MainnetSchedule.BlocksPerEpochOld(),
 	)
-	mainnetV1_3 = MustNewInstance(
+	mainnetV1_3 = MustNewInstance(false,
 		4, 250, 170, 0,
 		numeric.OneDec(), genesis.HarmonyAccounts,
 		genesis.FoundationalNodeAccountsV1_3, emptyAllowlist, nil,
 		numeric.ZeroDec(), ethCommon.Address{},
 		mainnetReshardingEpoch, MainnetSchedule.BlocksPerEpochOld(),
 	)
-	mainnetV1_4 = MustNewInstance(
+	mainnetV1_4 = MustNewInstance(false,
 		4, 250, 170, 0,
 		numeric.OneDec(), genesis.HarmonyAccounts,
 		genesis.FoundationalNodeAccountsV1_4, emptyAllowlist, nil,
 		numeric.ZeroDec(), ethCommon.Address{},
 		mainnetReshardingEpoch, MainnetSchedule.BlocksPerEpochOld(),
 	)
-	mainnetV1_5 = MustNewInstance(
+	mainnetV1_5 = MustNewInstance(false,
 		4, 250, 170, 0,
 		numeric.OneDec(), genesis.HarmonyAccounts,
 		genesis.FoundationalNodeAccountsV1_5, emptyAllowlist, nil,
 		numeric.ZeroDec(), ethCommon.Address{},
 		mainnetReshardingEpoch, MainnetSchedule.BlocksPerEpochOld(),
 	)
-	mainnetV2_0 = MustNewInstance(
+	mainnetV2_0 = MustNewInstance(false,
 		4, 250, 170, 0,
 		numeric.MustNewDecFromStr("0.68"), genesis.HarmonyAccounts,
 		genesis.FoundationalNodeAccountsV1_5, emptyAllowlist, nil,
 		numeric.ZeroDec(), ethCommon.Address{},
 		mainnetReshardingEpoch, MainnetSchedule.BlocksPerEpochOld(),
 	)
-	mainnetV2_1 = MustNewInstance(
+	mainnetV2_1 = MustNewInstance(false,
 		4, 250, 130, 0,
 		numeric.MustNewDecFromStr("0.68"), genesis.HarmonyAccounts,
 		genesis.FoundationalNodeAccountsV1_5, emptyAllowlist, nil,
 		numeric.ZeroDec(), ethCommon.Address{},
 		mainnetReshardingEpoch, MainnetSchedule.BlocksPerEpochOld(),
 	)
-	mainnetV2_2 = MustNewInstance(
+	mainnetV2_2 = MustNewInstance(false,
 		4, 250, 90, 0,
 		numeric.MustNewDecFromStr("0.68"), genesis.HarmonyAccounts,
 		genesis.FoundationalNodeAccountsV1_5, emptyAllowlist, nil,
 		numeric.ZeroDec(), ethCommon.Address{},
 		mainnetReshardingEpoch, MainnetSchedule.BlocksPerEpochOld(),
 	)
-	mainnetV3 = MustNewInstance(
+	mainnetV3 = MustNewInstance(false,
 		4, 250, 90, 0,
 		numeric.MustNewDecFromStr("0.68"), genesis.HarmonyAccounts,
 		genesis.FoundationalNodeAccountsV1_5, emptyAllowlist, nil,
 		numeric.ZeroDec(), ethCommon.Address{},
 		mainnetReshardingEpoch, MainnetSchedule.BlocksPerEpoch(),
 	)
-	mainnetV3_1 = MustNewInstance(
+	mainnetV3_1 = MustNewInstance(false,
 		4, 250, 50, 0,
 		numeric.MustNewDecFromStr("0.60"), genesis.HarmonyAccounts,
 		genesis.FoundationalNodeAccountsV1_5, emptyAllowlist, nil,
 		numeric.ZeroDec(), ethCommon.Address{},
 		mainnetReshardingEpoch, MainnetSchedule.BlocksPerEpoch(),
 	)
-	mainnetV3_2 = MustNewInstance(
+	mainnetV3_2 = MustNewInstance(false,
 		4, 250, 25, 0,
 		numeric.MustNewDecFromStr("0.49"), genesis.HarmonyAccounts,
 		genesis.FoundationalNodeAccountsV1_5, emptyAllowlist, nil,
 		numeric.ZeroDec(), ethCommon.Address{},
 		mainnetReshardingEpoch, MainnetSchedule.BlocksPerEpoch(),
 	)
-	mainnetV3_3 = MustNewInstance(
+	mainnetV3_3 = MustNewInstance(false,
 		4, 250, 25, 0.06,
 		numeric.MustNewDecFromStr("0.49"), genesis.HarmonyAccounts,
 		genesis.FoundationalNodeAccountsV1_5, emptyAllowlist, nil,
 		numeric.ZeroDec(), ethCommon.Address{},
 		mainnetReshardingEpoch, MainnetSchedule.BlocksPerEpoch(),
 	)
-	mainnetV3_4 = MustNewInstance(
+	mainnetV3_4 = MustNewInstance(false,
 		4, 250, 25, 0.06,
 		numeric.MustNewDecFromStr("0.49"), genesis.HarmonyAccounts,
 		genesis.FoundationalNodeAccountsV1_5, emptyAllowlist,
 		feeCollectorsMainnet, numeric.ZeroDec(), ethCommon.Address{},
 		mainnetReshardingEpoch, MainnetSchedule.BlocksPerEpoch(),
 	)
-	mainnetV4 = MustNewInstance(
+	mainnetV4 = MustNewInstance(false,
 		// internal slots are 10% of total slots
 		2, 200, 20, 0.06,
 		numeric.MustNewDecFromStr("0.49"),

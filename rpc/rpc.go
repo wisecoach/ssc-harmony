@@ -9,7 +9,6 @@ import (
 	"github.com/harmony-one/harmony/hmy"
 	"github.com/harmony-one/harmony/internal/configs/harmony"
 	nodeconfig "github.com/harmony-one/harmony/internal/configs/node"
-	"github.com/harmony-one/harmony/internal/utils"
 	eth "github.com/harmony-one/harmony/rpc/eth"
 	v1 "github.com/harmony-one/harmony/rpc/v1"
 	v2 "github.com/harmony-one/harmony/rpc/v2"
@@ -22,6 +21,7 @@ const (
 	Eth
 	Debug
 	Trace
+	SSC = 11
 )
 
 const (
@@ -42,7 +42,7 @@ const (
 
 var (
 	// HTTPModules ..
-	HTTPModules = []string{"hmy", "hmyv2", "eth", "debug", "trace", netNamespace, netV1Namespace, netV2Namespace, web3Namespace, "explorer", "preimages"}
+	HTTPModules = []string{"hmy", "hmyv2", "eth", "debug", "trace", netNamespace, netV1Namespace, netV2Namespace, web3Namespace, "explorer", "preimages", "ssc"}
 	// WSModules ..
 	WSModules = []string{"hmy", "hmyv2", "eth", "debug", "trace", netNamespace, netV1Namespace, netV2Namespace, web3Namespace, "web3"}
 
@@ -123,9 +123,9 @@ func StopServers() error {
 			return err
 		}
 		httpListener = nil
-		utils.Logger().Info().
-			Str("url", fmt.Sprintf("http://%s", httpEndpoint)).
-			Msg("HTTP endpoint closed")
+		// tempDelete utils.Logger().Info().
+		// tempDelete 	Str("url", fmt.Sprintf("http://%s", httpEndpoint)).
+		// tempDelete 	Msg("HTTP endpoint closed")
 	}
 	if httpHandler != nil {
 		httpHandler.Stop()
@@ -136,9 +136,9 @@ func StopServers() error {
 			return err
 		}
 		wsListener = nil
-		utils.Logger().Info().
-			Str("url", fmt.Sprintf("http://%s", wsEndpoint)).
-			Msg("WS endpoint closed")
+		// tempDelete utils.Logger().Info().
+		// tempDelete 	Str("url", fmt.Sprintf("http://%s", wsEndpoint)).
+		// tempDelete 	Msg("WS endpoint closed")
 	}
 	if wsHandler != nil {
 		wsHandler.Stop()
@@ -197,7 +197,7 @@ func getAPIs(hmy *hmy.Harmony, config nodeconfig.RPCServerConfig) []rpc.API {
 	}
 
 	publicDebugAPIs := []rpc.API{
-		//Public debug API
+		// Public debug API
 		NewPublicDebugAPI(hmy, V1),
 		NewPublicDebugAPI(hmy, V2),
 	}
@@ -206,6 +206,11 @@ func getAPIs(hmy *hmy.Harmony, config nodeconfig.RPCServerConfig) []rpc.API {
 		NewPrivateDebugAPI(hmy, V1),
 		NewPrivateDebugAPI(hmy, V2),
 	}
+
+	publicAPIs = append(publicAPIs,
+		NewPublicSSCCrossAPI(hmy.NodeAPI.GetSSCService(), SSC, config.RateLimiterEnabled, config.RequestsPerSecond),
+		NewPublicSSCShardAPI(hmy.NodeAPI.GetSSCService(), SSC, config.RateLimiterEnabled, config.RequestsPerSecond),
+	)
 
 	if config.DebugEnabled {
 		apis := append(publicAPIs, publicDebugAPIs...)
@@ -222,11 +227,11 @@ func startHTTP(apis []rpc.API, rmf *rpc.RpcMethodFilter, httpTimeouts rpc.HTTPTi
 		return err
 	}
 
-	utils.Logger().Info().
-		Str("url", fmt.Sprintf("http://%s", httpEndpoint)).
-		Str("cors", strings.Join(httpOrigins, ",")).
-		Str("vhosts", strings.Join(httpVirtualHosts, ",")).
-		Msg("HTTP endpoint opened")
+	// tempDelete utils.Logger().Info().
+	// tempDelete 	Str("url", fmt.Sprintf("http://%s", httpEndpoint)).
+	// tempDelete 	Str("cors", strings.Join(httpOrigins, ",")).
+	// tempDelete 	Str("vhosts", strings.Join(httpVirtualHosts, ",")).
+	// tempDelete 	Msg("HTTP endpoint opened")
 	fmt.Printf("Started RPC server at: %v\n", httpEndpoint)
 	return nil
 }
@@ -239,11 +244,11 @@ func startAuthHTTP(apis []rpc.API, rmf *rpc.RpcMethodFilter, httpTimeouts rpc.HT
 		return err
 	}
 
-	utils.Logger().Info().
-		Str("url", fmt.Sprintf("http://%s", httpAuthEndpoint)).
-		Str("cors", strings.Join(httpOrigins, ",")).
-		Str("vhosts", strings.Join(httpVirtualHosts, ",")).
-		Msg("HTTP endpoint opened")
+	// tempDelete utils.Logger().Info().
+	// tempDelete 	Str("url", fmt.Sprintf("http://%s", httpAuthEndpoint)).
+	// tempDelete 	Str("cors", strings.Join(httpOrigins, ",")).
+	// tempDelete 	Str("vhosts", strings.Join(httpVirtualHosts, ",")).
+	// tempDelete 	Msg("HTTP endpoint opened")
 	fmt.Printf("Started Auth-RPC server at: %v\n", httpAuthEndpoint)
 	return nil
 }
@@ -254,9 +259,9 @@ func startWS(apis []rpc.API, rmf *rpc.RpcMethodFilter) (err error) {
 		return err
 	}
 
-	utils.Logger().Info().
-		Str("url", fmt.Sprintf("ws://%s", wsListener.Addr())).
-		Msg("WebSocket WS endpoint opened")
+	// tempDelete utils.Logger().Info().
+	// tempDelete 	Str("url", fmt.Sprintf("ws://%s", wsListener.Addr())).
+	// tempDelete 	Msg("WebSocket WS endpoint opened")
 	fmt.Printf("Started WS server at: %v\n", wsEndpoint)
 	return nil
 }
@@ -267,9 +272,9 @@ func startAuthWS(apis []rpc.API, rmf *rpc.RpcMethodFilter) (err error) {
 		return err
 	}
 
-	utils.Logger().Info().
-		Str("url", fmt.Sprintf("ws://%s", wsListener.Addr())).
-		Msg("WebSocket Auth-WS endpoint opened")
+	// tempDelete utils.Logger().Info().
+	// tempDelete 	Str("url", fmt.Sprintf("ws://%s", wsListener.Addr())).
+	// tempDelete 	Msg("WebSocket Auth-WS endpoint opened")
 	fmt.Printf("Started Auth-WS server at: %v\n", wsAuthEndpoint)
 	return nil
 }

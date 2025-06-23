@@ -54,7 +54,7 @@ func (multiKey PrivateKeys) Dedup() PrivateKeys {
 	deduped := make(PrivateKeys, 0, len(multiKey))
 	for _, priKey := range multiKey {
 		if _, ok := uniqueKeys[priKey.Pub.Bytes]; ok {
-			utils.Logger().Warn().Str("PubKey", priKey.Pub.Bytes.Hex()).Msg("Duplicate private key ignored!")
+			utils.Logger().Warn().Str("BLSPubKey", priKey.Pub.Bytes.Hex()).Msg("Duplicate private key ignored!")
 			continue
 		}
 		uniqueKeys[priKey.Pub.Bytes] = struct{}{}

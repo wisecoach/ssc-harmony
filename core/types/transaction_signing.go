@@ -188,6 +188,7 @@ func (s EIP155Signer) Hash(tx InternalTransaction) common.Hash {
 		tx.GasLimit(),
 		tx.ShardID(),
 		tx.ToShardID(),
+		tx.CrossShard(),
 		tx.To(),
 		tx.Value(),
 		tx.Data(),

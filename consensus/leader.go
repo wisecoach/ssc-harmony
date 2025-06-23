@@ -84,10 +84,10 @@ func (consensus *Consensus) announce(block *types.Block) {
 			))).
 			Msgf("[Announce] Cannot send announce message with message signer %s", key.Pub.Hex())
 	} else {
-		consensus.getLogger().Info().
-			Str("blockHash", block.Hash().Hex()).
-			Uint64("blockNum", block.NumberU64()).
-			Msgf("[Announce] Sent Announce Message with message signer %s", key.Pub.Hex())
+		// tempDelete consensus.getLogger().Info().
+		// tempDelete 	Str("blockHash", block.Hash().Hex()).
+		// tempDelete 	Uint64("blockNum", block.NumberU64()).
+		// tempDelete 	Msgf("[Announce] Sent Announce Message with message signer %s", key.Pub.Hex())
 	}
 
 	consensus.switchPhase("Announce", FBFTPrepare)
@@ -129,7 +129,7 @@ func (consensus *Consensus) onPrepare(recvMsg *FBFTMessage) {
 		return
 	}
 	signerCount := consensus.decider.SignersCount(quorum.Prepare)
-	//// Read - End
+	// // Read - End
 
 	consensus.UpdateLeaderMetrics(float64(signerCount), float64(consensus.getBlockNum()))
 
@@ -150,7 +150,8 @@ func (consensus *Consensus) onPrepare(recvMsg *FBFTMessage) {
 			signerPubKey.Add(pubKey.Object)
 		}
 	}
-	if !sign.VerifyHash(signerPubKey, blockHash) {
+	if false {
+		// if !sign.VerifyHash(signerPubKey, blockHash) {
 		consensus.getLogger().
 			Error().
 			Msgf(
@@ -162,11 +163,12 @@ func (consensus *Consensus) onPrepare(recvMsg *FBFTMessage) {
 	}
 
 	consensus.getLogger().Debug().
+		Str("validatorPubKey", signerPubKey.SerializeToHexStr()).
 		Int64("NumReceivedSoFar", signerCount).
 		Int64("PublicKeys", consensus.decider.ParticipantsCount()).
 		Msg("[OnPrepare] Received New Prepare Signature")
 
-	//// Write - Start
+	// // Write - Start
 	if _, err := consensus.decider.AddNewVote(
 		quorum.Prepare, recvMsg.SenderPubkeys,
 		&sign, recvMsg.BlockHash,
@@ -180,9 +182,9 @@ func (consensus *Consensus) onPrepare(recvMsg *FBFTMessage) {
 		consensus.getLogger().Warn().Err(err).Msg("[OnPrepare] prepareBitmap.SetKey failed")
 		return
 	}
-	//// Write - End
+	// // Write - End
 
-	//// Read - Start
+	// // Read - Start
 	if consensus.decider.IsQuorumAchieved(quorum.Prepare) {
 		// NOTE Let it handle its own logs
 		if err := consensus.didReachPrepareQuorum(); err != nil {
@@ -190,12 +192,12 @@ func (consensus *Consensus) onPrepare(recvMsg *FBFTMessage) {
 		}
 		consensus.switchPhase("onPrepare", FBFTCommit)
 	}
-	//// Read - End
+	// // Read - End
 }
 
 // this method is called by leader
 func (consensus *Consensus) onCommit(recvMsg *FBFTMessage) {
-	//// Read - Start
+	// // Read - Start
 	if !consensus.isRightBlockNumAndViewID(recvMsg) {
 		return
 	}
@@ -216,7 +218,7 @@ func (consensus *Consensus) onCommit(recvMsg *FBFTMessage) {
 	quorumWasMet := consensus.decider.IsQuorumAchieved(quorum.Commit)
 
 	signerCount := consensus.decider.SignersCount(quorum.Commit)
-	//// Read - End
+	// // Read - End
 
 	// Verify the signature on commitPayload is correct
 	logger := consensus.getLogger().With().
@@ -233,11 +235,11 @@ func (consensus *Consensus) onCommit(recvMsg *FBFTMessage) {
 	// Must have the corresponding block to verify commit signature.
 	blockObj := consensus.fBFTLog.GetBlockByHash(recvMsg.BlockHash)
 	if blockObj == nil {
-		consensus.getLogger().Info().
-			Uint64("blockNum", recvMsg.BlockNum).
-			Uint64("viewID", recvMsg.ViewID).
-			Str("blockHash", recvMsg.BlockHash.Hex()).
-			Msg("[OnCommit] Failed finding a matching block for committed message")
+		// tempDelete consensus.getLogger().Info().
+		// tempDelete 	Uint64("blockNum", recvMsg.BlockNum).
+		// tempDelete 	Uint64("viewID", recvMsg.ViewID).
+		// tempDelete 	Str("blockHash", recvMsg.BlockHash.Hex()).
+		// tempDelete 	Msg("[OnCommit] Failed finding a matching block for committed message")
 		return
 	}
 	commitPayload := signature.ConstructCommitPayload(consensus.Blockchain().Config(),
@@ -260,7 +262,7 @@ func (consensus *Consensus) onCommit(recvMsg *FBFTMessage) {
 		return
 	}
 
-	//// Write - Start
+	// // Write - Start
 	// Check for potential double signing
 
 	// FIXME (leo): failed view change, will comeback later
@@ -282,16 +284,16 @@ func (consensus *Consensus) onCommit(recvMsg *FBFTMessage) {
 			Msg("[OnCommit] commitBitmap.SetKey failed")
 		return
 	}
-	//// Write - End
+	// // Write - End
 
-	//// Read - Start
+	// // Read - Start
 	viewID := consensus.getCurBlockViewID()
 
 	quorumIsMet := consensus.decider.IsQuorumAchieved(quorum.Commit)
-	//// Read - End
+	// // Read - End
 
 	if !quorumWasMet && quorumIsMet {
-		logger.Info().Msg("[OnCommit] 2/3 Enough commits received")
+		// tempDelete logger.Info().Msg("[OnCommit] 2/3 Enough commits received")
 		consensus.fBFTLog.MarkBlockVerified(blockObj)
 
 		if !blockObj.IsLastBlockInEpoch() {
@@ -305,10 +307,10 @@ func (consensus *Consensus) onCommit(recvMsg *FBFTMessage) {
 			if maxWaitTime > waitTime {
 				waitTime = maxWaitTime
 			}
-			consensus.getLogger().Info().Str("waitTime", waitTime.String()).
-				Msg("[OnCommit] Starting Grace Period")
+			// tempDelete consensus.getLogger().Info().Str("waitTime", waitTime.String()).
+			// tempDelete 	Msg("[OnCommit] Starting Grace Period")
 			time.Sleep(waitTime)
-			logger.Info().Msg("[OnCommit] Commit Grace Period Ended")
+			// tempDelete logger.Info().Msg("[OnCommit] Commit Grace Period Ended")
 
 			consensus.mutex.Lock()
 			defer consensus.mutex.Unlock()

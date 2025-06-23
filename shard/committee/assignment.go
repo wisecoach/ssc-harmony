@@ -212,7 +212,7 @@ func IsEligibleForEPoSAuction(snapshot *staking.ValidatorSnapshot, validator *st
 	// This original condition to check whether a validator is in last committee is not stable
 	// because cross-links may arrive after the epoch ends and it still got counted into the
 	// NumBlocksToSign, making this condition to be true when the validator is actually not in committee
-	//if snapshot.Counters.NumBlocksToSign.Cmp(validator.Counters.NumBlocksToSign) != 0 {
+	// if snapshot.Counters.NumBlocksToSign.Cmp(validator.Counters.NumBlocksToSign) != 0 {
 
 	// Check whether the validator is in current committee
 	if validator.LastEpochInCommittee.Cmp(snapshot.Epoch) == 0 {
@@ -277,6 +277,9 @@ func preStakingEnabledCommittee(s shardingconfig.Instance) (*shard.State, error)
 		com := shard.Committee{ShardID: uint32(i)}
 		for j := 0; j < shardHarmonyNodes; j++ {
 			index := i + j*shardNum // The initial account to use for genesis nodes
+			if s.UseSameAccountEachShard() {
+				index = j
+			}
 			pub := &bls_core.PublicKey{}
 			pub.DeserializeHexStr(hmyAccounts[index].BLSPublicKey)
 			pubKey := bls.SerializedPublicKey{}
@@ -295,6 +298,9 @@ func preStakingEnabledCommittee(s shardingconfig.Instance) (*shard.State, error)
 		// add FN runner's key
 		for j := shardHarmonyNodes; j < shardSize; j++ {
 			index := i + (j-shardHarmonyNodes)*shardNum
+			if s.UseSameAccountEachShard() {
+				index = j - shardHarmonyNodes
+			}
 			pub := &bls_core.PublicKey{}
 			pub.DeserializeHexStr(fnAccounts[index].BLSPublicKey)
 			pubKey := bls.SerializedPublicKey{}
@@ -328,6 +334,9 @@ func eposStakedCommittee(
 		shardState.Shards[i] = shard.Committee{ShardID: uint32(i), Slots: shard.SlotList{}}
 		for j := 0; j < shardHarmonyNodes; j++ {
 			index := i + j*shardCount
+			if s.UseSameAccountEachShard() {
+				index = j
+			}
 			pub := &bls_core.PublicKey{}
 			if err := pub.DeserializeHexStr(hAccounts[index].BLSPublicKey); err != nil {
 				return nil, err

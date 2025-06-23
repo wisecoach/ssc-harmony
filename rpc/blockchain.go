@@ -4,11 +4,11 @@ import (
 	"context"
 	"encoding/hex"
 	"fmt"
+	"github.com/ethereum/go-ethereum/common"
 	"math/big"
 	"reflect"
 	"time"
 
-	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/common/hexutil"
 	"github.com/ethereum/go-ethereum/crypto"
 	"github.com/ethereum/go-ethereum/rlp"
@@ -771,7 +771,7 @@ func (s *PublicBlockchainService) GetHeaderByNumber(
 	return nil, err
 }
 
-// Result structs for GetProof
+// CallSSCResult structs for GetProof
 type AccountResult struct {
 	Address      common.Address  `json:"address"`
 	AccountProof []string        `json:"accountProof"`
@@ -835,7 +835,8 @@ func (s *PublicBlockchainService) GetProof(
 				err = storageError
 				return
 			}
-			storageProof[i] = StorageResult{key, (*hexutil.Big)(state.GetState(address, common.HexToHash(key)).Big()), toHexSlice(proof)}
+			getState, _ := state.GetState(address, common.HexToHash(key))
+			storageProof[i] = StorageResult{key, (*hexutil.Big)(getState.Big()), toHexSlice(proof)}
 		} else {
 			storageProof[i] = StorageResult{key, &hexutil.Big{}, []string{}}
 		}

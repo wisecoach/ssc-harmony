@@ -3,6 +3,7 @@ package hmy
 import (
 	"context"
 	"encoding/json"
+	"github.com/harmony-one/harmony/ssc/api"
 	"math/big"
 
 	"github.com/ethereum/go-ethereum/common"
@@ -90,6 +91,7 @@ type NodeAPI interface {
 	AddPendingTransaction(newTx *types.Transaction) error
 	Blockchain() core.BlockChain
 	Beaconchain() core.BlockChain
+	GetSSCService() api.Service
 	GetTransactionsHistory(address, txType, order string) ([]common.Hash, error)
 	GetStakingTransactionsHistory(address, txType, order string) ([]common.Hash, error)
 	GetTransactionsCount(address, txType string) (uint64, error)

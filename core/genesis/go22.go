@@ -6,14 +6,14 @@ package genesis
 import (
 	"crypto/ecdsa"
 	"fmt"
-	"math/big"
-
 	"github.com/ethereum/go-ethereum/crypto"
+	"math/big"
 )
 
 var ContractDeployerKey *ecdsa.PrivateKey
+var SSCSubmitterKey *ecdsa.PrivateKey
 
-func init() {
+func initContractDeployerKey() {
 	D := &big.Int{}
 	D.SetString("7472616374206b65e45ffeb29e933944f5027ef139f124f430641487e70ea9a1", 16)
 	X := &big.Int{}
@@ -30,4 +30,15 @@ func init() {
 		},
 	}
 	fmt.Printf("ContractDeployerKey: %x\n", ContractDeployerKey.D.Bytes())
+}
+
+func initSSCSubmitterKey() {
+	privateKey, _ := crypto.HexToECDSA("7472616374206b65e45ffeb29e933944f5027ef139f124f430641487e70ea9a2")
+	SSCSubmitterKey = privateKey
+	fmt.Printf("SSCSubmitterKey: %x\n", ContractDeployerKey.D.Bytes())
+}
+
+func init() {
+	initContractDeployerKey()
+	initSSCSubmitterKey()
 }

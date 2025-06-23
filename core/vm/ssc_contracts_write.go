@@ -5,13 +5,19 @@ import (
 )
 
 var (
-	SimulationCommitAddr   = common.Address([20]byte{249})
-	ReSimulationCommitAddr = common.Address([20]byte{250})
+	SimulationCommitAddr    = common.Address([20]byte{249})
+	CxtCommitOrRollbackAddr = common.Address([20]byte{250})
+	EmptyAddr               = common.Address([20]byte{251})
 )
 
 var WriteCapablePrecompiledSSCContracts = map[common.Address]WriteCapablePrecompiledSSCContract{
-	SimulationCommitAddr:   &simulationCommit{},
-	ReSimulationCommitAddr: &reSimulationCommit{},
+	SimulationCommitAddr:    &simulationCommit{},
+	CxtCommitOrRollbackAddr: &cxtCommitOrRollback{},
+}
+
+var SSCAddrsApplyOnChain = map[common.Address]interface{}{
+	SimulationCommitAddr:    struct{}{},
+	CxtCommitOrRollbackAddr: struct{}{},
 }
 
 type WriteCapablePrecompiledSSCContract interface {
@@ -25,8 +31,7 @@ type simulationCommit struct {
 }
 
 func (s *simulationCommit) RequiredGas(vm *SSCVM, contract *Contract, input []byte) (uint64, error) {
-	// TODO implement me
-	panic("implement me")
+	return 0, nil
 }
 
 func (s *simulationCommit) RunWriteCapable(vm *SSCVM, contract *Contract, input []byte) ([]byte, error) {
@@ -34,15 +39,17 @@ func (s *simulationCommit) RunWriteCapable(vm *SSCVM, contract *Contract, input 
 	return nil, nil
 }
 
-type reSimulationCommit struct {
+type cxtCommitOrRollback struct {
 }
 
-func (s *reSimulationCommit) RequiredGas(vm *SSCVM, contract *Contract, input []byte) (uint64, error) {
-	// TODO implement me
-	panic("implement me")
+func (c *cxtCommitOrRollback) RequiredGas(vm *SSCVM, contract *Contract, input []byte) (uint64, error) {
+	return 0, nil
 }
 
-func (s *reSimulationCommit) RunWriteCapable(vm *SSCVM, contract *Contract, input []byte) ([]byte, error) {
-	vm.SSCService.VerifyReSimulation(input)
+func (c *cxtCommitOrRollback) RunWriteCapable(vm *SSCVM, contract *Contract, input []byte) ([]byte, error) {
+	executionType := vm.executionType
+	// only unlock when it's executed on chain
+	unlock := executionType == ExecutionVerify
+	vm.SSCService.CommitOrRollbackWithProof(unlock, input)
 	return nil, nil
 }

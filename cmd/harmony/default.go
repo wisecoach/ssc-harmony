@@ -1,6 +1,7 @@
 package main
 
 import (
+	"math/big"
 	"time"
 
 	"github.com/harmony-one/harmony/core"
@@ -139,6 +140,7 @@ var defaultConfig = harmonyconfig.HarmonyConfig{
 		BlockGasLimit:     hmy.DefaultGPOConfig.BlockGasLimit,
 	},
 	Cache: getDefaultCacheConfig(defNetworkType),
+	SSC:   defaultSSCConfig,
 }
 
 var defaultSysConfig = harmonyconfig.SysConfig{
@@ -207,7 +209,7 @@ var (
 		Concurrency:          6,
 		MinPeers:             6,
 		InitStreams:          8,
-		MaxAdvertiseWaitTime: 60, //minutes
+		MaxAdvertiseWaitTime: 60, // minutes
 		DiscSoftLowCap:       8,
 		DiscHardLowCap:       6,
 		DiscHighCap:          128,
@@ -223,7 +225,7 @@ var (
 		Concurrency:          2,
 		MinPeers:             2,
 		InitStreams:          2,
-		MaxAdvertiseWaitTime: 5, //minutes
+		MaxAdvertiseWaitTime: 5, // minutes
 		DiscSoftLowCap:       2,
 		DiscHardLowCap:       2,
 		DiscHighCap:          1024,
@@ -239,7 +241,7 @@ var (
 		Concurrency:          4,
 		MinPeers:             4,
 		InitStreams:          4,
-		MaxAdvertiseWaitTime: 5, //minutes
+		MaxAdvertiseWaitTime: 5, // minutes
 		DiscSoftLowCap:       4,
 		DiscHardLowCap:       4,
 		DiscHighCap:          1024,
@@ -255,7 +257,7 @@ var (
 		Concurrency:          2,
 		MinPeers:             2,
 		InitStreams:          2,
-		MaxAdvertiseWaitTime: 2, //minutes
+		MaxAdvertiseWaitTime: 2, // minutes
 		DiscSoftLowCap:       2,
 		DiscHardLowCap:       2,
 		DiscHighCap:          1024,
@@ -271,7 +273,7 @@ var (
 		Concurrency:          4,
 		MinPeers:             4,
 		InitStreams:          4,
-		MaxAdvertiseWaitTime: 2, //minutes
+		MaxAdvertiseWaitTime: 2, // minutes
 		DiscSoftLowCap:       4,
 		DiscHardLowCap:       4,
 		DiscHighCap:          1024,
@@ -288,6 +290,17 @@ var defaultCacheConfig = harmonyconfig.CacheConfig{
 	SnapshotWait:    true,
 	Preimages:       true,
 	SnapshotNoBuild: false,
+}
+
+var defaultSSCConfig = harmonyconfig.SSCConfig{
+	PrivateKey:               "",
+	BLSKeyPath:               "",
+	SelfAddrHex:              "",
+	CallTimeout:              time.Hour,
+	CXTTimeout:               time.Hour,
+	SimulationCommitGasLimit: 5000000,
+	SimulationCommitGasPrice: big.NewInt(3000000000),
+	LockExecutionOnce:        false,
 }
 
 const (

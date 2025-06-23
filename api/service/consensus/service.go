@@ -3,7 +3,6 @@ package consensus
 import (
 	msg_pb "github.com/harmony-one/harmony/api/proto/message"
 	"github.com/harmony-one/harmony/consensus"
-	"github.com/harmony-one/harmony/internal/utils"
 )
 
 // Service is the consensus service.
@@ -20,7 +19,7 @@ func New(consensus *consensus.Consensus) *Service {
 
 // Start starts consensus service.
 func (s *Service) Start() error {
-	utils.Logger().Info().Msg("[consensus/service] Starting consensus service.")
+	// tempDelete utils.Logger().Info().Msg("[consensus/service] Starting consensus service.")
 	s.stopChan = make(chan struct{})
 	s.consensus.Start(s.stopChan)
 	s.consensus.WaitForNewRandomness()
@@ -29,8 +28,8 @@ func (s *Service) Start() error {
 
 // Stop stops consensus service.
 func (s *Service) Stop() error {
-	utils.Logger().Info().Msg("Stopping consensus service.")
+	// tempDelete utils.Logger().Info().Msg("Stopping consensus service.")
 	close(s.stopChan)
-	utils.Logger().Info().Msg("Consensus service stopped.")
+	// tempDelete utils.Logger().Info().Msg("Consensus service stopped.")
 	return nil
 }

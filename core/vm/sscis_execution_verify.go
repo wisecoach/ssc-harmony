@@ -19,6 +19,7 @@ func newExecutionVerifyInstructions() JumpTable {
 	is[CALL].execute = opCall_SSC_EV
 	is[CALLCODE].execute = opCallCode_SSC_EV
 	is[DELEGATECALL].execute = opDelegateCall_SSC_EV
+	is[STATICCALL].execute = opStaticCall_SSC_EV
 	is[RETURN].execute = opReturn_SSC_EV
 	return is
 }
@@ -32,7 +33,8 @@ func opCallDataLoad_SSC_EV(pc *uint64, inp Interpreter, contract *Contract, memo
 func opSload_SSC_EV(pc *uint64, inp Interpreter, contract *Contract, memory *Memory, stack *Stack) ([]byte, error) {
 	interpreter := inp.(*SSCVMInterpreter)
 	loc := stack.peek()
-	val, _ := interpreter.vm.StateDB.GetState(contract.Address(), common.BigToHash(loc))
+	txHash := interpreter.vm.Context.TxHash
+	val, _ := interpreter.vm.SSCService.GetSimuState(txHash, contract.Address(), common.BigToHash(loc))
 	loc.SetBytes(val.Bytes())
 	return nil, nil
 }
@@ -41,7 +43,8 @@ func opSstore_SSC_EV(pc *uint64, inp Interpreter, contract *Contract, memory *Me
 	interpreter := inp.(*SSCVMInterpreter)
 	loc := common.BigToHash(stack.pop())
 	val := stack.pop()
-	interpreter.vm.StateDB.SetState(contract.Address(), loc, common.BigToHash(val))
+	txHash := interpreter.vm.Context.TxHash
+	interpreter.vm.SSCService.SetSimuState(txHash, contract.Address(), loc, common.BigToHash(val))
 
 	interpreter.intPool.put(val)
 	return nil, nil
@@ -110,7 +113,22 @@ func opCallCode_SSC_EV(pc *uint64, inp Interpreter, contract *Contract, memory *
 	if value.Sign() != 0 {
 		gas += params.CallStipend
 	}
-	ret, returnGas, err := interpreter.vm.CallCode(contract, toAddr, args, gas, value)
+
+	var (
+		ret       []byte
+		returnGas uint64
+		err       error
+	)
+
+	if len(args) > 8+16 && bytes.Compare(args[9:21], CTX_PREFIX) == 0 {
+		ret, returnGas, err = interpreter.vm.SSCService.GetResult(interpreter.vm.Context.TxHash)
+		if err != nil {
+			return nil, err
+		}
+	} else {
+		ret, returnGas, err = interpreter.vm.CallCode(contract, toAddr, args, gas, value)
+	}
+
 	if err != nil {
 		stack.push(interpreter.intPool.getZero())
 	} else {
@@ -138,8 +156,62 @@ func opDelegateCall_SSC_EV(pc *uint64, inp Interpreter, contract *Contract, memo
 	toAddr := common.BigToAddress(addr)
 	// Get arguments from the memory.
 	args := memory.GetPtr(inOffset.Int64(), inSize.Int64())
+	var (
+		ret       []byte
+		returnGas uint64
+		err       error
+	)
 
-	ret, returnGas, err := interpreter.vm.DelegateCall(contract, toAddr, args, gas)
+	if len(args) > 8+16 && bytes.Compare(args[9:21], CTX_PREFIX) == 0 {
+		ret, returnGas, err = interpreter.vm.SSCService.GetResult(interpreter.vm.Context.TxHash)
+		if err != nil {
+			return nil, err
+		}
+	} else {
+		ret, returnGas, err = interpreter.vm.DelegateCall(contract, toAddr, args, gas)
+	}
+	if err != nil {
+		stack.push(interpreter.intPool.getZero())
+	} else {
+		stack.push(interpreter.intPool.get().SetUint64(1))
+	}
+	if err == nil || err == ErrExecutionReverted {
+		if contract.WithDataCopyFix {
+			ret = common.CopyBytes(ret)
+		}
+		memory.Set(retOffset.Uint64(), retSize.Uint64(), ret)
+	}
+	contract.Gas += returnGas
+
+	interpreter.intPool.put(addr, inOffset, inSize, retOffset, retSize)
+	return ret, nil
+}
+
+func opStaticCall_SSC_EV(pc *uint64, inp Interpreter, contract *Contract, memory *Memory, stack *Stack) ([]byte, error) {
+	interpreter := inp.(*SSCVMInterpreter)
+	// Pop gas. The actual gas is in interpreter.evm.callGasTemp.
+	interpreter.intPool.put(stack.pop())
+	gas := interpreter.vm.callGasTemp
+	// Pop other call parameters.
+	addr, inOffset, inSize, retOffset, retSize := stack.pop(), stack.pop(), stack.pop(), stack.pop(), stack.pop()
+	toAddr := common.BigToAddress(addr)
+	// Get arguments from the memory.
+	args := memory.GetPtr(inOffset.Int64(), inSize.Int64())
+
+	var (
+		ret       []byte
+		returnGas uint64
+		err       error
+	)
+
+	if len(args) > 8+16 && bytes.Compare(args[9:21], CTX_PREFIX) == 0 {
+		ret, returnGas, err = interpreter.vm.SSCService.GetResult(interpreter.vm.Context.TxHash)
+		if err != nil {
+			return nil, err
+		}
+	} else {
+		ret, returnGas, err = interpreter.vm.StaticCall(contract, toAddr, args, gas)
+	}
 	if err != nil {
 		stack.push(interpreter.intPool.getZero())
 	} else {

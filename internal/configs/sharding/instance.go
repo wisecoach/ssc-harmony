@@ -22,9 +22,11 @@ const (
 	Partner
 	StressNet
 	DevNet
+	ExprNet
 )
 
 type instance struct {
+	useSameAccountEachShard         bool
 	numShards                       uint32
 	numNodesPerShard                int
 	numHarmonyOperatedNodesPerShard int
@@ -46,6 +48,7 @@ type FeeCollectors map[ethCommon.Address]numeric.Dec
 // NewInstance creates and validates a new sharding configuration based
 // upon given parameters.
 func NewInstance(
+	useSameAccountEachShard bool,
 	numShards uint32,
 	numNodesPerShard,
 	numHarmonyOperatedNodesPerShard,
@@ -124,6 +127,7 @@ func NewInstance(
 	}
 
 	return instance{
+		useSameAccountEachShard:         useSameAccountEachShard,
 		numShards:                       numShards,
 		numNodesPerShard:                numNodesPerShard,
 		numHarmonyOperatedNodesPerShard: numHarmonyOperatedNodesPerShard,
@@ -145,6 +149,7 @@ func NewInstance(
 // given parameters.  It panics if parameter validation fails.
 // It is intended to be used for static initialization.
 func MustNewInstance(
+	useSameAccountEachShard bool,
 	numShards uint32,
 	numNodesPerShard, numHarmonyOperatedNodesPerShard int, slotsLimitPercent float32,
 	harmonyVotePercent numeric.Dec,
@@ -158,7 +163,7 @@ func MustNewInstance(
 ) Instance {
 	slotsLimit := int(float32(numNodesPerShard-numHarmonyOperatedNodesPerShard) * slotsLimitPercent)
 	sc, err := NewInstance(
-		numShards, numNodesPerShard, numHarmonyOperatedNodesPerShard,
+		useSameAccountEachShard, numShards, numNodesPerShard, numHarmonyOperatedNodesPerShard,
 		slotsLimit, harmonyVotePercent, hmyAccounts, fnAccounts,
 		allowlist, feeCollectors, emissionFractionToRecovery,
 		recoveryAddress, reshardingEpoch, blocksPerEpoch,
@@ -167,6 +172,10 @@ func MustNewInstance(
 		panic(err)
 	}
 	return sc
+}
+
+func (sc instance) UseSameAccountEachShard() bool {
+	return sc.useSameAccountEachShard
 }
 
 // BlocksPerEpoch ..

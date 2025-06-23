@@ -116,6 +116,7 @@ docker run -it -d \
   -e NODE_BLSKEY=$BLSKEY \
   -e NODE_BLSPASS=$BLSPASS \
   -e NODE_EXTRA_OPTIONS="$extra" \
+
   -v $(realpath ${db_dir}/harmony_db_0):/harmony/harmony_db_0 \
   -v $(realpath ${db_dir}/harmony_db_1):/harmony/harmony_db_1 \
   -v $(realpath ${db_dir}/harmony_db_2):/harmony/harmony_db_2 \

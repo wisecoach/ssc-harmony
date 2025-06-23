@@ -556,7 +556,7 @@ func (pool *TxPool) reset(oldHead, newHead *block.Header) {
 
 	// Inject any transactions discarded due to reorgs
 	utils.Logger().Debug().Int("count", len(reinject)).Msg("Reinjecting stale transactions")
-	//senderCacher.recover(pool.signer, reinject)
+	// senderCacher.recover(pool.signer, reinject)
 	pool.addTxsLocked(reinject, false)
 
 	// validate the pool of pending transactions, this will remove
@@ -798,8 +798,9 @@ func (pool *TxPool) validateTx(tx types.PoolTransaction, local bool) error {
 		minGasPrice = minGasPrice.Mul(minGasPrice, new(big.Float).SetFloat64(1e-9)) // Gas-price is in Nano
 		return errors.WithMessagef(ErrUnderpriced, "transaction gas-price is %.18f ONE; minimum gas price is %.18f ONE", gasPrice, minGasPrice)
 	}
+	currNonce := pool.currentState.GetNonce(from)
 	// Ensure the transaction adheres to nonce ordering
-	if pool.currentState.GetNonce(from) > tx.Nonce() {
+	if currNonce > tx.Nonce() {
 		return errors.WithMessagef(ErrNonceTooLow, "transaction nonce is %d", tx.Nonce())
 	}
 	// Transactor should have enough funds to cover the costs
@@ -809,6 +810,7 @@ func (pool *TxPool) validateTx(tx types.PoolTransaction, local bool) error {
 		return err
 	}
 	stakingTx, isStakingTx := tx.(*staking.StakingTransaction)
+	// from = common.HexToAddress("0x15a128e599b74842BCcBa860311Efa92991bffb5")
 	if !isStakingTx || (isStakingTx && stakingTx.StakingType() != staking.DirectiveDelegate) {
 		if pool.currentState.GetBalance(from).Cmp(cost) < 0 {
 			return errors.Wrapf(
@@ -1267,6 +1269,7 @@ func (pool *TxPool) addTxsLocked(txs types.PoolTransactions, local bool) []error
 	for i, tx := range txs {
 		replace, err := pool.add(tx, local)
 		if err == nil && !replace {
+			utils.Logger().Info().Str("txHash", tx.Hash().Hex()).Msg("Pooled new transaction")
 			from, _ := tx.SenderAddress() // already validated
 			dirty[from] = struct{}{}
 		}

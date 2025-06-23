@@ -13,7 +13,8 @@ import (
 
 // GenesisInitializer is a shardchain.DBInitializer adapter.
 type GenesisInitializer struct {
-	NetworkType nodeconfig.NetworkType
+	NetworkType    nodeconfig.NetworkType
+	ConfigFilePath string
 }
 
 // InitChainDB sets up a new genesis block in the database for the given shard.
@@ -41,7 +42,7 @@ func (gi *GenesisInitializer) InitChainDB(db ethdb.Database, shardID uint32) err
 // SetupGenesisBlock sets up a genesis blockchain.
 func (gi *GenesisInitializer) setupGenesisBlock(db ethdb.Database, shardID uint32, myShardState *shard.State) {
 	utils.Logger().Info().Interface("shardID", shardID).Msg("setting up a brand new chain database")
-	gspec := NewGenesisSpec(gi.NetworkType, shardID)
+	gspec := NewGenesisSpec(gi.NetworkType, shardID, gi.ConfigFilePath)
 	gspec.ShardStateHash = myShardState.Hash()
 	gspec.ShardState = *myShardState.DeepCopy()
 	// Store genesis block into db.

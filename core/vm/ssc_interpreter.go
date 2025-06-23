@@ -23,6 +23,18 @@ type SSCVMInterpreter struct {
 
 // NewEVMInterpreter returns a new instance of the Interpreter.
 func NewSSCVMInterpreter(vm *SSCVM, cfg Config) *SSCVMInterpreter {
+
+	switch vm.executionType {
+	case SimulationCall:
+		cfg.JumpTable = SimulationCallInstructions
+	case SimulationReCall:
+		cfg.JumpTable = SimulationRecallInstructions
+	case ExecutionVerify:
+		cfg.JumpTable = ExecutionVerifyInstructions
+	case LockExecution:
+		cfg.JumpTable = LockExecutionInstructions
+	}
+
 	return &SSCVMInterpreter{
 		vm:  vm,
 		cfg: cfg,
@@ -38,6 +50,9 @@ func (in *SSCVMInterpreter) Run(contract *Contract, input []byte, readOnly bool)
 			in.intPool = nil
 		}()
 	}
+
+	// hexCode := common.Bytes2Hex(contract.Code)
+	// print("SSCVMInterpreter.Run: contract.Code: ", hexCode, "\n")
 
 	// Increment the call depth which is restricted to 1024
 	in.vm.depth++
@@ -66,8 +81,8 @@ func (in *SSCVMInterpreter) Run(contract *Contract, input []byte, readOnly bool)
 		// For optimisation reason we're using uint64 as the program counter.
 		// It's theoretically possible to go above 2^64. The YP defines the PC
 		// to be uint256. Practically much less so feasible.
-		pc = uint64(0) // program counter
-		// cost uint64
+		pc   = uint64(0) // program counter
+		cost uint64
 		// copies used by tracer
 		res []byte // result of the opcode execution function
 	)
@@ -131,14 +146,14 @@ func (in *SSCVMInterpreter) Run(contract *Contract, input []byte, readOnly bool)
 		// Dynamic portion of gas
 		// consume the gas and return an error if not enough gas is available.
 		// cost is explicitly set so that the capture state defer method can get the proper cost
-		// if operation.dynamicGas != nil {
-		// 	var dynamicCost uint64
-		// 	dynamicCost, err = operation.dynamicGas(in.vm, contract, stack, mem, memorySize)
-		// 	cost += dynamicCost // total cost, for debug tracing
-		// 	if err != nil || !contract.UseGas(dynamicCost) {
-		// 		return nil, ErrOutOfGas
-		// 	}
-		// }
+		if operation.dynamicGas != nil {
+			var dynamicCost uint64
+			dynamicCost, err = operation.dynamicGas(in.vm, contract, stack, mem, memorySize)
+			cost += dynamicCost // total cost, for debug tracing
+			if err != nil || !contract.UseGas(dynamicCost) {
+				return nil, ErrOutOfGas
+			}
+		}
 		if memorySize > 0 {
 			mem.Resize(memorySize)
 		}

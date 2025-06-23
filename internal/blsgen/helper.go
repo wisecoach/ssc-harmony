@@ -33,7 +33,7 @@ func newMultiKeyLoader(keyFiles []string, decrypters []keyDecrypter) (*multiKeyL
 	for _, keyFile := range keyFiles {
 		ext := filepath.Ext(keyFile)
 		if _, supported := dm[ext]; !supported {
-			return nil, fmt.Errorf("unsupported key extension: %v", ext)
+			return nil, fmt.Errorf("unsupported key extension: %v, file:%v", ext, keyFile)
 		}
 	}
 	return &multiKeyLoader{

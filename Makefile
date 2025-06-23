@@ -89,6 +89,7 @@ clean:
 	rm -f ./*.rlp
 	rm -rf ~/rpmbuild
 	rm -f coverage.txt
+	rm -rf db
 
 distclean: clean
 	make -C $(TOP)/mcl clean

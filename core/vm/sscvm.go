@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/crypto"
+	"github.com/harmony-one/harmony/core/state"
 	"github.com/harmony-one/harmony/internal/params"
 	"github.com/harmony-one/harmony/ssc/api"
 	"github.com/pkg/errors"
@@ -37,7 +38,7 @@ type SSCVM struct {
 	// Context provides auxiliary blockchain related information
 	Context Context
 	// DB gives access to the underlying state
-	StateDB StateDB
+	StateDB *state.DB
 	// LockableState provides access to the underlying state with lock
 	LockableState *LockableState
 	// Depth is the current call Stack
@@ -68,7 +69,7 @@ type SSCVM struct {
 	callGasTemp uint64
 }
 
-func NewSSCVM(ctx Context, statedb StateDB, chainConfig *params.ChainConfig, vmConfig Config, sscService api.Service, executionType ExecutionType) *SSCVM {
+func NewSSCVM(ctx Context, statedb *state.DB, chainConfig *params.ChainConfig, vmConfig Config, sscService api.Service, executionType ExecutionType) *SSCVM {
 	vm := &SSCVM{
 		Context:       ctx,
 		StateDB:       statedb,
@@ -119,11 +120,12 @@ func (vm *SSCVM) Call(caller ContractRef, addr common.Address, input []byte, gas
 	}
 
 	// if cross-call
-	if len(input) > 8+16 {
-		isCrossCall := bytes.Compare(input[9:21], CTX_PREFIX) == 0
+	if len(input) >= 4+16+16 {
+		isCrossCall := bytes.Compare(input[20:32], CTX_PREFIX) == 0
 		if isCrossCall {
-			crossShardID := uint32(input[21])<<24 + uint32(input[22])<<16 + uint32(input[23])<<8 + uint32(input[24])
-			return vm.crossCall(crossShardID, caller, addr, input[25:], gas, value)
+			crossShardID := uint32(input[32])<<24 + uint32(input[33])<<16 + uint32(input[34])<<8 + uint32(input[35])
+			crossCallInput := append(input[:4], input[36:]...)
+			return vm.crossCall(crossShardID, caller, addr, crossCallInput, gas, value)
 		}
 	}
 
@@ -138,7 +140,7 @@ func (vm *SSCVM) Call(caller ContractRef, addr common.Address, input []byte, gas
 	)
 	if !vm.StateDB.Exist(addr) {
 		precompiles := PrecompiledContractsHomestead
-		var writeCapablePrecompiles map[common.Address]WriteCapablePrecompiledContract
+		var writeCapablePrecompiles map[common.Address]WriteCapablePrecompiledSSCContract
 		if vm.ChainConfig().IsS3(vm.Context.EpochNumber) {
 			precompiles = PrecompiledContractsByzantium
 		}
@@ -153,10 +155,9 @@ func (vm *SSCVM) Call(caller ContractRef, addr common.Address, input []byte, gas
 		}
 		if vm.chainRules.IsStakingPrecompile {
 			precompiles = PrecompiledContractsStaking
-			writeCapablePrecompiles = WriteCapablePrecompiledContractsStaking
 		}
 		if vm.chainRules.IsCrossShardXferPrecompile {
-			writeCapablePrecompiles = WriteCapablePrecompiledContractsCrossXfer
+			writeCapablePrecompiles = WriteCapablePrecompiledSSCContracts
 		}
 		if (len(writeCapablePrecompiles) == 0 || writeCapablePrecompiles[addr] == nil) && precompiles[addr] == nil && vm.ChainConfig().IsS3(vm.Context.EpochNumber) && value.Sign() == 0 {
 			return nil, gas, nil
@@ -195,42 +196,25 @@ func (vm *SSCVM) Call(caller ContractRef, addr common.Address, input []byte, gas
 func (vm *SSCVM) crossCall(targetShardId uint32, caller ContractRef, addr common.Address, input []byte, gas uint64, value *big.Int) (ret []byte, leftOverGas uint64, err error) {
 	// get result from simulation if executionType is ExecutionVerify or LockExecution
 	if vm.executionType == ExecutionVerify || vm.executionType == LockExecution {
-		ret, usedGas, err := vm.SSCService.GetResult(vm.Context.TxHash)
-		return ret, gas - usedGas, err
+		ret, leftOverGas, err = vm.SSCService.GetResult(vm.Context.TxHash)
+		return
 	}
 
-	// call or recall contract on other shard
-	if vm.executionType == SimulationCall {
-		req := &api.CXTCallRequest{
-			TargetShardId: targetShardId,
-			TxHash:        vm.Context.TxHash.Bytes(),
-			Caller:        caller.Address(),
-			Addr:          addr,
-			Input:         input,
-			Gas:           gas,
-			GasPrice:      vm.Context.GasPrice,
-			Value:         value,
-		}
-		result := vm.SSCService.CallCXContract(req)
-		return result.Result, result.LeftOverGas, result.Err
+	req := &api.CXTCallRequest{
+		TargetShardId: targetShardId,
+		TxHash:        vm.Context.TxHash.Bytes(),
+		Caller:        caller.Address(),
+		Addr:          addr,
+		Input:         input,
+		Gas:           gas,
+		GasPrice:      vm.Context.GasPrice,
+		Value:         value,
 	}
-
-	if vm.executionType == SimulationReCall {
-		req := &api.CXTRecallRequest{
-			TargetShardId: targetShardId,
-			TxHash:        vm.Context.TxHash.Bytes(),
-			Caller:        caller.Address(),
-			Addr:          addr,
-			Input:         input,
-			Gas:           gas,
-			GasPrice:      vm.Context.GasPrice,
-			Value:         value,
-		}
-		result := vm.SSCService.RecallCXContract(req)
-		return result.Result, result.LeftOverGas, result.Err
+	result := vm.SSCService.CallCXTContract(req)
+	if len(result.Err) > 0 {
+		err = errors.New(result.Err)
 	}
-
-	return nil, gas, ErrUnsupportedExecutionTYpe
+	return result.Result, result.LeftOverGas, err
 }
 
 func (vm *SSCVM) CallFromOtherShard(fromShard uint32, caller ContractRef, addr common.Address, input []byte, gas uint64, value *big.Int) (ret []byte, leftOverGas uint64, err error) {
@@ -242,12 +226,12 @@ func (vm *SSCVM) CallFromOtherShard(fromShard uint32, caller ContractRef, addr c
 	if vm.depth > int(params.CallCreateDepth) {
 		return nil, gas, ErrDepth
 	}
-
-	if len(input) > 8+16 {
-		isCrossCall := bytes.Compare(input[9:21], CTX_PREFIX) == 0
+	if len(input) >= 4+16+16 {
+		isCrossCall := bytes.Compare(input[20:32], CTX_PREFIX) == 0
 		if isCrossCall {
-			crossShardID := uint32(input[21])<<24 + uint32(input[22])<<16 + uint32(input[23])<<8 + uint32(input[24])
-			return vm.crossCall(crossShardID, caller, addr, input[25:], gas, value)
+			crossShardID := uint32(input[32])<<24 + uint32(input[33])<<16 + uint32(input[34])<<8 + uint32(input[35])
+			crossCallInput := append(input[:4], input[36:]...)
+			return vm.crossCall(crossShardID, caller, addr, crossCallInput, gas, value)
 		}
 	}
 
@@ -331,6 +315,17 @@ func (vm *SSCVM) CallCode(caller ContractRef, addr common.Address, input []byte,
 	if vm.depth > int(params.CallCreateDepth) {
 		return nil, gas, ErrDepth
 	}
+
+	// if cross-call
+	if len(input) >= 4+16+16 {
+		isCrossCall := bytes.Compare(input[20:32], CTX_PREFIX) == 0
+		if isCrossCall {
+			crossShardID := uint32(input[32])<<24 + uint32(input[33])<<16 + uint32(input[34])<<8 + uint32(input[35])
+			crossCallInput := append(input[:4], input[36:]...)
+			return vm.crossCall(crossShardID, caller, addr, crossCallInput, gas, value)
+		}
+	}
+
 	// Fail if we're trying to transfer more than the available balance
 	if !vm.Context.CanTransfer(vm.StateDB, caller.Address(), value) {
 		return nil, gas, ErrInsufficientBalance
@@ -370,6 +365,16 @@ func (vm *SSCVM) DelegateCall(caller ContractRef, addr common.Address, input []b
 		return nil, gas, ErrDepth
 	}
 
+	// if cross-call
+	if len(input) >= 4+16+16 {
+		isCrossCall := bytes.Compare(input[20:32], CTX_PREFIX) == 0
+		if isCrossCall {
+			crossShardID := uint32(input[32])<<24 + uint32(input[33])<<16 + uint32(input[34])<<8 + uint32(input[35])
+			crossCallInput := append(input[:4], input[36:]...)
+			return vm.crossCall(crossShardID, caller, addr, crossCallInput, gas, big.NewInt(0))
+		}
+	}
+
 	var (
 		snapshot = vm.StateDB.Snapshot()
 		to       = AccountRef(caller.Address())
@@ -380,6 +385,54 @@ func (vm *SSCVM) DelegateCall(caller ContractRef, addr common.Address, input []b
 	contract.SetCallCode(&addr, vm.StateDB.GetCodeHash(addr), vm.StateDB.GetCode(addr))
 
 	ret, err = vm.run(contract, input, false)
+	if err != nil {
+		vm.StateDB.RevertToSnapshot(snapshot)
+		if err != ErrExecutionReverted {
+			contract.UseGas(contract.Gas)
+		}
+	}
+	return ret, contract.Gas, err
+}
+
+func (vm *SSCVM) StaticCall(caller ContractRef, addr common.Address, input []byte, gas uint64) (ret []byte, leftOverGas uint64, err error) {
+	if vm.vmConfig.NoRecursion && vm.depth > 0 {
+		return nil, gas, nil
+	}
+	// Fail if we're trying to execute above the call depth limit
+	if vm.depth > int(params.CallCreateDepth) {
+		return nil, gas, ErrDepth
+	}
+
+	// if cross-call
+	if len(input) >= 4+16+16 {
+		isCrossCall := bytes.Compare(input[20:32], CTX_PREFIX) == 0
+		if isCrossCall {
+			crossShardID := uint32(input[32])<<24 + uint32(input[33])<<16 + uint32(input[34])<<8 + uint32(input[35])
+			crossCallInput := append(input[:4], input[36:]...)
+			return vm.crossCall(crossShardID, caller, addr, crossCallInput, gas, big.NewInt(0))
+		}
+	}
+
+	var (
+		to       = AccountRef(addr)
+		snapshot = vm.StateDB.Snapshot()
+	)
+	// Initialise a new contract and set the code that is to be used by the
+	// EVM. The contract is a scoped environment for this execution context
+	// only.
+	contract := NewContract(caller, to, new(big.Int), gas)
+	contract.SetCallCode(&addr, vm.StateDB.GetCodeHash(addr), vm.StateDB.GetCode(addr))
+
+	// We do an AddBalance of zero here, just in order to trigger a touch.
+	// This doesn't matter on Mainnet, where all empties are gone at the time of Byzantium,
+	// but is the correct thing to do and matters on other networks, in tests, and potential
+	// future scenarios
+	vm.StateDB.AddBalance(addr, bigZero)
+
+	// When an error was returned by the EVM or when setting the creation code
+	// above we revert to the snapshot and consume any gas remaining. Additionally
+	// when we're in Homestead this also counts for code storage gas errors.
+	ret, err = vm.run(contract, input, true)
 	if err != nil {
 		vm.StateDB.RevertToSnapshot(snapshot)
 		if err != ErrExecutionReverted {
@@ -432,12 +485,23 @@ func (vm *SSCVM) run(contract *Contract, input []byte, readOnly bool) ([]byte, e
 			}
 			return RunPrecompiledContract(p, input, contract)
 		}
+		writeCapablePrecompiles := WriteCapablePrecompiledSSCContracts
 		// it's used to cross-call for harmony, we don't need to RunWriteCapablePrecompiledContract
-		// if len(writeCapablePrecompiles) > 0 {
-		// 	if p := writeCapablePrecompiles[*contract.CodeAddr]; p != nil {
-		// 		return RunWriteCapablePrecompiledContract(p, vm, contract, input, readOnly)
-		// 	}
-		// }
+		if len(writeCapablePrecompiles) > 0 {
+			if p := writeCapablePrecompiles[*contract.CodeAddr]; p != nil {
+				if readOnly {
+					return nil, errWriteProtection
+				}
+				gas, err := p.RequiredGas(vm, contract, input)
+				if err != nil {
+					return nil, err
+				}
+				if !contract.UseGas(gas) {
+					return nil, ErrOutOfGas
+				}
+				return p.RunWriteCapable(vm, contract, input)
+			}
+		}
 	}
 	for _, interpreter := range vm.interpreters {
 		if interpreter.CanRun(contract.Code) {
@@ -549,6 +613,9 @@ func (vm *SSCVM) Create2(caller ContractRef, code []byte, gas uint64, endowment 
 }
 
 func (vm *SSCVM) Transfer(from common.Address, to common.Address, amount *big.Int, transferType TransferType) {
+	if amount == nil || amount.Sign() == 0 {
+		return
+	}
 	switch vm.executionType {
 	case SimulationCall:
 		vm.transfer_Call(from, to, amount, transferType)
@@ -564,9 +631,9 @@ func (vm *SSCVM) Transfer(from common.Address, to common.Address, amount *big.In
 func (vm *SSCVM) transfer_Call(from common.Address, to common.Address, amount *big.Int, transferType TransferType) {
 	txHash := vm.Context.TxHash
 	if transferType == Internal {
-		vm.SSCService.SubBalance(txHash, from, amount)
+		vm.SSCService.SubBalance(vm.StateDB, txHash, from, amount)
 	}
-	vm.SSCService.AddBalance(txHash, to, amount)
+	vm.SSCService.AddBalance(vm.StateDB, txHash, to, amount)
 }
 
 func (vm *SSCVM) transfer_Recall(from common.Address, to common.Address, amount *big.Int, transferType TransferType) {
@@ -578,7 +645,11 @@ func (vm *SSCVM) transfer_RV(from common.Address, to common.Address, amount *big
 }
 
 func (vm *SSCVM) transfer_EV(from common.Address, to common.Address, amount *big.Int, transferType TransferType) {
-
+	txHash := vm.Context.TxHash
+	if transferType == Internal {
+		vm.SSCService.SubSimuBalance(txHash, from, amount)
+	}
+	vm.SSCService.AddSimuBalance(txHash, to, amount)
 }
 
 func (vm *SSCVM) CanTransfer(from common.Address, amount *big.Int, transferType TransferType) bool {

@@ -161,8 +161,8 @@ func (d *Downloader) waitForBootFinish() {
 }
 
 func (d *Downloader) waitForEnoughStreams(requiredStreams int) (bool, int) {
-	d.logger.Info().Int("requiredStreams", requiredStreams).
-		Msg("waiting for enough stream connections to continue syncing")
+	// tempDelete d.logger.Info().Int("requiredStreams", requiredStreams).
+	// tempDelete 	Msg("waiting for enough stream connections to continue syncing")
 
 	evtCh := make(chan streammanager.EvtStreamAdded, 1)
 	sub := d.syncProtocol.SubscribeAddStreamEvent(evtCh)
@@ -226,7 +226,7 @@ func (d *Downloader) loop() {
 				d.waitForEnoughStreams(d.config.MinStreams)
 			}
 			if err != nil {
-				//TODO: if there is a bad block which can't be resolved
+				// TODO: if there is a bad block which can't be resolved
 				if d.stagedSyncInstance.invalidBlock.Active {
 					numTriedStreams := len(d.stagedSyncInstance.invalidBlock.StreamID)
 					// if many streams couldn't solve it, then that's an unresolvable bad block
@@ -237,7 +237,7 @@ func (d *Downloader) loop() {
 								Msg(WrapStagedSyncMsg("unresolvable bad block"))
 							d.stagedSyncInstance.invalidBlock.IsLogged = true
 						}
-						//TODO: if we don't have any new or untried stream in the list, sleep or panic
+						// TODO: if we don't have any new or untried stream in the list, sleep or panic
 					}
 				}
 				// If any error happens, sleep 5 seconds and retry
@@ -253,11 +253,11 @@ func (d *Downloader) loop() {
 				break
 			}
 			if initSync {
-				d.logger.Info().Int("block added", addedBN).
-					Uint64("current height", d.bc.CurrentBlock().NumberU64()).
-					Bool("initSync", initSync).
-					Uint32("shard", d.bc.ShardID()).
-					Msg(WrapStagedSyncMsg("sync finished"))
+				// tempDelete d.logger.Info().Int("block added", addedBN).
+				// tempDelete 	Uint64("current height", d.bc.CurrentBlock().NumberU64()).
+				// tempDelete 	Bool("initSync", initSync).
+				// tempDelete 	Uint32("shard", d.bc.ShardID()).
+				// tempDelete 	Msg(WrapStagedSyncMsg("sync finished"))
 			}
 			// If block number has been changed, trigger another sync
 			if addedBN != 0 {

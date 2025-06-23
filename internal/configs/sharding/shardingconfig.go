@@ -52,6 +52,8 @@ type Schedule interface {
 
 // Instance is one sharding configuration instance.
 type Instance interface {
+	UseSameAccountEachShard() bool
+
 	// NumShards returns the number of shards in the network.
 	NumShards() uint32
 

@@ -3,7 +3,6 @@ package blockproposal
 import (
 	msg_pb "github.com/harmony-one/harmony/api/proto/message"
 	"github.com/harmony-one/harmony/consensus"
-	"github.com/harmony-one/harmony/internal/utils"
 )
 
 // Service is a block proposal service.
@@ -35,9 +34,9 @@ func (s *Service) run() {
 
 // Stop stops block proposal service.
 func (s *Service) Stop() error {
-	utils.Logger().Info().Msg("Stopping block proposal service.")
+	// tempDelete utils.Logger().Info().Msg("Stopping block proposal service.")
 	s.stopChan <- struct{}{}
 	<-s.stoppedChan
-	utils.Logger().Info().Msg("Role conversion stopped.")
+	// tempDelete utils.Logger().Info().Msg("Role conversion stopped.")
 	return nil
 }

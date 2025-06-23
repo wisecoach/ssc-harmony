@@ -17,6 +17,8 @@
 package vm
 
 import (
+	"github.com/harmony-one/harmony/internal/params"
+	"github.com/harmony-one/harmony/ssc/api"
 	"math/big"
 
 	"github.com/harmony-one/harmony/numeric"
@@ -50,6 +52,9 @@ type StateDB interface {
 	IsValidator(common.Address) bool
 	GetValidatorFirstElectionEpoch(addr common.Address) *big.Int
 	AddReward(*staking.ValidatorWrapper, *big.Int, map[common.Address]numeric.Dec) error
+
+	GetSSCConfig() *api.ShardSimulateCommitteeConfig
+	SetSSCConfig(config *api.ShardSimulateCommitteeConfig)
 
 	AddRefund(uint64)
 	SubRefund(uint64)
@@ -94,4 +99,16 @@ type CallContext interface {
 	DelegateCall(env *EVM, me ContractRef, addr common.Address, data []byte, gas *big.Int) ([]byte, error)
 	// Create a new contract
 	Create(env *EVM, me ContractRef, data []byte, gas, value *big.Int) ([]byte, common.Address, error)
+}
+
+type VM interface {
+	Cancel()
+	Cancelled() bool
+	Interpreter() Interpreter
+	Call(caller ContractRef, addr common.Address, input []byte, gas uint64, value *big.Int) (ret []byte, leftOverGas uint64, err error)
+	CallCode(caller ContractRef, addr common.Address, input []byte, gas uint64, value *big.Int) (ret []byte, leftOverGas uint64, err error)
+	DelegateCall(caller ContractRef, addr common.Address, input []byte, gas uint64) (ret []byte, leftOverGas uint64, err error)
+	Create(caller ContractRef, code []byte, gas uint64, value *big.Int) (ret []byte, contractAddr common.Address, leftOverGas uint64, err error)
+	Create2(caller ContractRef, code []byte, gas uint64, endowment *big.Int, salt *big.Int) (ret []byte, contractAddr common.Address, leftOverGas uint64, err error)
+	ChainConfig() *params.ChainConfig
 }

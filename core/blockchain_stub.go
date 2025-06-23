@@ -34,6 +34,11 @@ type Stub struct {
 	Name string
 }
 
+func (a Stub) SetSSCService(sscService api.Service) {
+	// TODO implement me
+	panic("implement me")
+}
+
 func (a Stub) LockableState() (*vm.LockableState, error) {
 	return nil, errors.Errorf("method LockableState not implemented for %s", a.Name)
 }

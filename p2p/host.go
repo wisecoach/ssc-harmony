@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/binary"
 	"fmt"
-	"net"
 	"os"
 	"runtime"
 	"strings"
@@ -339,11 +338,11 @@ func NewHost(cfg HostConfig) (Host, error) {
 		banned:        banned,
 	}
 
-	utils.Logger().Info().
-		Str("self", net.JoinHostPort(self.IP, self.Port)).
-		Interface("PeerID", self.PeerID).
-		Str("PubKey", self.ConsensusPubKey.SerializeToHexStr()).
-		Msg("libp2p host ready")
+	// tempDelete utils.Logger().Info().
+	// tempDelete 	Str("self", net.JoinHostPort(self.IP, self.Port)).
+	// tempDelete 	Interface("PeerID", self.PeerID).
+	// tempDelete 	Str("BLSPubKey", self.ConsensusPubKey.SerializeToHexStr()).
+	// tempDelete 	Msg("libp2p host ready")
 	return h, nil
 }
 
@@ -527,7 +526,7 @@ func (host *HostV2) AddPeer(p *Peer) error {
 
 	p.Addrs = append(p.Addrs, targetAddr)
 	host.Peerstore().AddAddrs(p.PeerID, p.Addrs, libp2p_peerstore.PermanentAddrTTL)
-	host.logger.Info().Interface("peer", *p).Msg("AddPeer add to libp2p_peerstore")
+	// tempDelete host.logger.Info().Interface("peer", *p).Msg("AddPeer add to libp2p_peerstore")
 	return nil
 }
 
@@ -606,7 +605,7 @@ func (host *HostV2) ConnectHostPeer(peer Peer) error {
 		host.logger.Warn().Err(err).Interface("peer", peer).Msg("can't connect to peer")
 		return err
 	}
-	host.logger.Info().Interface("node", *peerInfo).Msg("connected to peer host")
+	// tempDelete host.logger.Info().Interface("node", *peerInfo).Msg("connected to peer host")
 	return nil
 }
 

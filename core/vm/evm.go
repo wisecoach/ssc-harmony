@@ -544,8 +544,10 @@ func (evm *EVM) create(caller ContractRef, codeAndHash *codeAndHash, gas uint64,
 		evm.vmConfig.Tracer.CaptureStart(evm, caller.Address(), address, true, codeAndHash.code, gas, value)
 	}
 	start := time.Now()
-
+	hex := common.Bytes2Hex(codeAndHash.code)
 	ret, err := run(evm, contract, nil, false)
+	println("create contract with code", hex)
+	println("initialized contract with code", common.Bytes2Hex(ret))
 
 	// check whether the max code size has been exceeded
 	maxCodeSizeExceeded := evm.ChainConfig().IsEIP155(evm.EpochNumber) && len(ret) > params.MaxCodeSize

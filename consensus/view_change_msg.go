@@ -40,10 +40,10 @@ func (consensus *Consensus) constructViewChangeMessage(priKey *bls.PrivateKeyWra
 	var encodedBlock []byte
 	if preparedMsg != nil {
 		block := consensus.fBFTLog.GetBlockByHash(preparedMsg.BlockHash)
-		consensus.getLogger().Info().
-			Interface("Block", block).
-			Interface("preparedMsg", preparedMsg).
-			Msg("[constructViewChangeMessage] found prepared msg")
+		// tempDelete consensus.getLogger().Info().
+		// tempDelete 	Interface("Block", block).
+		// tempDelete 	Interface("preparedMsg", preparedMsg).
+		// tempDelete 	Msg("[constructViewChangeMessage] found prepared msg")
 		if block != nil {
 			if err := consensus.verifyBlock(block); err == nil {
 				tmpEncoded, err := rlp.EncodeToBytes(block)
@@ -69,11 +69,11 @@ func (consensus *Consensus) constructViewChangeMessage(priKey *bls.PrivateKeyWra
 		vcMsg.PreparedBlock = encodedBlock
 	}
 
-	consensus.getLogger().Info().
-		Hex("m1Payload", vcMsg.Payload).
-		Str("NextLeader", consensus.LeaderPubKey.Bytes.Hex()).
-		Str("SenderPubKey", priKey.Pub.Bytes.Hex()).
-		Msg("[constructViewChangeMessage]")
+	// tempDelete consensus.getLogger().Info().
+	// tempDelete 	Hex("m1Payload", vcMsg.Payload).
+	// tempDelete 	Str("NextLeader", consensus.LeaderPubKey.Bytes.Hex()).
+	// tempDelete 	Str("SenderPubKey", priKey.Pub.Bytes.Hex()).
+	// tempDelete 	Msg("[constructViewChangeMessage]")
 
 	sign := priKey.Pri.SignHash(msgToSign)
 	if sign != nil {

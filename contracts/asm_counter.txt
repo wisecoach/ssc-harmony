@@ -1,0 +1,400 @@
+EVM assembly:
+    /* "Counter2.sol":162:640  contract CrossCounter {... */
+  mstore(0x40, 0x80)
+    /* "Counter2.sol":218:219  1 */
+  0x01
+    /* "Counter2.sol":190:219  uint256 private cross_cnt = 1 */
+  0x00
+  sstore
+    /* "Counter2.sol":248:335  constructor(address targetAddress) {  ... */
+  callvalue
+  dup1
+  iszero
+  tag_1
+  jumpi
+  0x00
+  dup1
+  revert
+tag_1:
+  pop
+  mload(0x40)
+  sub(codesize, bytecodeSize)
+  dup1
+  bytecodeSize
+  dup4
+  codecopy
+  dup2
+  dup2
+  add
+  0x40
+  mstore
+  0x20
+  dup2
+  lt
+  iszero
+  tag_2
+  jumpi
+  0x00
+  dup1
+  revert
+tag_2:
+  dup2
+  add
+  swap1
+  dup1
+  dup1
+  mload
+  swap1
+  0x20
+  add
+  swap1
+  swap3
+  swap2
+  swap1
+  pop
+  pop
+  pop
+    /* "Counter2.sol":312:325  targetAddress */
+  dup1
+    /* "Counter2.sol":295:301  target */
+  0x01
+  0x00
+    /* "Counter2.sol":295:326  target = Counter(targetAddress) */
+  0x0100
+  exp
+  dup2
+  sload
+  dup2
+  0xffffffffffffffffffffffffffffffffffffffff
+  mul
+  not
+  and
+  swap1
+  dup4
+  0xffffffffffffffffffffffffffffffffffffffff
+  and
+  mul
+  or
+  swap1
+  sstore
+  pop
+    /* "Counter2.sol":248:335  constructor(address targetAddress) {  ... */
+  pop
+    /* "Counter2.sol":162:640  contract CrossCounter {... */
+  dataSize(sub_0)
+  dup1
+  dataOffset(sub_0)
+  0x00
+  codecopy
+  0x00
+  return
+stop
+
+sub_0: assembly {
+        /* "Counter2.sol":162:640  contract CrossCounter {... */
+      mstore(0x40, 0x80)
+      callvalue
+      dup1
+      iszero
+      tag_1
+      jumpi
+      0x00
+      dup1
+      revert
+    tag_1:
+      pop
+      jumpi(tag_2, lt(calldatasize, 0x04))
+      shr(0xe0, calldataload(0x00))
+      dup1
+      0x9ffeb78b
+      eq
+      tag_3
+      jumpi
+      dup1
+      0xa87d942c
+      eq
+      tag_4
+      jumpi
+    tag_2:
+      0x00
+      dup1
+      revert
+        /* "Counter2.sol":343:444  function crossCnt() public {... */
+    tag_3:
+      tag_5
+      tag_6
+      jump	// in
+    tag_5:
+      stop
+        /* "Counter2.sol":450:638  function getCount() public view returns (uint256) {... */
+    tag_4:
+      tag_7
+      tag_8
+      jump	// in
+    tag_7:
+      mload(0x40)
+      dup1
+      dup3
+      dup2
+      mstore
+      0x20
+      add
+      swap2
+      pop
+      pop
+      mload(0x40)
+      dup1
+      swap2
+      sub
+      swap1
+      return
+        /* "Counter2.sol":343:444  function crossCnt() public {... */
+    tag_6:
+        /* "Counter2.sol":380:391  uint256 ret */
+      0x00
+        /* "Counter2.sol":394:400  target */
+      0x01
+      0x00
+      swap1
+      sload
+      swap1
+      0x0100
+      exp
+      swap1
+      div
+      0xffffffffffffffffffffffffffffffffffffffff
+      and
+        /* "Counter2.sol":394:409  target.getCount */
+      0xffffffffffffffffffffffffffffffffffffffff
+      and
+      0xa87d942c
+        /* "Counter2.sol":394:411  target.getCount() */
+      mload(0x40)
+      dup2
+      0xffffffff
+      and
+      0xe0
+      shl
+      dup2
+      mstore
+      0x04
+      add
+      0x20
+      mload(0x40)
+      dup1
+      dup4
+      sub
+      dup2
+      dup7
+      dup1
+      extcodesize
+      iszero
+      dup1
+      iszero
+      tag_10
+      jumpi
+      0x00
+      dup1
+      revert
+    tag_10:
+      pop
+      gas
+      staticcall
+      iszero
+      dup1
+      iszero
+      tag_12
+      jumpi
+      returndatasize
+      0x00
+      dup1
+      returndatacopy
+      revert(0x00, returndatasize)
+    tag_12:
+      pop
+      pop
+      pop
+      pop
+      mload(0x40)
+      returndatasize
+      0x20
+      dup2
+      lt
+      iszero
+      tag_13
+      jumpi
+      0x00
+      dup1
+      revert
+    tag_13:
+      dup2
+      add
+      swap1
+      dup1
+      dup1
+      mload
+      swap1
+      0x20
+      add
+      swap1
+      swap3
+      swap2
+      swap1
+      pop
+      pop
+      pop
+        /* "Counter2.sol":380:411  uint256 ret = target.getCount() */
+      swap1
+      pop
+        /* "Counter2.sol":434:437  ret */
+      dup1
+        /* "Counter2.sol":421:430  cross_cnt */
+      0x00
+      dup1
+        /* "Counter2.sol":421:437  cross_cnt += ret */
+      dup3
+      dup3
+      sload
+      add
+      swap3
+      pop
+      pop
+      dup2
+      swap1
+      sstore
+      pop
+        /* "Counter2.sol":343:444  function crossCnt() public {... */
+      pop
+      jump	// out
+        /* "Counter2.sol":450:638  function getCount() public view returns (uint256) {... */
+    tag_8:
+        /* "Counter2.sol":491:498  uint256 */
+      0x00
+        /* "Counter2.sol":510:527  uint256 targetCnt */
+      dup1
+        /* "Counter2.sol":530:536  target */
+      0x01
+      0x00
+      swap1
+      sload
+      swap1
+      0x0100
+      exp
+      swap1
+      div
+      0xffffffffffffffffffffffffffffffffffffffff
+      and
+        /* "Counter2.sol":530:545  target.getCount */
+      0xffffffffffffffffffffffffffffffffffffffff
+      and
+      0xa87d942c
+        /* "Counter2.sol":530:547  target.getCount() */
+      mload(0x40)
+      dup2
+      0xffffffff
+      and
+      0xe0
+      shl
+      dup2
+      mstore
+      0x04
+      add
+      0x20
+      mload(0x40)
+      dup1
+      dup4
+      sub
+      dup2
+      dup7
+      dup1
+      extcodesize
+      iszero
+      dup1
+      iszero
+      tag_15
+      jumpi
+      0x00
+      dup1
+      revert
+    tag_15:
+      pop
+      gas
+      staticcall
+      iszero
+      dup1
+      iszero
+      tag_17
+      jumpi
+      returndatasize
+      0x00
+      dup1
+      returndatacopy
+      revert(0x00, returndatasize)
+    tag_17:
+      pop
+      pop
+      pop
+      pop
+      mload(0x40)
+      returndatasize
+      0x20
+      dup2
+      lt
+      iszero
+      tag_18
+      jumpi
+      0x00
+      dup1
+      revert
+    tag_18:
+      dup2
+      add
+      swap1
+      dup1
+      dup1
+      mload
+      swap1
+      0x20
+      add
+      swap1
+      swap3
+      swap2
+      swap1
+      pop
+      pop
+      pop
+        /* "Counter2.sol":510:547  uint256 targetCnt = target.getCount() */
+      swap1
+      pop
+        /* "Counter2.sol":557:568  uint256 ret */
+      0x00
+        /* "Counter2.sol":584:585  5 */
+      0x05
+        /* "Counter2.sol":571:580  cross_cnt */
+      sload(0x00)
+        /* "Counter2.sol":571:585  cross_cnt << 5 */
+      swap1
+      shl
+        /* "Counter2.sol":557:585  uint256 ret = cross_cnt << 5 */
+      swap1
+      pop
+        /* "Counter2.sol":602:611  targetCnt */
+      dup2
+        /* "Counter2.sol":595:611  ret += targetCnt */
+      dup2
+      add
+      swap1
+      pop
+        /* "Counter2.sol":628:631  ret */
+      dup1
+        /* "Counter2.sol":621:631  return ret */
+      swap3
+      pop
+      pop
+      pop
+        /* "Counter2.sol":450:638  function getCount() public view returns (uint256) {... */
+      swap1
+      jump	// out
+
+    auxdata: 0xa2646970667358221220471e0419e1a039922e4b2f6dc80ee52761c5346e5927395a0e74edd0f6c08f9c64736f6c63430007060033
+}

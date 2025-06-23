@@ -11,7 +11,7 @@ const (
 )
 
 var (
-	// BLSPubKeyCache is the Cache of the Deserialized BLS PubKey
+	// BLSPubKeyCache is the Cache of the Deserialized BLS BLSPubKey
 	BLSPubKeyCache, _ = lru.New(blsPubKeyCacheSize)
 )
 

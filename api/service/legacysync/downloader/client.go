@@ -76,15 +76,15 @@ func (client *Client) WaitForConnection(t time.Duration) bool {
 func (client *Client) Close(reason string) {
 	err := client.conn.Close()
 	if err != nil {
-		utils.Logger().Info().
-			Str("peerAddress", client.addr).
-			Msg("[SYNC] unable to close peer connection")
+		// tempDelete utils.Logger().Info().
+		// tempDelete 	Str("peerAddress", client.addr).
+		// tempDelete 	Msg("[SYNC] unable to close peer connection")
 		return
 	}
-	utils.Logger().Info().
-		Str("peerAddress", client.addr).
-		Str("reason", reason).
-		Msg("[SYNC] peer connection closed")
+	// tempDelete utils.Logger().Info().
+	// tempDelete 	Str("peerAddress", client.addr).
+	// tempDelete 	Str("reason", reason).
+	// tempDelete 	Msg("[SYNC] peer connection closed")
 }
 
 // GetBlockHashes gets block hashes from all the peers by calling grpc request.

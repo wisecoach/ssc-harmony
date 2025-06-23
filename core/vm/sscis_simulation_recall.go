@@ -18,6 +18,7 @@ func newSimulationRecallInstructions() JumpTable {
 	is[CALL].execute = opCall_SSC_Recall
 	is[CALLCODE].execute = opCallCode_SSC_Recall
 	is[DELEGATECALL].execute = opDelegateCall_SSC_Recall
+	is[STATICCALL].execute = opStaticCall_SSC_Recall
 	is[RETURN].execute = opReturn_SSC_Recall
 	return is
 }
@@ -32,8 +33,9 @@ func opBalance_SSC_Recall(pc *uint64, inp Interpreter, contract *Contract, memor
 func opSload_SSC_Recall(pc *uint64, inp Interpreter, contract *Contract, memory *Memory, stack *Stack) ([]byte, error) {
 	interpreter := inp.(*SSCVMInterpreter)
 	txHash := interpreter.vm.Context.TxHash
+	db := interpreter.vm.StateDB
 	loc := stack.peek()
-	val, _ := interpreter.vm.SSCService.GetState(txHash, contract.Address(), common.BigToHash(loc))
+	val, _ := interpreter.vm.SSCService.GetState(db, txHash, contract.Address(), common.BigToHash(loc))
 	loc.SetBytes(val.Bytes())
 	return nil, nil
 }
@@ -41,9 +43,10 @@ func opSload_SSC_Recall(pc *uint64, inp Interpreter, contract *Contract, memory 
 func opSstore_SSC_Recall(pc *uint64, inp Interpreter, contract *Contract, memory *Memory, stack *Stack) ([]byte, error) {
 	interpreter := inp.(*SSCVMInterpreter)
 	txHash := interpreter.vm.Context.TxHash
+	db := interpreter.vm.StateDB
 	loc := common.BigToHash(stack.pop())
 	val := stack.pop()
-	interpreter.vm.SSCService.SetState(txHash, contract.Address(), loc, common.BigToHash(val))
+	interpreter.vm.SSCService.SetState(db, txHash, contract.Address(), loc, common.BigToHash(val))
 	interpreter.intPool.put(val)
 	return nil, nil
 }
@@ -126,6 +129,35 @@ func opDelegateCall_SSC_Recall(pc *uint64, inp Interpreter, contract *Contract, 
 	args := memory.GetPtr(inOffset.Int64(), inSize.Int64())
 
 	ret, returnGas, err := interpreter.vm.DelegateCall(contract, toAddr, args, gas)
+	if err != nil {
+		stack.push(interpreter.intPool.getZero())
+	} else {
+		stack.push(interpreter.intPool.get().SetUint64(1))
+	}
+	if err == nil || err == ErrExecutionReverted {
+		if contract.WithDataCopyFix {
+			ret = common.CopyBytes(ret)
+		}
+		memory.Set(retOffset.Uint64(), retSize.Uint64(), ret)
+	}
+	contract.Gas += returnGas
+
+	interpreter.intPool.put(addr, inOffset, inSize, retOffset, retSize)
+	return ret, nil
+}
+
+func opStaticCall_SSC_Recall(pc *uint64, inp Interpreter, contract *Contract, memory *Memory, stack *Stack) ([]byte, error) {
+	interpreter := inp.(*SSCVMInterpreter)
+	// Pop gas. The actual gas is in interpreter.evm.callGasTemp.
+	interpreter.intPool.put(stack.pop())
+	gas := interpreter.vm.callGasTemp
+	// Pop other call parameters.
+	addr, inOffset, inSize, retOffset, retSize := stack.pop(), stack.pop(), stack.pop(), stack.pop(), stack.pop()
+	toAddr := common.BigToAddress(addr)
+	// Get arguments from the memory.
+	args := memory.GetPtr(inOffset.Int64(), inSize.Int64())
+
+	ret, returnGas, err := interpreter.vm.StaticCall(contract, toAddr, args, gas)
 	if err != nil {
 		stack.push(interpreter.intPool.getZero())
 	} else {

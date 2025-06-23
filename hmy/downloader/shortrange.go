@@ -53,14 +53,14 @@ func (d *Downloader) doShortRangeSync() (int, error) {
 	}
 
 	expEndBN := curBN + uint64(len(hashChain))
-	d.logger.Info().Uint64("current number", curBN).
-		Uint64("target number", expEndBN).
-		Interface("hashChain", hashChain).
-		Msg("short range start syncing")
+	// tempDelete d.logger.Info().Uint64("current number", curBN).
+	// tempDelete 	Uint64("target number", expEndBN).
+	// tempDelete 	Interface("hashChain", hashChain).
+	// tempDelete 	Msg("short range start syncing")
 	d.startSyncing()
 	d.status.setTargetBN(expEndBN)
 	defer func() {
-		d.logger.Info().Msg("short range finished syncing")
+		// tempDelete d.logger.Info().Msg("short range finished syncing")
 		d.finishSyncing()
 	}()
 
@@ -72,7 +72,7 @@ func (d *Downloader) doShortRangeSync() (int, error) {
 		}
 		return 0, errors.Wrap(err, "getBlocksByHashes")
 	}
-	d.logger.Info().Int("num blocks", len(blocks)).Msg("getBlockByHashes result")
+	// tempDelete d.logger.Info().Int("num blocks", len(blocks)).Msg("getBlockByHashes result")
 
 	n, err := verifyAndInsertBlocks(d.bc, blocks)
 	numBlocksInsertedShortRangeHistogramVec.With(d.promLabels()).Observe(float64(n))
@@ -87,7 +87,7 @@ func (d *Downloader) doShortRangeSync() (int, error) {
 		}
 		return n, err
 	}
-	d.logger.Info().Err(err).Int("blocks inserted", n).Msg("Insert block success")
+	// tempDelete d.logger.Info().Err(err).Int("blocks inserted", n).Msg("Insert block success")
 
 	return len(blocks), nil
 }
@@ -110,7 +110,7 @@ func (d *Downloader) doShortRangeSyncForEpochSync() (int, error) {
 	}
 	curBN := d.bc.CurrentBlock().NumberU64()
 	bns := make([]uint64, 0, numBlocksByNumPerRequest)
-	loopEpoch := d.bc.CurrentHeader().Epoch().Uint64() //+ 1
+	loopEpoch := d.bc.CurrentHeader().Epoch().Uint64() // + 1
 	for len(bns) < numBlocksByNumPerRequest {
 		blockNum := shard.Schedule.EpochLastBlock(loopEpoch)
 		if blockNum > curBN {
@@ -137,7 +137,7 @@ func (d *Downloader) doShortRangeSyncForEpochSync() (int, error) {
 		sh.removeStreams([]sttypes.StreamID{streamID}) // Data provided by remote nodes is corrupted
 		return n, err
 	}
-	d.logger.Info().Err(err).Int("blocks inserted", n).Msg("Insert block success")
+	// tempDelete d.logger.Info().Err(err).Int("blocks inserted", n).Msg("Insert block success")
 
 	return len(blocks), nil
 }
@@ -166,11 +166,11 @@ func (sh *srHelper) getHashChain(bns []uint64) ([]common.Hash, []sttypes.StreamI
 					Msg("doGetBlockHashes return error")
 				return
 			}
-			sh.logger.Info().
-				Str("StreamID", string(stid)).
-				Int("hashes", len(hashes)).
-				Interface("hashes", hashes).Int("index", index).
-				Msg("GetBlockHashesRequests response")
+			// tempDelete sh.logger.Info().
+			// tempDelete 	Str("StreamID", string(stid)).
+			// tempDelete 	Int("hashes", len(hashes)).
+			// tempDelete 	Interface("hashes", hashes).Int("index", index).
+			// tempDelete 	Msg("GetBlockHashesRequests response")
 			results.addResult(hashes, stid)
 		}(i)
 	}
@@ -178,16 +178,16 @@ func (sh *srHelper) getHashChain(bns []uint64) ([]common.Hash, []sttypes.StreamI
 
 	select {
 	case <-sh.ctx.Done():
-		sh.logger.Info().Err(sh.ctx.Err()).Int("num blocks", results.numBlocksWithResults()).
-			Msg("short range sync get hashes timed out")
+		// tempDelete sh.logger.Info().Err(sh.ctx.Err()).Int("num blocks", results.numBlocksWithResults()).
+		// tempDelete 	Msg("short range sync get hashes timed out")
 		return nil, nil, sh.ctx.Err()
 	default:
 	}
 
-	sh.logger.Info().Msg("compute longest hash chain")
+	// tempDelete sh.logger.Info().Msg("compute longest hash chain")
 	hashChain, wl := results.computeLongestHashChain()
-	sh.logger.Info().Int("hashChain size", len(hashChain)).Int("whitelist", len(wl)).
-		Msg("computeLongestHashChain result")
+	// tempDelete sh.logger.Info().Int("hashChain size", len(hashChain)).Int("whitelist", len(wl)).
+	// tempDelete 	Msg("computeLongestHashChain result")
 	return hashChain, wl, nil
 }
 
@@ -241,8 +241,8 @@ func (sh *srHelper) getBlocksByHashes(hashes []common.Hash, whitelist []sttypes.
 					sh.logger.Err(err).Str("StreamID", string(stid)).Msg("getBlocksByHashes worker failed")
 					m.handleResultError(hashes, stid)
 				} else {
-					sh.logger.Info().Str("StreamID", string(stid)).Int("blocks", len(blocks)).
-						Int("index", index).Msg("doGetBlocksByHashesRequest response")
+					// tempDelete sh.logger.Info().Str("StreamID", string(stid)).Int("blocks", len(blocks)).
+					// tempDelete 	Int("index", index).Msg("doGetBlocksByHashesRequest response")
 					m.addResult(hashes, blocks, stid)
 				}
 			}

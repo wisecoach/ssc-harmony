@@ -54,6 +54,8 @@ type DownloadAsync interface {
 	DownloadAsync()
 }
 
+type UpdatePublicKeysFunc func(pubKeys []bls_cosi.PublicKeyWrapper)
+
 // Consensus is the main struct with all states and data related to consensus process.
 type Consensus struct {
 	decider quorum.Decider
@@ -129,11 +131,13 @@ type Consensus struct {
 	// Temporary flag to control whether aggregate signature signing is enabled
 	AggregateSig bool
 
+	UpdatePublicKeysFunc UpdatePublicKeysFunc
+
 	// TODO (leo): an new metrics system to keep track of the consensus/viewchange
 	// finality of previous consensus in the unit of milliseconds
 	finality int64
 	// finalityCounter keep tracks of the finality time
-	finalityCounter atomic.Value //int64
+	finalityCounter atomic.Value // int64
 
 	dHelper DownloadAsync
 

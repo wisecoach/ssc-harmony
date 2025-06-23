@@ -19,10 +19,6 @@ package core
 import (
 	"encoding/binary"
 	"fmt"
-	"github.com/harmony-one/harmony/ssc/api"
-	"math/big"
-	"time"
-
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/crypto"
 	"github.com/ethereum/go-ethereum/rlp"
@@ -36,11 +32,14 @@ import (
 	"github.com/harmony-one/harmony/internal/params"
 	"github.com/harmony-one/harmony/internal/utils"
 	"github.com/harmony-one/harmony/shard"
+	"github.com/harmony-one/harmony/ssc/api"
 	"github.com/harmony-one/harmony/staking/effective"
 	"github.com/harmony-one/harmony/staking/slash"
 	staking "github.com/harmony-one/harmony/staking/types"
 	lru "github.com/hashicorp/golang-lru"
 	"github.com/pkg/errors"
+	"math/big"
+	"time"
 )
 
 var (
@@ -60,6 +59,7 @@ type StateProcessor struct {
 	bc          BlockChain // Canonical blockchain
 	beacon      BlockChain // Beacon chain
 	resultCache *lru.Cache // Cache for result after a certain block is processed
+	sscService  api.Service
 }
 
 // this structure is cached, and each individual element is returned
@@ -113,7 +113,7 @@ func (p *StateProcessor) Process(
 			// Return the cached result to avoid process the same block again.
 			// Only the successful results are cached in case for retry.
 			result := cached.(*ProcessorResult)
-			utils.Logger().Info().Str("block num", block.Number().String()).Msg("result cache hit.")
+			// tempDelete utils.Logger().Info().Str("block num", block.Number().String()).Msg("result cache hit.")
 			return result.Receipts, result.CxReceipts, result.StakeMsgs, result.Logs, result.UsedGas, result.Reward, result.State, nil
 		}
 	}
@@ -157,9 +157,18 @@ func (p *StateProcessor) Process(
 		// Iterate over and process the individual transactions
 		for i, tx := range block.Transactions() {
 			statedb.Prepare(tx.Hash(), block.Hash(), i)
-			receipt, cxReceipt, stakeMsgs, _, err := ApplyTransaction(
-				p.bc, &beneficiary, gp, statedb, header, tx, usedGas, cfg,
+			var (
+				receipt   *types.Receipt
+				cxReceipt *types.CXReceipt
+				stakeMsgs []staking.StakeMsg
 			)
+			if tx.CrossShard() {
+				receipt, cxReceipt, stakeMsgs, _, err = ApplyCXTTransaction(p.sscService, p.bc, &beneficiary, gp, statedb, header, tx, usedGas, cfg)
+			} else {
+				receipt, cxReceipt, stakeMsgs, _, err = ApplyTransaction(
+					p.bc, &beneficiary, gp, statedb, header, tx, usedGas, cfg,
+				)
+			}
 			if err != nil {
 				return nil, nil, nil, nil, 0, nil, statedb, err
 			}
@@ -383,43 +392,107 @@ func ApplyTransaction(bc ChainContext, author *common.Address, gp *GasPool, stat
 	return receipt, cxReceipt, vmenv.StakeMsgs, result.UsedGas, err
 }
 
-func SimulateCXTransaction(service api.Service, bc ChainContext, author *common.Address, gp *GasPool, statedb *state.DB, header *block.Header, tx *types.Transaction, usedGas *uint64, cfg vm.Config) (*types.Receipt, *types.CXReceipt, []staking.StakeMsg, uint64, error) {
-	req := &api.CXTSimulationRequest{
-		Header: header,
-		Tx:     tx,
-		Author: author,
+func ApplyCXTTransaction(service api.Service, bc ChainContext, author *common.Address, gp *GasPool, statedb *state.DB, header *block.Header, tx *types.Transaction, usedGas *uint64, cfg vm.Config) (*types.Receipt, *types.CXReceipt, []staking.StakeMsg, uint64, error) {
+	config := bc.Config()
+	txType := getTransactionType(bc.Config(), header, tx)
+	if txType == types.InvalidTx {
+		return nil, nil, nil, 0, errors.New("Invalid Transaction Type")
 	}
-	result := service.SimulateCXTransaction(req)
-	if result.Err != nil {
-		return nil, nil, nil, 0, result.Err
+	var signer types.Signer
+	if tx.IsEthCompatible() {
+		if !config.IsEthCompatible(header.Epoch()) {
+			return nil, nil, nil, 0, errors.New("ethereum compatible transactions not supported at current epoch")
+		}
+		signer = types.NewEIP155Signer(config.EthCompatibleChainID)
+	} else {
+		signer = types.MakeSigner(config, header.Epoch())
 	}
-	return result.Receipt, nil, make([]staking.StakeMsg, 0), result.UsedGas, nil
+	msg, err := tx.AsMessage(signer)
+	if err != nil {
+		return nil, nil, nil, 0, err
+	}
+	// if the transaction is a transaction need to be executed on chain
+	if vm.SSCAddrsApplyOnChain[*tx.To()] != nil {
+
+		vmCtx := NewSSCVMContext(msg.From(), tx.Hash(), api.CallIndex{}, tx.GasPrice(), header, bc, author)
+		sscvm := vm.NewSSCVM(vmCtx, statedb, config, cfg, service, vm.ExecutionVerify)
+		result, err := NewSSCStateTransition(sscvm, msg, gp).TransitionDb()
+		if err != nil {
+			return nil, nil, nil, 0, err
+		}
+		root := statedb.IntermediateRoot(config.IsS3(header.Epoch())).Bytes()
+
+		receipt := types.NewReceipt(root, err != nil, result.UsedGas)
+		receipt.Logs = make([]*types.Log, 0)
+		receipt.Bloom = types.CreateBloom(types.Receipts{receipt})
+		receipt.TxHash = tx.Hash()
+		receipt.GasUsed = result.UsedGas
+		return receipt, nil, nil, result.UsedGas, nil
+	}
+
+	statedb.SetNonce(msg.From(), statedb.GetNonce(msg.From())+1)
+	// if the transaction is a normal cross-shard transaction, it need to be stimulated which is called by block author, no need to execute it
+	root := statedb.IntermediateRoot(bc.Config().IsS3(header.Epoch())).Bytes()
+	receipt := types.NewReceipt(root, false, *usedGas)
+	receipt.Logs = make([]*types.Log, 0)
+	receipt.Bloom = types.CreateBloom(types.Receipts{receipt})
+	receipt.TxHash = tx.Hash()
+	receipt.GasUsed = 0
+	return receipt, nil, make([]staking.StakeMsg, 0), 0, nil
 }
 
-// ApplyCXTransaction
-//
-//	@Description:
-func ApplyCXTransaction(bc ChainContext, author *common.Address, gp *GasPool, statedb *state.DB, header *block.Header, tx *types.Transaction, usedGas *uint64, cfg vm.Config) (*types.Receipt, *types.CXReceipt, []staking.StakeMsg, uint64, error) {
-	panic("implement me")
-	// config := bc.Config()
-	// txType := getTransactionType(config, header, tx)
-	// var signer types.Signer
-	// if tx.IsEthCompatible() {
-	// 	if !config.IsEthCompatible(header.Epoch()) {
-	// 		return nil, nil, nil, 0, errors.New("ethereum compatible transactions not supported at current epoch")
-	// 	}
-	// 	signer = types.NewEIP155Signer(config.EthCompatibleChainID)
-	// } else {
-	// 	signer = types.MakeSigner(config, header.Epoch())
-	// }
-	// msg, err := tx.AsMessage(signer)
-	//
-	// // Create a new context to be used in the EVM environment
-	// context := NewEVMContext(msg, header, bc, author)
-	// context.TxType = txType
-	// // Create a new environment which holds all relevant information
-	// // about the transaction and calling mechanisms.
-	// vmenv := vm.NewEVM(context, statedb, config, cfg)
+func SimulateCXTransaction(service api.Service, bc ChainContext, author *common.Address, gp *GasPool, statedb *state.DB, header *block.Header, tx *types.Transaction, usedGas *uint64, cfg vm.Config) (*types.Receipt, *types.CXReceipt, []staking.StakeMsg, uint64, error) {
+	config := bc.Config()
+	txType := getTransactionType(bc.Config(), header, tx)
+	if txType == types.InvalidTx {
+		return nil, nil, nil, 0, errors.New("Invalid Transaction Type")
+	}
+	var signer types.Signer
+	if tx.IsEthCompatible() {
+		if !config.IsEthCompatible(header.Epoch()) {
+			return nil, nil, nil, 0, errors.New("ethereum compatible transactions not supported at current epoch")
+		}
+		signer = types.NewEIP155Signer(config.EthCompatibleChainID)
+	} else {
+		signer = types.MakeSigner(config, header.Epoch())
+	}
+	msg, err := tx.AsMessage(signer)
+	if err != nil {
+		return nil, nil, nil, 0, err
+	}
+	if vm.SSCAddrsApplyOnChain[*tx.To()] != nil {
+		vmCtx := NewSSCVMContext(msg.From(), tx.Hash(), api.CallIndex{}, tx.GasPrice(), header, bc, author)
+		sscvm := vm.NewSSCVM(vmCtx, statedb, config, cfg, service, vm.SimulationCall)
+		result, err := NewSSCStateTransition(sscvm, msg, gp).TransitionDb()
+		if err != nil {
+			return nil, nil, nil, 0, err
+		}
+		root := statedb.IntermediateRoot(config.IsS3(header.Epoch())).Bytes()
+
+		receipt := types.NewReceipt(root, err != nil, result.UsedGas)
+		receipt.Logs = make([]*types.Log, 0)
+		receipt.Bloom = types.CreateBloom(types.Receipts{receipt})
+		receipt.TxHash = tx.Hash()
+		receipt.GasUsed = result.UsedGas
+		return receipt, nil, nil, result.UsedGas, nil
+	} else {
+		result, err := service.SimulationResult(tx.Hash())
+		if err != nil {
+			return nil, nil, nil, 0, err
+		}
+		if len(result.Err) > 0 {
+			return nil, nil, nil, 0, errors.New(result.Err)
+		}
+		// return the empty receipt, since the cx transaction is not executed on chain, shouldn't update the state
+		statedb.SetNonce(msg.From(), statedb.GetNonce(msg.From())+1)
+		root := statedb.IntermediateRoot(bc.Config().IsS3(header.Epoch()))
+		receipt := types.NewReceipt(root.Bytes(), false, *usedGas)
+		receipt.Logs = make([]*types.Log, 0)
+		receipt.Bloom = types.CreateBloom(types.Receipts{receipt})
+		receipt.TxHash = tx.Hash()
+		receipt.GasUsed = 0
+		return receipt, nil, make([]staking.StakeMsg, 0), result.UsedGas, nil
+	}
 }
 
 // ApplyStakingTransaction attempts to apply a staking transaction to the given state database
@@ -463,7 +536,7 @@ func ApplyStakingTransaction(
 
 	if config.IsReceiptLog(header.Epoch()) {
 		receipt.Logs = statedb.GetLogs(tx.Hash(), header.Number().Uint64(), header.Hash())
-		utils.Logger().Info().Interface("CollectReward", receipt.Logs)
+		// tempDelete utils.Logger().Info().Interface("CollectReward", receipt.Logs)
 	}
 
 	return receipt, gas, nil
@@ -484,8 +557,8 @@ func ApplyIncomingReceipt(
 				"ApplyIncomingReceipts: Invalid incomingReceipt! %v", cx,
 			)
 		}
-		utils.Logger().Info().Interface("receipt", cx).
-			Msgf("ApplyIncomingReceipts: ADDING BALANCE %d", cx.Amount)
+		// tempDelete utils.Logger().Info().Interface("receipt", cx).
+		// tempDelete 	Msgf("ApplyIncomingReceipts: ADDING BALANCE %d", cx.Amount)
 
 		if !db.Exist(*cx.To) {
 			db.CreateAccount(*cx.To)

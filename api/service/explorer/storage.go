@@ -81,7 +81,7 @@ type (
 	storage struct {
 		db database
 		bc core.BlockChain
-		rb Bitmap //*roaring64.Bitmap
+		rb Bitmap // *roaring64.Bitmap
 
 		// TODO: optimize this with priority queue
 		tm      *taskManager
@@ -109,11 +109,11 @@ func newExplorerDB(hc *harmonyconfig.HarmonyConfig, dbPath string) (database, er
 		// init the storage using tikv
 		dbPath = fmt.Sprintf("explorer_tikv_%d", hc.General.ShardID)
 		readOnly := hc.TiKV.Role == tikv.RoleReader
-		utils.Logger().Info().Msg("explorer storage in tikv: " + dbPath)
+		// tempDelete utils.Logger().Info().Msg("explorer storage in tikv: " + dbPath)
 		return newExplorerTiKv(hc.TiKV.PDAddr, dbPath, readOnly)
 	} else {
 		// or leveldb
-		utils.Logger().Info().Msg("explorer storage folder: " + dbPath)
+		// tempDelete utils.Logger().Info().Msg("explorer storage folder: " + dbPath)
 		return newExplorerLvlDB(dbPath)
 	}
 }
@@ -234,12 +234,12 @@ func (s *storage) loop() {
 	for {
 		select {
 		case res := <-s.resultC:
-			s.log.Info().Uint64("block number", res.bn).Msg("writing explorer DB")
+			// tempDelete s.log.Info().Uint64("block number", res.bn).Msg("writing explorer DB")
 			if err := res.btc.Write(); err != nil {
 				s.log.Error().Err(err).Msg("explorer db failed to write")
 			}
 		case res := <-s.resultT:
-			s.log.Info().Str("block hash", res.data.Hash.Hex()).Msg("writing trace into explorer DB")
+			// tempDelete s.log.Info().Str("block hash", res.data.Hash.Hex()).Msg("writing trace into explorer DB")
 			if err := res.btc.Write(); err != nil {
 				s.log.Error().Err(err).Msg("explorer db failed to write trace data")
 			}

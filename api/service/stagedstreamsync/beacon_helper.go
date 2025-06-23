@@ -133,10 +133,10 @@ func (bh *beaconHelper) insertLastMileBlocks() (inserted int, bn uint64, err err
 			bn--
 			return
 		}
-		bh.logger.Info().
-			Uint64("number", b.NumberU64()).
-			Msg(WrapStagedSyncMsg("Inserted block from beacon pub-sub"))
-
+		// tempDelete bh.logger.Info().
+		// tempDelete 	Uint64("number", b.NumberU64()).
+		// tempDelete 	Msg(WrapStagedSyncMsg("Inserted block from beacon pub-sub"))
+		// tempDelete
 		if bh.insertHook != nil {
 			bh.insertHook()
 		}

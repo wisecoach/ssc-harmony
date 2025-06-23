@@ -47,7 +47,7 @@ const (
 
 	downloadTaskBatch = 5
 
-	//LoopMinTime sync loop must take at least as this value, otherwise it waits for it
+	// LoopMinTime sync loop must take at least as this value, otherwise it waits for it
 	LoopMinTime = 0
 )
 
@@ -191,11 +191,11 @@ func (sc *SyncConfig) RemovePeer(peer *SyncPeerConfig, reason string) {
 			break
 		}
 	}
-	utils.Logger().Info().
-		Str("peerIP", peer.peer.IP).
-		Str("peerPortMsg", peer.peer.Port).
-		Str("reason", reason).
-		Msg("[SYNC] remove GRPC peer")
+	// tempDelete utils.Logger().Info().
+	// tempDelete 	Str("peerIP", peer.peer.IP).
+	// tempDelete 	Str("peerPortMsg", peer.peer.Port).
+	// tempDelete 	Str("reason", reason).
+	// tempDelete 	Msg("[SYNC] remove GRPC peer")
 }
 
 // CreateStateSync returns the implementation of StateSyncInterface interface.
@@ -485,7 +485,7 @@ func (sc *SyncConfig) cleanUpPeers(maxFirstID int) {
 			removedPeers++
 		}
 	}
-	utils.Logger().Info().Int("removed peers", removedPeers).Msg("[SYNC] post cleanUpPeers")
+	// tempDelete utils.Logger().Info().Int("removed peers", removedPeers).Msg("[SYNC] post cleanUpPeers")
 }
 
 // GetBlockHashesConsensusAndCleanUp selects the most common peer config based on their block hashes to download/sync.
@@ -532,10 +532,10 @@ func (ss *StateSync) getConsensusHashes(startHash []byte, size uint32) error {
 				ss.syncConfig.RemovePeer(peerConfig, fmt.Sprintf("StateSync %d: nil response for GetBlockHashes", ss.blockChain.ShardID()))
 				return
 			}
-			utils.Logger().Info().Uint32("queried blockHash size", size).
-				Int("got blockHashSize", len(response.Payload)).
-				Str("PeerIP", peerConfig.peer.IP).
-				Msg("[SYNC] GetBlockHashes")
+			// tempDelete utils.Logger().Info().Uint32("queried blockHash size", size).
+			// tempDelete 	Int("got blockHashSize", len(response.Payload)).
+			// tempDelete 	Str("PeerIP", peerConfig.peer.IP).
+			// tempDelete 	Msg("[SYNC] GetBlockHashes")
 			if len(response.Payload) > int(size+1) {
 				utils.Logger().Warn().
 					Uint32("requestSize", size).
@@ -552,7 +552,7 @@ func (ss *StateSync) getConsensusHashes(startHash []byte, size uint32) error {
 	if err := ss.syncConfig.GetBlockHashesConsensusAndCleanUp(); err != nil {
 		return err
 	}
-	utils.Logger().Info().Msg("[SYNC] Finished getting consensus block hashes")
+	// tempDelete utils.Logger().Info().Msg("[SYNC] Finished getting consensus block hashes")
 	return nil
 }
 
@@ -571,7 +571,7 @@ func (ss *StateSync) generateStateSyncTaskQueue(bc core.BlockChain) {
 		brk = true
 		return
 	})
-	utils.Logger().Info().Int64("length", ss.stateSyncTaskQueue.Len()).Msg("[SYNC] generateStateSyncTaskQueue: finished")
+	// tempDelete utils.Logger().Info().Int64("length", ss.stateSyncTaskQueue.Len()).Msg("[SYNC] generateStateSyncTaskQueue: finished")
 }
 
 // downloadBlocks downloads blocks from state sync task queue.

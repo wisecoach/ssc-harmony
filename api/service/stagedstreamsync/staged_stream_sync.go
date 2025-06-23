@@ -73,7 +73,7 @@ type StagedStreamSync struct {
 	inserted        int
 	config          Config
 	logger          zerolog.Logger
-	status          *status //TODO: merge this with currentSyncCycle
+	status          *status // TODO: merge this with currentSyncCycle
 	initSync        bool    // if sets to true, node start long range syncing
 	UseMemDB        bool
 	revertPoint     *uint64 // used to run stages
@@ -519,10 +519,10 @@ func printLogs(tx kv.RwTx, timings []Timing) error {
 			logCtx = append(logCtx, string(timings[i].stage), timings[i].took.Truncate(time.Millisecond).String())
 		}
 	}
-	if len(logCtx) > 0 {
-		timingLog := fmt.Sprintf("Timings (slower than 50ms) %v", logCtx)
-		utils.Logger().Info().Msgf(WrapStagedSyncMsg(timingLog))
-	}
+	// tempDelete if len(logCtx) > 0 {
+	// tempDelete 	timingLog := fmt.Sprintf("Timings (slower than 50ms) %v", logCtx)
+	// tempDelete 	utils.Logger().Info().Msgf(WrapStagedSyncMsg(timingLog))
+	// tempDelete }
 
 	if tx == nil {
 		return nil

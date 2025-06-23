@@ -2,39 +2,36 @@ package ssc
 
 import (
 	"context"
-	"github.com/ethereum/go-ethereum/common"
 	"github.com/harmony-one/harmony/eth/rpc"
 	"github.com/harmony-one/harmony/ssc/api"
 	"sync"
 )
 
 type Comm struct {
-	clients map[common.Address]*rpc.Client
+	clients map[string]*rpc.Client
 
 	rwLock sync.RWMutex
 }
 
 func NewComm() *Comm {
 	return &Comm{
-		clients: make(map[common.Address]*rpc.Client),
+		clients: make(map[string]*rpc.Client),
 		rwLock:  sync.RWMutex{},
 	}
 }
 
-func (c *Comm) Call(ctx context.Context, member *api.Member, method string, args ...interface{}) (interface{}, error) {
+func (c *Comm) Call(ctx context.Context, ret interface{}, member *api.Member, method string, args ...interface{}) error {
 	client, err := c.getOrCreateClient(member)
 	if err != nil {
-		return nil, err
+		return err
 	}
-
-	var ret interface{}
 
 	err = client.CallContext(ctx, &ret, method, args...)
 	if err != nil {
-		return nil, err
+		return err
 	}
 
-	return ret, nil
+	return nil
 }
 
 func (c *Comm) Multicast(ctx context.Context, members []*api.Member, method string, args ...interface{}) error {
@@ -45,7 +42,7 @@ func (c *Comm) Multicast(ctx context.Context, members []*api.Member, method stri
 		go func(i int, member *api.Member) {
 			defer wg.Done()
 
-			_, err := c.Call(ctx, member, method, args...)
+			err := c.Call(ctx, nil, member, method, args...)
 			if err != nil {
 				return
 			}
@@ -62,12 +59,12 @@ func (c *Comm) getOrCreateClient(member *api.Member) (*rpc.Client, error) {
 	c.rwLock.Lock()
 	defer c.rwLock.Unlock()
 
-	if _, ok := c.clients[member.Address]; !ok {
+	if _, ok := c.clients[member.Endpoint]; !ok {
 		client, err := rpc.Dial(member.Endpoint)
 		if err != nil {
 			return nil, err
 		}
-		c.clients[member.Address] = client
+		c.clients[member.Endpoint] = client
 	}
-	return c.clients[member.Address], nil
+	return c.clients[member.Endpoint], nil
 }

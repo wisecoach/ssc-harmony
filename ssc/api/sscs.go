@@ -2,50 +2,118 @@ package api
 
 import (
 	"github.com/ethereum/go-ethereum/common"
+	"github.com/harmony-one/harmony/core/types"
+	"github.com/harmony-one/harmony/numeric"
+	staking "github.com/harmony-one/harmony/staking/types"
 	"math/big"
 )
 
 const (
-	Method_SimulateCXTransaction      = "ssc_simulateCXTransaction"
-	Method_CallCXContract             = "ssc_callCXContract"
-	Method_RecallCXContract           = "ssc_recallCXContract"
-	Method_VerifySimulation           = "ssc_verifySimulation"
 	Method_StartSimulateCXTransaction = "ssc_startSimulateCXTransaction"
 	Method_HandleSimulateRequest      = "ssc_handleSimulateRequest"
-	Method_HandleReSimulateRequest    = "ssc_handleReSimulateRequest"
-	Method_RequestCallCX              = "ssc_requestCallCX"
+	Method_RequestCallCXT             = "ssc_requestCallCXT"
 	Method_HandleCXTCall              = "ssc_handleCXTCall"
-	Method_RequestRecallCX            = "ssc_requestRecallCX"
-	Method_HandleCXRecall             = "ssc_handleCXRecall"
 	Method_HandleCXTRecallProof       = "ssc_handleCXTRecallProof"
 	Method_SignSimulationCommit       = "ssc_signSimulationCommit"
 	Method_SignCXTSimulation          = "ssc_signCXTSimulation"
-	Method_SignCXTReSimulation        = "ssc_signCXTReSimulation"
 	Method_HandleCommitVote           = "ssc_handleCommitVote"
-	Method_HandleCXSSCCall            = "ssc_handleCXSSCCall"
+	Method_HandleCXTSSCCall           = "ssc_handleCXTSSCCall"
 	Method_CommitSimulation           = "ssc_commitSimulation"
 	Method_HandleCXTCommitSSCVote     = "ssc_handleCXTCommitSSCVote"
 	Method_HandleCXTCommitProof       = "ssc_handleCXTCommitProof"
 	Method_BroadcastCXTRecallProof    = "ssc_broadcastCXTRecallProof"
 )
 
+type BLSSigner interface {
+	Sign(msg MessageToSign) ([]byte, error)
+	// Aggregate aggregate the signature of messages, and return aggregated signature, bitmap and error
+	Aggregate(msgs []SSCMessage) (signatures []byte, bitmap []byte, err error)
+	Verify(msg BLSSignedMessage) error
+}
+
+type TxSigner interface {
+	Sign(tx *types.Transaction) (*types.Transaction, error)
+	Address() common.Address
+}
+
+type TxSubmitter interface {
+	SubmitSimulationTx(simulation *CXTSimulation) error
+	SubmitCommitOrRollbackTx(proof *CXTCommitProof) error
+	SubmitEmptyTx() error
+}
+
+type StateDB interface {
+	CreateAccount(common.Address)
+
+	SubBalance(common.Address, *big.Int)
+	AddBalance(common.Address, *big.Int)
+	GetBalance(common.Address) *big.Int
+
+	GetNonce(common.Address) uint64
+	SetNonce(common.Address, uint64)
+
+	GetCodeHash(common.Address) common.Hash
+	GetCode(common.Address) []byte
+	SetCode(common.Address, []byte, bool)
+	GetCodeSize(common.Address) int
+
+	ValidatorWrapper(common.Address, bool, bool) (*staking.ValidatorWrapper, error)
+	UpdateValidatorWrapper(common.Address, *staking.ValidatorWrapper) error
+	UpdateValidatorWrapperWithRevert(common.Address, *staking.ValidatorWrapper) error
+	SetValidatorFlag(common.Address)
+	UnsetValidatorFlag(common.Address)
+	IsValidator(common.Address) bool
+	GetValidatorFirstElectionEpoch(addr common.Address) *big.Int
+	AddReward(*staking.ValidatorWrapper, *big.Int, map[common.Address]numeric.Dec) error
+
+	GetSSCConfig() *ShardSimulateCommitteeConfig
+	SetSSCConfig(config *ShardSimulateCommitteeConfig)
+
+	AddRefund(uint64)
+	SubRefund(uint64)
+	GetRefund() uint64
+
+	GetCommittedState(common.Address, common.Hash) common.Hash
+	GetState(common.Address, common.Hash) (common.Hash, error)
+	SetState(common.Address, common.Hash, common.Hash) error
+
+	Suicide(common.Address) bool
+	HasSuicided(common.Address) bool
+
+	// Exist reports whether the given account exists in state.
+	// Notably this should also return true for suicided accounts.
+	Exist(common.Address) bool
+	// Empty returns whether the given account is empty. Empty
+	// is defined according to EIP161 (balance = nonce = code = 0).
+	Empty(common.Address) bool
+
+	RevertToSnapshot(int)
+	Snapshot() int
+
+	AddLog(*types.Log)
+	AddPreimage(common.Hash, []byte)
+
+	ForEachStorage(common.Address, func(common.Hash, common.Hash) bool) error
+
+	TxIndex() int
+	BlockHash() common.Hash
+	TxHash() common.Hash
+	TxHashETH() common.Hash // used by tracer
+}
+
 // CXTStateSimulationDB will save the state of the cross-shard transaction simulation
 type CXTStateSimulationDB interface {
-	// StartCXT
-	//  @Description: start a cross-shard transaction simulation, and begin to save the state
-	//  @return new if start a new CTX simulation, false if already started
-	StartCXT(txHash common.Hash, callIndex CallIndex, originShardId uint32, relatedShards []uint32) (new bool)
 	// GetRWSet get the read-write set of the cross-shard transaction simulation
 	GetRWSet(txHash common.Hash) *RWSet
 	// EndCTX end a cross-shard transaction simulation
 	EndCTX(txHash common.Hash)
 
 	CreateAccount(txHash common.Hash, address common.Address)
-	SubBalance(txHash common.Hash, address common.Address, balance *big.Int)
-	AddBalance(txHash common.Hash, address common.Address, balance *big.Int)
-	GetBalance(txHash common.Hash, address common.Address) *big.Int
-	GetState(txHash common.Hash, address common.Address, key common.Hash) (common.Hash, error)
-	SetState(txHash common.Hash, address common.Address, key common.Hash, value common.Hash) error
+	SubBalance(db StateDB, txHash common.Hash, address common.Address, balance *big.Int)
+	AddBalance(db StateDB, txHash common.Hash, address common.Address, balance *big.Int)
+	GetBalance(db StateDB, txHash common.Hash, address common.Address) *big.Int
+	GetState(db StateDB, txHash common.Hash, address common.Address, key common.Hash) (common.Hash, error)
+	SetState(db StateDB, txHash common.Hash, address common.Address, key common.Hash, value common.Hash) error
 
 	// --------------------------- functions for execution verify --------------------------------
 
@@ -67,27 +135,27 @@ type InternalService interface {
 	//
 	//	@Description: simulate cross-shard transaction called by proposer, send request to leader of CXTransaction, and wait
 	//	for the simulation result
-	SimulateCXTransaction(req *CXTSimulationRequest) *CXTSimulationSSCResult
+	SimulateCXTransaction(req *CXTSimulationRequest)
 
-	// CallCXContract
+	SimulationResult(txHash common.Hash) (*CXTSimulationSSCResult, error)
+
+	// CallCXTContract
 	//
 	//	@Description: call for cross-shard contract, send request to leader of CXTransaction, and wait for the simulation
 	//	result
-	CallCXContract(req *CXTCallRequest) *CXTCallSSCResult
+	CallCXTContract(req *CXTCallRequest) *CXTCallSSCResult
 
 	// RecallCXContract
 	//
 	//	@Description: recall for cross-shard contract, send request to leader of CXTransaction, and wait for the simulation
 	//	result
-	RecallCXContract(req *CXTRecallRequest) *CXTRecallSSCResult
+	// RecallCXContract(req *CXTRecallRequest) *CXTRecallSSCResult
 
 	// VerifySimulation
 	//	@Description: verify the simulation and vote for commit or rollback
 	VerifySimulation(simulationBytes []byte)
 
-	// VerifyReSimulation
-	//	@Description: verify the resimulation and vote for commit or rollback
-	VerifyReSimulation(reSimulationBytes []byte)
+	CommitOrRollbackWithProof(unlock bool, commitProofBytes []byte)
 }
 
 // ShardService
@@ -123,24 +191,6 @@ type ShardService interface {
 	//	@Description: handle cross-shard call request from leader, simulate the contract execution and return the result
 	HandleCXTCall(req *CXTCallSSCRequest) *CXTCallResult
 
-	// RequestRecallCXT
-	//
-	//	 @Description: handle request from ssc's memeber, aggregate signatures of request after reaching threshold, then send
-	//		signed request to leader of target shard's ssc
-	RequestRecallCXT(req *CXTRecallRequest) *CXTRecallSSCResult
-
-	// HandleCXTRecall
-	//
-	//	@Description: handle the signed recall request from caller shard ssc, broadcast to members to simulate contract
-	//	it's used to recall for the conflict of simulation and real state.
-	HandleCXTRecall(req *CXTRecallSSCRequest) *CXTRecallResult
-
-	// HandleCXTRecallProof
-	//
-	//	@Description: handle the cross-shard transaction submit proof to recall for the reason
-	// 	1. broadcast to ssc members
-	HandleCXTRecallProof(proof *CXTRecallProof)
-
 	// SignSimulationCommit
 	//  @Description: sign the simulation commit from ssc's leader
 	SignSimulationCommit(commit *SimulationCommit) []byte
@@ -148,10 +198,6 @@ type ShardService interface {
 	// SignCXTSimulation
 	//  @Description: sign the cross-shard tx simulation from ssc's leader
 	SignCXTSimulation(simulation *CXTSimulation) []byte
-
-	// SignCXTReSimulation
-	//  @Description: sign the cross-shard tx simulation from ssc's leader
-	SignCXTReSimulation(simulation *CXTReSimulation) []byte
 
 	// HandleCommitVote
 	//  @Description: handle the commit vote from ssc's member, aggregate the votes after reaching threshold, then send
@@ -169,7 +215,7 @@ type CrossService interface {
 	// HandleCXTSSCRecall
 	//  @Description: handle the signed call request from caller shard ssc, broadcast to members to simulate contract
 	//	execution and wait for the result and signatures
-	HandleCXTSSCRecall(req *CXTRecallSSCRequest) *CXTRecallSSCResult
+	// HandleCXTSSCRecall(req *CXTRecallSSCRequest) *CXTRecallSSCResult
 
 	// CommitSimulation
 	//  @Description: handle the commit request from original shard's ssc, used to commit the simulation result as a
@@ -186,10 +232,6 @@ type CrossService interface {
 	//					commit: 	1. all shards of cross-shard contract are successfully executed
 	//					rollback:	1. execution or simulation failed; 2. transaction timeout; 3. ssc's malicious behavior
 	HandleCXTCommitProof(proof *CXTCommitProof)
-
-	// BroadcastCXTRecallProof
-	//  @Description: broadcast the cross-shard transaction submit proof to recall for the reason
-	BroadcastCXTRecallProof(proof *CXTRecallProof)
 }
 
 type Service interface {

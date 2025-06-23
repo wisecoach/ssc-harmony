@@ -7,18 +7,18 @@ const (
 	// default timeout configuration is shorten to 27 seconds as the consensus is 5s
 	// so each phase of the consensus will timeout every 27 seconds to tirgger a
 	// new view change process
-	viewChangeTimeout = 27
+	viewChangeTimeout = 270000000
 	// viewChangeSlot means every 45 seconds, the view change ID will be advanced.
 	// so that the nodes init view change process within the 45 seconds range will
 	// be have the same view change ID
-	viewChangeSlot = 45
+	viewChangeSlot = 450000000000000
 	// The duration of viewChangeTimeout for each view change
 	viewChangeDuration time.Duration = viewChangeTimeout * time.Second
 
 	// timeout duration for announce/prepare/commit
 	// shorten the duration from 60 to 45 seconds as the consensus is 5s
 	phaseDuration     time.Duration = viewChangeTimeout * time.Second
-	bootstrapDuration time.Duration = 120 * time.Second
+	bootstrapDuration time.Duration = viewChangeTimeout * time.Second
 	maxLogSize        uint32        = 1000
 	// threshold between received consensus message blockNum and my blockNum
 	consensusBlockNumBuffer uint64 = 2

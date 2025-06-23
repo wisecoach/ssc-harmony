@@ -19,6 +19,7 @@ func newLockExecutionInstructions() JumpTable {
 	is[CALL].execute = opCall_SSC_LE
 	is[CALLCODE].execute = opCallCode_SSC_LE
 	is[DELEGATECALL].execute = opDelegateCall_SSC_LE
+	is[STATICCALL].execute = opStaticCall_SSC_LE
 	is[RETURN].execute = opReturn_SSC_LE
 	return is
 }
@@ -147,6 +148,35 @@ func opDelegateCall_SSC_LE(pc *uint64, inp Interpreter, contract *Contract, memo
 	args := memory.GetPtr(inOffset.Int64(), inSize.Int64())
 
 	ret, returnGas, err := interpreter.vm.DelegateCall(contract, toAddr, args, gas)
+	if err != nil {
+		stack.push(interpreter.intPool.getZero())
+	} else {
+		stack.push(interpreter.intPool.get().SetUint64(1))
+	}
+	if err == nil || err == ErrExecutionReverted {
+		if contract.WithDataCopyFix {
+			ret = common.CopyBytes(ret)
+		}
+		memory.Set(retOffset.Uint64(), retSize.Uint64(), ret)
+	}
+	contract.Gas += returnGas
+
+	interpreter.intPool.put(addr, inOffset, inSize, retOffset, retSize)
+	return ret, nil
+}
+
+func opStaticCall_SSC_LE(pc *uint64, inp Interpreter, contract *Contract, memory *Memory, stack *Stack) ([]byte, error) {
+	interpreter := inp.(*SSCVMInterpreter)
+	// Pop gas. The actual gas is in interpreter.evm.callGasTemp.
+	interpreter.intPool.put(stack.pop())
+	gas := interpreter.vm.callGasTemp
+	// Pop other call parameters.
+	addr, inOffset, inSize, retOffset, retSize := stack.pop(), stack.pop(), stack.pop(), stack.pop(), stack.pop()
+	toAddr := common.BigToAddress(addr)
+	// Get arguments from the memory.
+	args := memory.GetPtr(inOffset.Int64(), inSize.Int64())
+
+	ret, returnGas, err := interpreter.vm.StaticCall(contract, toAddr, args, gas)
 	if err != nil {
 		stack.push(interpreter.intPool.getZero())
 	} else {

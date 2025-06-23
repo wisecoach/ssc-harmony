@@ -74,7 +74,7 @@ func New(harmonyConfig *harmonyconfig.HarmonyConfig, selfPeer *p2p.Peer, bc core
 
 // Start starts explorer service.
 func (s *Service) Start() error {
-	utils.Logger().Info().Msg("Starting explorer service.")
+	// tempDelete utils.Logger().Info().Msg("Starting explorer service.")
 	s.Init()
 	s.server = s.Run()
 	s.storage.Start()
@@ -83,11 +83,11 @@ func (s *Service) Start() error {
 
 // Stop shutdowns explorer service.
 func (s *Service) Stop() error {
-	utils.Logger().Info().Msg("Shutting down explorer service.")
+	// tempDelete utils.Logger().Info().Msg("Shutting down explorer service.")
 	if err := s.server.Shutdown(context.Background()); err != nil {
 		utils.Logger().Error().Err(err).Msg("Error when shutting down explorer server")
 	} else {
-		utils.Logger().Info().Msg("Shutting down explorer server successfully")
+		// tempDelete utils.Logger().Info().Msg("Shutting down explorer server successfully")
 	}
 	s.storage.Close()
 	return nil
@@ -133,7 +133,7 @@ func (s *Service) Run() *http.Server {
 	s.router.Path("/node-sync").HandlerFunc(s.GetNodeSync)
 
 	// Do serving now.
-	utils.Logger().Info().Str("port", GetExplorerPort(s.Port)).Msg("[Explorer] Server started. addr: " + addr)
+	// tempDelete utils.Logger().Info().Str("port", GetExplorerPort(s.Port)).Msg("[Explorer] Server started. addr: " + addr)
 	server := &http.Server{
 		Addr:         addr,
 		Handler:      s.router,

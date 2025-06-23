@@ -62,7 +62,7 @@ func NewService(cfg Config) *Service {
 
 func newService(cfg Config) *Service {
 	if !cfg.Enabled {
-		utils.Logger().Info().Msg("pprof service disabled...")
+		// tempDelete utils.Logger().Info().Msg("pprof service disabled...")
 		return nil
 	}
 

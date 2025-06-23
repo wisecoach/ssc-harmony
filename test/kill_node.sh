@@ -15,3 +15,4 @@ do
 done
 
 rm -rf db-127.0.0.1-*
+rm -rf db

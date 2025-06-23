@@ -43,15 +43,15 @@ func (sh *srHelper) getHashChain(ctx context.Context, bns []uint64) ([]common.Ha
 
 	select {
 	case <-ctx.Done():
-		sh.logger.Info().Err(ctx.Err()).Int("num blocks", results.numBlocksWithResults()).
-			Msg(WrapStagedSyncMsg("short range sync get hashes timed out"))
+		// tempDelete sh.logger.Info().Err(ctx.Err()).Int("num blocks", results.numBlocksWithResults()).
+		// tempDelete 	Msg(WrapStagedSyncMsg("short range sync get hashes timed out"))
 		return nil, nil, ctx.Err()
 	default:
 	}
 
 	hashChain, wl := results.computeLongestHashChain()
-	sh.logger.Info().Int("hashChain size", len(hashChain)).Int("whitelist", len(wl)).
-		Msg(WrapStagedSyncMsg("computeLongestHashChain result"))
+	// tempDelete sh.logger.Info().Int("hashChain size", len(hashChain)).Int("whitelist", len(wl)).
+	// tempDelete 	Msg(WrapStagedSyncMsg("computeLongestHashChain result"))
 	return hashChain, wl, nil
 }
 
@@ -121,9 +121,9 @@ func (sh *srHelper) getBlocksByHashes(ctx context.Context, hashes []common.Hash,
 	}
 	select {
 	case <-ctx.Done():
-		res, _, _ := m.getResults()
-		sh.logger.Info().Err(ctx.Err()).Int("num blocks", len(res)).
-			Msg(WrapStagedSyncMsg("short range sync get blocks timed out"))
+		// tempDelete res, _, _ := m.getResults()
+		// tempDelete sh.logger.Info().Err(ctx.Err()).Int("num blocks", len(res)).
+		// tempDelete 	Msg(WrapStagedSyncMsg("short range sync get blocks timed out"))
 		return nil, nil, ctx.Err()
 	default:
 	}
@@ -158,10 +158,10 @@ func (sh *srHelper) doGetBlockHashesRequest(ctx context.Context, bns []uint64) (
 
 	hashes, stid, err := sh.syncProtocol.GetBlockHashes(ctx, bns)
 	if err != nil {
-		sh.logger.Warn().Err(err).
-			Interface("block numbers", bns).
-			Str("stream", string(stid)).
-			Msg(WrapStagedSyncMsg("failed to doGetBlockHashesRequest"))
+		// tempDelete sh.logger.Warn().Err(err).
+		// tempDelete 	Interface("block numbers", bns).
+		// tempDelete 	Str("stream", string(stid)).
+		// tempDelete 	Msg(WrapStagedSyncMsg("failed to doGetBlockHashesRequest"))
 		return nil, stid, err
 	}
 	if len(hashes) != len(bns) {

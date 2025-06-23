@@ -67,10 +67,10 @@ func (ss *EpochSync) isSynchronized(_ bool) SyncCheckResult {
 		epochDiff = 0
 	}
 
-	utils.Logger().Info().
-		Uint64("OtherEpoch", otherEpoch).
-		Uint64("CurrentEpoch", curEpoch).
-		Msg("[EPOCHSYNC] Checking sync status")
+	// tempDelete utils.Logger().Info().
+	// tempDelete 	Uint64("OtherEpoch", otherEpoch).
+	// tempDelete 	Uint64("CurrentEpoch", curEpoch).
+	// tempDelete 	Msg("[EPOCHSYNC] Checking sync status")
 	return SyncCheckResult{
 		IsSynchronized: inSync,
 		OtherHeight:    otherHeight1,
@@ -95,31 +95,31 @@ func syncLoop(bc core.BlockChain, syncConfig *SyncConfig) (timeout int) {
 	isBeacon := bc.ShardID() == shard.BeaconChainShardID
 	maxHeight, errMaxHeight := getMaxPeerHeight(syncConfig)
 	if errMaxHeight != nil {
-		utils.Logger().Info().
-			Msgf("[EPOCHSYNC] No peers to sync (isBeacon: %t, ShardID: %d, peersCount: %d)",
-				isBeacon, bc.ShardID(), syncConfig.PeersCount())
+		// tempDelete utils.Logger().Info().
+		// tempDelete 	Msgf("[EPOCHSYNC] No peers to sync (isBeacon: %t, ShardID: %d, peersCount: %d)",
+		// tempDelete 		isBeacon, bc.ShardID(), syncConfig.PeersCount())
 		return 10
 	}
 
-	utils.Logger().Info().
-		Bool("isBeacon", isBeacon).
-		Uint32("ShardID", bc.ShardID()).
-		Uint64("otherEpoch", shard.Schedule.CalcEpochNumber(maxHeight).Uint64()).
-		Uint64("currentEpoch", bc.CurrentBlock().Epoch().Uint64()).
-		Int("peers count", syncConfig.PeersCount()).
-		Msg("[EPOCHSYNC] Node is OUT OF SYNC, it's trying to get fully synchronized")
+	// tempDelete utils.Logger().Info().
+	// tempDelete 	Bool("isBeacon", isBeacon).
+	// tempDelete 	Uint32("ShardID", bc.ShardID()).
+	// tempDelete 	Uint64("otherEpoch", shard.Schedule.CalcEpochNumber(maxHeight).Uint64()).
+	// tempDelete 	Uint64("currentEpoch", bc.CurrentBlock().Epoch().Uint64()).
+	// tempDelete 	Int("peers count", syncConfig.PeersCount()).
+	// tempDelete 	Msg("[EPOCHSYNC] Node is OUT OF SYNC, it's trying to get fully synchronized")
 
 	for {
 		curEpoch := bc.CurrentBlock().Epoch().Uint64()
 		otherEpoch := shard.Schedule.CalcEpochNumber(maxHeight).Uint64()
 		if otherEpoch == curEpoch+1 {
-			utils.Logger().Info().
-				Bool("isBeacon", isBeacon).
-				Uint32("ShardID", bc.ShardID()).
-				Uint64("otherEpoch", otherEpoch).
-				Uint64("currentEpoch", curEpoch).
-				Int("peers count", syncConfig.PeersCount()).
-				Msg("[EPOCHSYNC] Node is now IN SYNC!")
+			// tempDelete utils.Logger().Info().
+			// tempDelete 	Bool("isBeacon", isBeacon).
+			// tempDelete 	Uint32("ShardID", bc.ShardID()).
+			// tempDelete 	Uint64("otherEpoch", otherEpoch).
+			// tempDelete 	Uint64("currentEpoch", curEpoch).
+			// tempDelete 	Int("peers count", syncConfig.PeersCount()).
+			// tempDelete 	Msg("[EPOCHSYNC] Node is now IN SYNC!")
 			return 60
 		}
 		if otherEpoch < curEpoch {

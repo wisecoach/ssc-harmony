@@ -22,8 +22,12 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/harmony-one/harmony/ssc/api"
+	"gopkg.in/yaml.v2"
 	"math/big"
 	"os"
+	"path/filepath"
+	"strings"
 
 	"github.com/ethereum/go-ethereum/common"
 	ethCommon "github.com/ethereum/go-ethereum/common"
@@ -60,7 +64,7 @@ const (
 	// ContractDeployerInitFund is the initial fund for the contract deployer account in testnet/devnet.
 	ContractDeployerInitFund = 10000000000
 	// InitFreeFund is the initial fund for permissioned accounts for testnet/devnet/
-	InitFreeFund = 100
+	InitFreeFund = 1000000
 )
 
 var (
@@ -71,18 +75,21 @@ var (
 // Genesis specifies the header fields, state of a genesis block. It also defines hard
 // fork switch-over blocks through the chain configuration.
 type Genesis struct {
-	Config         *params.ChainConfig  `json:"config"`
-	Factory        blockfactory.Factory `json:"-"`
-	Nonce          uint64               `json:"nonce"`
-	ShardID        uint32               `json:"shardID"`
-	Timestamp      uint64               `json:"timestamp"`
-	ExtraData      []byte               `json:"extraData"`
-	GasLimit       uint64               `json:"gasLimit"       gencodec:"required"`
-	Mixhash        common.Hash          `json:"mixHash"`
-	Coinbase       common.Address       `json:"coinbase"`
-	Alloc          GenesisAlloc         `json:"alloc"          gencodec:"required"`
-	ShardStateHash common.Hash          `json:"shardStateHash" gencodec:"required"`
-	ShardState     shard.State          `json:"shardState"     gencodec:"required"`
+	Config         *params.ChainConfig  `json:"config" yaml:"config,omitempty"`
+	Factory        blockfactory.Factory `json:"-" yaml:"-"`
+	Nonce          uint64               `json:"nonce" yaml:"nonce,omitempty"`
+	ShardID        uint32               `json:"shardID" yaml:"shardID,omitempty"`
+	Timestamp      uint64               `json:"timestamp" yaml:"timestamp,omitempty"`
+	ExtraData      []byte               `json:"extraData" yaml:"extraData,omitempty"`
+	GasLimit       uint64               `json:"gasLimit" yaml:"gasLimit,omitempty"       gencodec:"required"`
+	Mixhash        common.Hash          `json:"mixHash" yaml:"mixHash,omitempty"`
+	Coinbase       common.Address       `json:"coinbase" yaml:"coinbase,omitempty"`
+	Alloc          GenesisAlloc         `json:"alloc" yaml:"alloc,omitempty"          gencodec:"required"`
+	ShardStateHash common.Hash          `json:"shardStateHash" yaml:"shardStateHash,omitempty" gencodec:"required"`
+	ShardState     shard.State          `json:"shardState" yaml:"shardState,omitempty"     gencodec:"required"`
+
+	SSCConfig          *api.ShardSimulateCommitteeConfig `json:"ssc_config" yaml:"ssc_config"`
+	GenesisAccountsDir string                            `json:"genesis_accounts_dir" yaml:"genesis_accounts_dir"`
 
 	// These fields are used for consensus tests. Please don't use them
 	// in actual genesis blocks.
@@ -93,7 +100,7 @@ type Genesis struct {
 
 // NewGenesisSpec creates a new genesis spec for the given network type and shard ID.
 // Note that the shard state is NOT initialized.
-func NewGenesisSpec(netType nodeconfig.NetworkType, shardID uint32) *Genesis {
+func NewGenesisSpec(netType nodeconfig.NetworkType, shardID uint32, configPath string) *Genesis {
 	genesisAlloc := make(GenesisAlloc)
 	chainConfig := params.ChainConfig{}
 	gasLimit := params.GenesisGasLimit
@@ -132,6 +139,14 @@ func NewGenesisSpec(netType nodeconfig.NetworkType, shardID uint32) *Genesis {
 		)
 		genesisAlloc[contractDeployerAddress] = GenesisAccount{Balance: contractDeployerFunds}
 
+		sscSubmitterAddress := crypto.PubkeyToAddress(genesis.SSCSubmitterKey.PublicKey)
+		fmt.Printf("use netType: %v, sscSubmitter: %v\n", netType, sscSubmitterAddress)
+		sscSubmitterFunds := big.NewInt(ContractDeployerInitFund)
+		sscSubmitterFunds = sscSubmitterFunds.Mul(
+			sscSubmitterFunds, big.NewInt(denominations.One),
+		)
+		genesisAlloc[sscSubmitterAddress] = GenesisAccount{Balance: sscSubmitterFunds}
+
 		// Localnet only testing account
 		if netType == nodeconfig.Localnet {
 			// PK: 1f84c95ac16e6a50f08d44c7bde7aff8742212fda6e4321fde48bf83bef266dc
@@ -140,7 +155,7 @@ func NewGenesisSpec(netType nodeconfig.NetworkType, shardID uint32) *Genesis {
 		}
 	}
 
-	return &Genesis{
+	gen := &Genesis{
 		Config:    &chainConfig,
 		Factory:   blockfactory.NewFactory(&chainConfig),
 		Alloc:     genesisAlloc,
@@ -148,7 +163,54 @@ func NewGenesisSpec(netType nodeconfig.NetworkType, shardID uint32) *Genesis {
 		GasLimit:  gasLimit,
 		Timestamp: 1561734000, // GMT: Friday, June 28, 2019 3:00:00 PM. PST: Friday, June 28, 2019 8:00:00 AM
 		ExtraData: []byte("Harmony for One and All. Open Consensus for 10B."),
+		SSCConfig: nil,
 	}
+
+	if len(configPath) > 0 {
+		data, err := os.ReadFile(configPath)
+		if err == nil {
+			if strings.HasSuffix(configPath, "yaml") || strings.HasSuffix(configPath, "yml") {
+				_ = yaml.Unmarshal(data, gen)
+			}
+			genesisScheduleInstance := shard.Schedule.InstanceForEpoch(big.NewInt(GenesisEpoch))
+			if genesisScheduleInstance.UseSameAccountEachShard() {
+				committeeShard0 := gen.SSCConfig.Committees[0]
+				gen.SSCConfig.Committees = make([]*api.ShardSimulateCommittee, 0, int(genesisScheduleInstance.NumShards()))
+				gen.SSCConfig.Committees = append(gen.SSCConfig.Committees, committeeShard0)
+				for i := 1; i < int(genesisScheduleInstance.NumShards()); i++ {
+					committee := &api.ShardSimulateCommittee{
+						ShardID:   uint32(i),
+						Epoch:     0,
+						Members:   make([]*api.Member, 0, committeeShard0.Number),
+						Number:    committeeShard0.Number,
+						Threshold: committeeShard0.Threshold,
+					}
+					for _, member := range committeeShard0.Members {
+						committee.Members = append(committee.Members, &api.Member{
+							Address:   member.Address,
+							Stake:     member.Stake,
+							Endpoint:  strings.Replace(member.Endpoint, "00", fmt.Sprintf("%d", i*20), 1),
+							BLSPubKey: member.BLSPubKey,
+						})
+					}
+					gen.SSCConfig.Committees = append(gen.SSCConfig.Committees, committee)
+				}
+			}
+			if len(gen.GenesisAccountsDir) > 0 {
+				_ = filepath.WalkDir(gen.GenesisAccountsDir, func(path string, d os.DirEntry, err error) error {
+					if strings.HasSuffix(d.Name(), ".key") {
+						addr := common.HexToAddress(strings.TrimSuffix(d.Name(), ".key"))
+						gen.Alloc[addr] = GenesisAccount{
+							Balance: big.NewInt(InitFreeFund).Mul(big.NewInt(InitFreeFund), big.NewInt(denominations.One)),
+						}
+					}
+					return nil
+				})
+			}
+		}
+	}
+
+	return gen
 }
 
 // GenesisAlloc specifies the initial state that is part of the genesis block.
@@ -243,6 +305,7 @@ func (g *Genesis) ToBlock(db ethdb.Database) *types.Block {
 		os.Exit(1)
 	}
 	statedb, _ := state.New(common.Hash{}, state.NewDatabase(db), nil)
+	// write alloc of genesis account
 	for addr, account := range g.Alloc {
 		statedb.AddBalance(addr, account.Balance)
 		statedb.SetCode(addr, account.Code, false)
@@ -259,6 +322,9 @@ func (g *Genesis) ToBlock(db ethdb.Database) *types.Block {
 			os.Exit(1)
 		}
 	}
+	// write initial ssc committees
+	statedb.SetSSCConfig(g.SSCConfig)
+
 	root := statedb.IntermediateRoot(false)
 	shardStateBytes, err := shard.EncodeWrapper(g.ShardState, false)
 	if err != nil {
@@ -344,12 +410,12 @@ func (g *Genesis) MustCommit(db ethdb.Database) *types.Block {
 // GetGenesisSpec for a given shard
 func GetGenesisSpec(shardID uint32) *Genesis {
 	if shard.Schedule.GetNetworkID() == shardingconfig.MainNet {
-		return NewGenesisSpec(nodeconfig.Mainnet, shardID)
+		return NewGenesisSpec(nodeconfig.Mainnet, shardID, "")
 	}
 	if shard.Schedule.GetNetworkID() == shardingconfig.LocalNet {
-		return NewGenesisSpec(nodeconfig.Localnet, shardID)
+		return NewGenesisSpec(nodeconfig.Localnet, shardID, "")
 	}
-	return NewGenesisSpec(nodeconfig.Testnet, shardID)
+	return NewGenesisSpec(nodeconfig.Testnet, shardID, "")
 }
 
 // GetInitialFunds for a given shard
