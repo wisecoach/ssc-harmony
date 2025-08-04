@@ -81,7 +81,7 @@ func (s *PublicPoolService) SendRawTransaction(
 		}
 	}()
 
-	fmt.Println("begin to handle a raw transaction")
+	utils.Logger().Debug().Msgf("begin to handle a raw transaction")
 
 	// DOS prevention
 	if len(encodedTx) >= types.MaxEncodedPoolTransactionSize {
@@ -141,7 +141,6 @@ func (s *PublicPoolService) SendRawTransaction(
 			Str("fullhash", tx.Hash().Hex()).
 			Str("hashByType", tx.HashByType().Hex()).
 			Str("recipient", tx.To().Hex()).
-			Interface("tx", tx).
 			Msg("Submitted transaction")
 	}
 

@@ -115,9 +115,9 @@ func main() {
 
 	pprof := flag.Bool("pprof", false, "enabled pprof")
 	pprofAddr := flag.String("pprof.addr", "127.0.0.1:6060", "http pprof address")
-	//keyFile := flag.String("pprof.profile.names", "", "the private key file of the bootnode")
-	//keyFile := flag.String("pprof.profile.intervals", "600", "the private key file of the bootnode")
-	//keyFile := flag.String("pprof.profile.intervals", "", "the private key file of the bootnode")
+	// keyFile := flag.ToString("pprof.profile.names", "", "the private key file of the bootnode")
+	// keyFile := flag.ToString("pprof.profile.intervals", "600", "the private key file of the bootnode")
+	// keyFile := flag.ToString("pprof.profile.intervals", "", "the private key file of the bootnode")
 
 	flag.Parse()
 

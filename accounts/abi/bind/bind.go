@@ -322,7 +322,7 @@ func bindBasicTypeJava(kind abi.Type) string {
 	case abi.BoolTy:
 		return "boolean"
 	case abi.StringTy:
-		return "String"
+		return "ToString"
 	case abi.FunctionTy:
 		return "byte[24]"
 	default:
@@ -336,7 +336,7 @@ func pluralizeJavaType(typ string) string {
 	switch typ {
 	case "boolean":
 		return "Bools"
-	case "String":
+	case "ToString":
 		return "Strings"
 	case "Address":
 		return "Addresses"
@@ -397,7 +397,7 @@ func bindTopicTypeJava(kind abi.Type, structs map[string]*tmplStruct) string {
 	//
 	// We only convert strings and bytes to hash, still need to deal with
 	// array(both fixed-size and dynamic-size) and struct.
-	if bound == "String" || bound == "byte[]" {
+	if bound == "ToString" || bound == "byte[]" {
 		bound = "Hash"
 	}
 	return bound

@@ -256,11 +256,12 @@ func applyRootFlags(cmd *cobra.Command, config *harmonyconfig.HarmonyConfig) {
 
 func setupNodeLog(config harmonyconfig.HarmonyConfig) {
 	logPath := filepath.Join(config.Log.Folder, config.Log.FileName)
+	sscLogPath := filepath.Join(config.Log.Folder, "ssc-"+config.Log.FileName)
 
 	// verbosity := config.Log.Verbosity
 	// utils.SetLogVerbosity(log.Lvl(verbosity))
-	utils.SetLogVerbosity(log.LvlDebug)
-	// utils.SetLogVerbosity(log.LvlInfo)
+	// utils.SetLogVerbosity(log.LvlDebug)
+	utils.SetLogVerbosity(log.LvlInfo)
 	if config.Log.Context != nil {
 		ip := config.Log.Context.IP
 		port := config.Log.Context.Port
@@ -269,6 +270,7 @@ func setupNodeLog(config harmonyconfig.HarmonyConfig) {
 
 	if !config.Log.Console {
 		utils.AddLogFile(logPath, config.Log.RotateSize, config.Log.RotateCount, config.Log.RotateMaxAge)
+		utils.AddSSCLogFile(sscLogPath, config.Log.RotateSize, config.Log.RotateCount, config.Log.RotateMaxAge)
 	}
 }
 
@@ -322,10 +324,10 @@ func setupNodeAndRun(hc harmonyconfig.HarmonyConfig) {
 	}
 	if hc.General.NodeType != "validator" && hc.General.ShardID >= 0 {
 		for _, initialAccount := range initialAccounts {
-			// tempDelete utils.Logger().Info().
-			// tempDelete 	Uint32("original", initialAccount.ShardID).
-			// tempDelete 	Int("override", hc.General.ShardID).
-			// tempDelete 	Msg("ShardID Override")
+			utils.Logger().Info().
+				Uint32("original", initialAccount.ShardID).
+				Int("override", hc.General.ShardID).
+				Msg("ShardID Override")
 			initialAccount.ShardID = uint32(hc.General.ShardID)
 		}
 	}
@@ -439,23 +441,23 @@ func setupNodeAndRun(hc harmonyconfig.HarmonyConfig) {
 		os.Exit(0)
 	}
 
-	// tempDelete startMsg := "==== New Harmony Node ===="
-	// tempDelete if hc.General.NodeType == nodeTypeExplorer {
-	// tempDelete 	startMsg = "==== New Explorer Node ===="
-	// tempDelete }
+	startMsg := "==== New Harmony Node ===="
+	if hc.General.NodeType == nodeTypeExplorer {
+		startMsg = "==== New Explorer Node ===="
+	}
 
-	// tempDelete utils.Logger().Info().
-	// tempDelete 	Str("BLSPubKey", nodeConfig.ConsensusPriKey.GetPublicKeys().SerializeToHexStr()).
-	// tempDelete 	Uint32("ShardID", nodeConfig.ShardID).
-	// tempDelete 	Str("ShardGroupID", nodeConfig.GetShardGroupID().String()).
-	// tempDelete 	Str("BeaconGroupID", nodeConfig.GetBeaconGroupID().String()).
-	// tempDelete 	Str("ClientGroupID", nodeConfig.GetClientGroupID().String()).
-	// tempDelete 	Str("Role", currentNode.NodeConfig.Role().String()).
-	// tempDelete 	Str("Version", getHarmonyVersion()).
-	// tempDelete 	Str("multiaddress",
-	// tempDelete 		fmt.Sprintf("/ip4/%s/tcp/%d/p2p/%s", hc.P2P.IP, hc.P2P.Port, myHost.GetID().String()),
-	// tempDelete 	).
-	// tempDelete 	Msg(startMsg)
+	utils.Logger().Info().
+		Str("BLSPubKey", nodeConfig.ConsensusPriKey.GetPublicKeys().SerializeToHexStr()).
+		Uint32("ShardID", nodeConfig.ShardID).
+		Str("ShardGroupID", nodeConfig.GetShardGroupID().String()).
+		Str("BeaconGroupID", nodeConfig.GetBeaconGroupID().String()).
+		Str("ClientGroupID", nodeConfig.GetClientGroupID().String()).
+		Str("Role", currentNode.NodeConfig.Role().String()).
+		Str("Version", getHarmonyVersion()).
+		Str("multiaddress",
+			fmt.Sprintf("/ip4/%s/tcp/%d/p2p/%s", hc.P2P.IP, hc.P2P.Port, myHost.GetID().String()),
+		).
+		Msg(startMsg)
 
 	nodeconfig.SetPeerID(myHost.GetID())
 
@@ -530,16 +532,16 @@ func setupNodeAndRun(hc harmonyconfig.HarmonyConfig) {
 				Msg("Start p2p host failed")
 		}
 
+		if err := currentNode.StartPubSub(); err != nil {
+			fmt.Fprint(os.Stderr, "could not begin network message handling for node", err.Error())
+			os.Exit(-1)
+		}
+
 		if err := currentNode.BootstrapConsensus(); err != nil {
 			fmt.Fprint(os.Stderr, "could not bootstrap consensus", err.Error())
 			if !currentNode.NodeConfig.IsOffline {
 				os.Exit(-1)
 			}
-		}
-
-		if err := currentNode.StartPubSub(); err != nil {
-			fmt.Fprint(os.Stderr, "could not begin network message handling for node", err.Error())
-			os.Exit(-1)
 		}
 	}
 
@@ -613,6 +615,8 @@ func setupLegacyNodeAccount(hc harmonyconfig.HarmonyConfig) error {
 	} else {
 		findAccountsByPubKeys(genesisShardingConfig, multiBLSPubKey)
 	}
+
+	utils.Logger().Info().Msgf("Found %d initial accounts: [%v], multiBLSPubKey=[%v]", len(initialAccounts), initialAccounts, multiBLSPriKey)
 
 	if genesisShardingConfig.UseSameAccountEachShard() {
 		for _, account := range initialAccounts {

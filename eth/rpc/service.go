@@ -84,7 +84,7 @@ func (r *serviceRegistry) registerName(name string, rcvr interface{}, rmf *RpcMe
 	}
 
 	for name, cb := range callbacks {
-		//check if name is not blocked by method filters
+		// check if name is not blocked by method filters
 		if rmf != nil {
 			mustExpose := rmf.Expose(svc.name + "_" + name)
 			if !mustExpose {
@@ -207,7 +207,7 @@ func (c *callback) call(ctx context.Context, method string, args []reflect.Value
 			buf := make([]byte, size)
 			buf = buf[:runtime.Stack(buf, false)]
 			log.Error("RPC method " + method + " crashed: " + fmt.Sprintf("%v\n%s", err, buf))
-			errRes = errors.New("method handler crashed")
+			errRes = errors.New("method handler crashed: " + fmt.Sprintf("%v\n%s", err, buf))
 		}
 	}()
 	// Run the callback.

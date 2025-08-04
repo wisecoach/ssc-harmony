@@ -172,7 +172,7 @@ func (p *Protocol) Match(targetID protocol.ID) bool {
 
 // HandleStream is the stream handle function being registered to libp2p.
 func (p *Protocol) HandleStream(raw libp2p_network.Stream) {
-	// tempDelete p.logger.Info().Str("stream", raw.ID()).Msg("handle new sync stream")
+	p.logger.Info().Str("stream", raw.ID()).Msg("handle new sync stream")
 	st := p.wrapStream(raw)
 	if err := p.sm.NewStream(st); err != nil {
 		// Possibly we have reach the hard limit of the stream
@@ -180,8 +180,8 @@ func (p *Protocol) HandleStream(raw libp2p_network.Stream) {
 			Msg("failed to add new stream")
 		return
 	}
-	// to get my ID use raw.Conn().LocalPeer().String()
-	// tempDelete p.logger.Info().Msgf("Connected to %s (%s)", raw.Conn().RemotePeer().String(), st.ProtoID())
+	// to get my ID use raw.Conn().LocalPeer().ToString()
+	// tempDelete p.logger.Info().Msgf("Connected to %s (%s)", raw.Conn().RemotePeer().ToString(), st.ProtoID())
 	st.run()
 }
 

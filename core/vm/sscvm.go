@@ -1,11 +1,11 @@
 package vm
 
 import (
-	"bytes"
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/crypto"
 	"github.com/harmony-one/harmony/core/state"
 	"github.com/harmony-one/harmony/internal/params"
+	"github.com/harmony-one/harmony/internal/utils"
 	"github.com/harmony-one/harmony/ssc/api"
 	"github.com/pkg/errors"
 	"math/big"
@@ -20,18 +20,46 @@ const (
 	SimulationReCall
 	ExecutionVerify
 	LockExecution
+	Precompiled
 )
+
+func (e ExecutionType) String() string {
+	switch e {
+	case SimulationCall:
+		return "SimulationCall"
+	case SimulationReCall:
+		return "SimulationReCall"
+	case ExecutionVerify:
+		return "ExecutionVerify"
+	case LockExecution:
+		return "LockExecution"
+	case Precompiled:
+		return "Precompiled"
+	default:
+		return "UnknownExecutionType"
+	}
+}
+
 const (
 	Internal TransferType = iota
 	CrossShard
 )
 
-var (
-	CTX_PREFIX = []byte{0x63, 0x72, 0x6f, 0x73, 0x73, 0x2d, 0x73, 0x68, 0x61, 0x72, 0x64, 0}
-)
+func (t TransferType) String() string {
+	switch t {
+	case Internal:
+		return "Internal"
+	case CrossShard:
+		return "CrossShard"
+	default:
+		return "UnknownTransferType"
+	}
+}
 
 var (
 	ErrUnsupportedExecutionTYpe = errors.New("unsupported execution type")
+	ErrFromSameShard            = errors.New("cross-call from same shard is not allowed")
+	ErrNotTargetShard           = errors.New("not target shard for cross-call")
 )
 
 type SSCVM struct {
@@ -46,8 +74,10 @@ type SSCVM struct {
 	// SSC Service used to implement the Cross-Shard Transaction
 	SSCService api.Service
 
-	// executionType of SSCVM, used to determine the instruction set of the VM
-	executionType ExecutionType
+	// ExecutionType of SSCVM, used to determine the instruction set of the VM
+	ExecutionType ExecutionType
+	// PreExec indicates whether the VM work for pre-execution to propose new block or apply transaction when block committed
+	PreExec bool
 
 	// chainConfig contains information about the current chain
 	chainConfig *params.ChainConfig
@@ -69,7 +99,7 @@ type SSCVM struct {
 	callGasTemp uint64
 }
 
-func NewSSCVM(ctx Context, statedb *state.DB, chainConfig *params.ChainConfig, vmConfig Config, sscService api.Service, executionType ExecutionType) *SSCVM {
+func NewSSCVM(ctx Context, statedb *state.DB, chainConfig *params.ChainConfig, vmConfig Config, sscService api.Service, executionType ExecutionType, preExec bool) *SSCVM {
 	vm := &SSCVM{
 		Context:       ctx,
 		StateDB:       statedb,
@@ -78,13 +108,16 @@ func NewSSCVM(ctx Context, statedb *state.DB, chainConfig *params.ChainConfig, v
 		chainRules:    chainConfig.Rules(ctx.EpochNumber),
 		interpreters:  make([]Interpreter, 0, 1),
 		SSCService:    sscService,
-		executionType: executionType,
+		ExecutionType: executionType,
+		PreExec:       preExec,
 	}
 
 	// vmConfig.EVMInterpreter will be used by EVM-C, it won't be checked here
 	// as we always want to have the built-in EVM as the failover option.
 	vm.interpreters = append(vm.interpreters, NewSSCVMInterpreter(vm, vmConfig))
 	vm.interpreter = vm.interpreters[0]
+
+	vm.LockableState = NewLockableStateWrapper().WithDB(statedb)
 
 	return vm
 }
@@ -119,14 +152,29 @@ func (vm *SSCVM) Call(caller ContractRef, addr common.Address, input []byte, gas
 		return nil, gas, ErrDepth
 	}
 
+	if SSCAddrsApplyOnChain[addr] != nil {
+		utils.SSCLogger().Info().
+			Str("ExecutionType", vm.ExecutionType.String()).
+			Str("txHash", vm.Context.TxHash.Hex()).
+			Str("callIndex", vm.Context.CrossCallIndex.ToString()).
+			Msgf("callSSCPrecompiledContract: caller=%s, addr=%s",
+				caller.Address().Hex(), addr.Hex())
+		return vm.callSSCPrecompiledContract(caller, addr, input, gas, value)
+	}
+
 	// if cross-call
-	if len(input) >= 4+16+16 {
-		isCrossCall := bytes.Compare(input[20:32], CTX_PREFIX) == 0
-		if isCrossCall {
-			crossShardID := uint32(input[32])<<24 + uint32(input[33])<<16 + uint32(input[34])<<8 + uint32(input[35])
-			crossCallInput := append(input[:4], input[36:]...)
-			return vm.crossCall(crossShardID, caller, addr, crossCallInput, gas, value)
-		}
+	targetShardId := vm.SSCService.GetShardID(addr)
+	isCrossCall := targetShardId != vm.Context.ShardID
+
+	utils.SSCLogger().Info().
+		Str("ExecutionType", vm.ExecutionType.String()).
+		Str("txHash", vm.Context.TxHash.Hex()).
+		Str("callIndex", vm.Context.CrossCallIndex.ToString()).
+		Msgf("Call: caller=%s, addr=%s, targetShardId=%d, isCrossCall=%t",
+			caller.Address().Hex(), addr.Hex(), targetShardId, isCrossCall)
+
+	if isCrossCall {
+		return vm.crossCall(targetShardId, caller, addr, input, gas, value)
 	}
 
 	// Fail if we're trying to transfer more than the available balance
@@ -194,8 +242,8 @@ func (vm *SSCVM) Call(caller ContractRef, addr common.Address, input []byte, gas
 }
 
 func (vm *SSCVM) crossCall(targetShardId uint32, caller ContractRef, addr common.Address, input []byte, gas uint64, value *big.Int) (ret []byte, leftOverGas uint64, err error) {
-	// get result from simulation if executionType is ExecutionVerify or LockExecution
-	if vm.executionType == ExecutionVerify || vm.executionType == LockExecution {
+	// get result from simulation if ExecutionType is ExecutionVerify or LockExecution
+	if vm.ExecutionType == ExecutionVerify || vm.ExecutionType == LockExecution {
 		ret, leftOverGas, err = vm.SSCService.GetResult(vm.Context.TxHash)
 		return
 	}
@@ -217,6 +265,24 @@ func (vm *SSCVM) crossCall(targetShardId uint32, caller ContractRef, addr common
 	return result.Result, result.LeftOverGas, err
 }
 
+func (vm *SSCVM) callSSCPrecompiledContract(caller ContractRef, addr common.Address, input []byte, gas uint64, value *big.Int) (ret []byte, leftOverGas uint64, err error) {
+	to := AccountRef(addr)
+	contract := NewContract(caller, to, value, gas)
+	contract.SetCallCode(&addr, emptyCodeHash, nil)
+	snapshot := vm.StateDB.Snapshot()
+
+	vm.Transfer(caller.Address(), to.Address(), value, Internal)
+	ret, err = vm.run(contract, input, false)
+	if err != nil {
+		utils.SSCLogger().Error().Err(err).Str("txHash", vm.Context.TxHash.Hex()).Msgf("callSSCPrecompiledContract: caller=%s, addr=%s", caller.Address().Hex(), addr.Hex())
+		vm.StateDB.RevertToSnapshot(snapshot)
+		if err != ErrExecutionReverted {
+			contract.UseGas(contract.Gas)
+		}
+	}
+	return ret, contract.Gas, err
+}
+
 func (vm *SSCVM) CallFromOtherShard(fromShard uint32, caller ContractRef, addr common.Address, input []byte, gas uint64, value *big.Int) (ret []byte, leftOverGas uint64, err error) {
 	if vm.vmConfig.NoRecursion && vm.depth > 0 {
 		return nil, gas, nil
@@ -226,13 +292,17 @@ func (vm *SSCVM) CallFromOtherShard(fromShard uint32, caller ContractRef, addr c
 	if vm.depth > int(params.CallCreateDepth) {
 		return nil, gas, ErrDepth
 	}
-	if len(input) >= 4+16+16 {
-		isCrossCall := bytes.Compare(input[20:32], CTX_PREFIX) == 0
-		if isCrossCall {
-			crossShardID := uint32(input[32])<<24 + uint32(input[33])<<16 + uint32(input[34])<<8 + uint32(input[35])
-			crossCallInput := append(input[:4], input[36:]...)
-			return vm.crossCall(crossShardID, caller, addr, crossCallInput, gas, value)
-		}
+
+	if vm.Context.ShardID == fromShard {
+		return nil, 0, ErrFromSameShard
+	}
+
+	targetShardId := vm.SSCService.GetShardID(addr)
+	if targetShardId != vm.Context.ShardID {
+		utils.SSCLogger().Error().Err(ErrNotTargetShard).Str("txHash", vm.Context.TxHash.Hex()).
+			Str("callIndex", vm.Context.CrossCallIndex.ToString()).
+			Msgf("not the target shard for cross-call, targetShardId=%d, currentShardId=%d, addr=%s, shardNum=%d", targetShardId, vm.Context.ShardID, addr.Hex(), vm.SSCService.ShardNum())
+		return nil, gas, ErrNotTargetShard
 	}
 
 	if !vm.Context.CanTransfer(vm.StateDB, caller.Address(), value) {
@@ -316,14 +386,21 @@ func (vm *SSCVM) CallCode(caller ContractRef, addr common.Address, input []byte,
 		return nil, gas, ErrDepth
 	}
 
+	if SSCAddrsApplyOnChain[addr] != nil {
+		utils.SSCLogger().Info().
+			Str("ExecutionType", vm.ExecutionType.String()).
+			Str("txHash", vm.Context.TxHash.Hex()).
+			Str("callIndex", vm.Context.CrossCallIndex.ToString()).
+			Msgf("callSSCPrecompiledContract: caller=%s, addr=%s",
+				caller.Address().Hex(), addr.Hex())
+		return vm.callSSCPrecompiledContract(caller, addr, input, gas, value)
+	}
+
 	// if cross-call
-	if len(input) >= 4+16+16 {
-		isCrossCall := bytes.Compare(input[20:32], CTX_PREFIX) == 0
-		if isCrossCall {
-			crossShardID := uint32(input[32])<<24 + uint32(input[33])<<16 + uint32(input[34])<<8 + uint32(input[35])
-			crossCallInput := append(input[:4], input[36:]...)
-			return vm.crossCall(crossShardID, caller, addr, crossCallInput, gas, value)
-		}
+	targetShardId := vm.SSCService.GetShardID(addr)
+	isCrossCall := targetShardId != vm.Context.ShardID
+	if isCrossCall {
+		return vm.crossCall(targetShardId, caller, addr, input, gas, value)
 	}
 
 	// Fail if we're trying to transfer more than the available balance
@@ -336,8 +413,7 @@ func (vm *SSCVM) CallCode(caller ContractRef, addr common.Address, input []byte,
 		to       = AccountRef(caller.Address())
 	)
 	// initialise a new contract and set the code that is to be used by the
-	// vm. The contract is a scoped environment for this execution context
-	// only.
+	// vm. The contract is a scoped environment for this execution context only.
 	contract := NewContract(caller, to, value, gas)
 	contract.SetCallCode(&addr, vm.StateDB.GetCodeHash(addr), vm.StateDB.GetCode(addr))
 
@@ -365,14 +441,21 @@ func (vm *SSCVM) DelegateCall(caller ContractRef, addr common.Address, input []b
 		return nil, gas, ErrDepth
 	}
 
+	if SSCAddrsApplyOnChain[addr] != nil {
+		utils.SSCLogger().Info().
+			Str("ExecutionType", vm.ExecutionType.String()).
+			Str("txHash", vm.Context.TxHash.Hex()).
+			Str("callIndex", vm.Context.CrossCallIndex.ToString()).
+			Msgf("callSSCPrecompiledContract: caller=%s, addr=%s",
+				caller.Address().Hex(), addr.Hex())
+		return vm.callSSCPrecompiledContract(caller, addr, input, gas, big.NewInt(0))
+	}
+
 	// if cross-call
-	if len(input) >= 4+16+16 {
-		isCrossCall := bytes.Compare(input[20:32], CTX_PREFIX) == 0
-		if isCrossCall {
-			crossShardID := uint32(input[32])<<24 + uint32(input[33])<<16 + uint32(input[34])<<8 + uint32(input[35])
-			crossCallInput := append(input[:4], input[36:]...)
-			return vm.crossCall(crossShardID, caller, addr, crossCallInput, gas, big.NewInt(0))
-		}
+	targetShardId := vm.SSCService.GetShardID(addr)
+	isCrossCall := targetShardId != vm.Context.ShardID
+	if isCrossCall {
+		return vm.crossCall(targetShardId, caller, addr, input, gas, big.NewInt(0))
 	}
 
 	var (
@@ -403,14 +486,21 @@ func (vm *SSCVM) StaticCall(caller ContractRef, addr common.Address, input []byt
 		return nil, gas, ErrDepth
 	}
 
+	if SSCAddrsApplyOnChain[addr] != nil {
+		utils.SSCLogger().Info().
+			Str("ExecutionType", vm.ExecutionType.String()).
+			Str("txHash", vm.Context.TxHash.Hex()).
+			Str("callIndex", vm.Context.CrossCallIndex.ToString()).
+			Msgf("callSSCPrecompiledContract: caller=%s, addr=%s",
+				caller.Address().Hex(), addr.Hex())
+		return vm.callSSCPrecompiledContract(caller, addr, input, gas, big.NewInt(0))
+	}
+
 	// if cross-call
-	if len(input) >= 4+16+16 {
-		isCrossCall := bytes.Compare(input[20:32], CTX_PREFIX) == 0
-		if isCrossCall {
-			crossShardID := uint32(input[32])<<24 + uint32(input[33])<<16 + uint32(input[34])<<8 + uint32(input[35])
-			crossCallInput := append(input[:4], input[36:]...)
-			return vm.crossCall(crossShardID, caller, addr, crossCallInput, gas, big.NewInt(0))
-		}
+	targetShardId := vm.SSCService.GetShardID(addr)
+	isCrossCall := targetShardId != vm.Context.ShardID
+	if isCrossCall {
+		return vm.crossCall(targetShardId, caller, addr, input, gas, big.NewInt(0))
 	}
 
 	var (
@@ -489,6 +579,10 @@ func (vm *SSCVM) run(contract *Contract, input []byte, readOnly bool) ([]byte, e
 		// it's used to cross-call for harmony, we don't need to RunWriteCapablePrecompiledContract
 		if len(writeCapablePrecompiles) > 0 {
 			if p := writeCapablePrecompiles[*contract.CodeAddr]; p != nil {
+				utils.SSCLogger().Info().Str("txHash", vm.Context.TxHash.Hex()).
+					Str("executionType", vm.ExecutionType.String()).
+					Bool("preExec", vm.PreExec).
+					Msgf("RunWriteCapablePrecompiledContract: %s", contract.CodeAddr.Hex())
 				if readOnly {
 					return nil, errWriteProtection
 				}
@@ -616,7 +710,7 @@ func (vm *SSCVM) Transfer(from common.Address, to common.Address, amount *big.In
 	if amount == nil || amount.Sign() == 0 {
 		return
 	}
-	switch vm.executionType {
+	switch vm.ExecutionType {
 	case SimulationCall:
 		vm.transfer_Call(from, to, amount, transferType)
 	case SimulationReCall:
@@ -653,7 +747,7 @@ func (vm *SSCVM) transfer_EV(from common.Address, to common.Address, amount *big
 }
 
 func (vm *SSCVM) CanTransfer(from common.Address, amount *big.Int, transferType TransferType) bool {
-	switch vm.executionType {
+	switch vm.ExecutionType {
 	case SimulationCall:
 		return vm.canTransfer_Call(from, amount, transferType)
 	case SimulationReCall:

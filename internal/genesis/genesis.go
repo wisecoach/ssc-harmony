@@ -15,7 +15,8 @@ const genesisString = "https://harmony.one 'Open Consensus for 10B' 2019.06.01 $
 // DeployAccount is the account used in genesis
 type DeployAccount struct {
 	Index        string // index
-	Address      string // account address
+	Address      string // account HMY address
+	EthAddr      string // account ETH address
 	BLSPublicKey string // account public BLS key
 	ShardID      uint32 // shardID of the account
 }

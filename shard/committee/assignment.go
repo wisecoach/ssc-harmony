@@ -2,6 +2,7 @@ package committee
 
 import (
 	"encoding/json"
+	"github.com/harmony-one/harmony/internal/genesis"
 	"math/big"
 
 	"github.com/harmony-one/harmony/core/state"
@@ -266,57 +267,50 @@ var (
 
 // This is the shard state computation logic before staking epoch.
 func preStakingEnabledCommittee(s shardingconfig.Instance) (*shard.State, error) {
-	shardNum := int(s.NumShards())
-	shardHarmonyNodes := s.NumHarmonyOperatedNodesPerShard()
-	shardSize := s.NumNodesPerShard()
-	hmyAccounts := s.HmyAccounts()
-	fnAccounts := s.FnAccounts()
+	shardCount := int(s.NumShards())
+	shardSize := s.NumHarmonyOperatedNodesPerShard()
 	shardState := &shard.State{}
-	// Shard state needs to be sorted by shard ID
-	for i := 0; i < shardNum; i++ {
-		com := shard.Committee{ShardID: uint32(i)}
-		for j := 0; j < shardHarmonyNodes; j++ {
-			index := i + j*shardNum // The initial account to use for genesis nodes
-			if s.UseSameAccountEachShard() {
-				index = j
-			}
+	shardState.Shards = make([]shard.Committee, shardCount)
+	hAccounts := s.HmyAccounts()
+	shard2accounts := make(map[uint32][]genesis.DeployAccount)
+	for i := 0; i < shardCount; i++ {
+		shard2accounts[uint32(i)] = make([]genesis.DeployAccount, 0)
+	}
+	for _, account := range hAccounts {
+		if account.ShardID >= uint32(shardCount) {
+			continue
+		}
+		if len(shard2accounts[account.ShardID]) >= shardSize {
+			continue
+		}
+		shard2accounts[account.ShardID] = append(shard2accounts[account.ShardID], account)
+	}
+	for i := 0; i < shardCount; i++ {
+		shardState.Shards[i] = shard.Committee{ShardID: uint32(i), Slots: shard.SlotList{}}
+		accounts := shard2accounts[uint32(i)]
+		if len(accounts) < shardSize {
+			return nil, errors.Errorf("shard %d has only %d accounts, expected %d", i, len(accounts), shardSize)
+		}
+		for j := 0; j < shardSize; j++ {
+			account := accounts[j]
 			pub := &bls_core.PublicKey{}
-			pub.DeserializeHexStr(hmyAccounts[index].BLSPublicKey)
+			if err := pub.DeserializeHexStr(account.BLSPublicKey); err != nil {
+				return nil, err
+			}
 			pubKey := bls.SerializedPublicKey{}
-			pubKey.FromLibBLSPublicKey(pub)
-			// TODO: directly read address for bls too
-			addr, err := common2.ParseAddr(hmyAccounts[index].Address)
+			if err := pubKey.FromLibBLSPublicKey(pub); err != nil {
+				return nil, err
+			}
+
+			addr, err := common2.ParseAddr(account.Address)
 			if err != nil {
 				return nil, err
 			}
-			curNodeID := shard.Slot{
+			shardState.Shards[i].Slots = append(shardState.Shards[i].Slots, shard.Slot{
 				EcdsaAddress: addr,
 				BLSPublicKey: pubKey,
-			}
-			com.Slots = append(com.Slots, curNodeID)
+			})
 		}
-		// add FN runner's key
-		for j := shardHarmonyNodes; j < shardSize; j++ {
-			index := i + (j-shardHarmonyNodes)*shardNum
-			if s.UseSameAccountEachShard() {
-				index = j - shardHarmonyNodes
-			}
-			pub := &bls_core.PublicKey{}
-			pub.DeserializeHexStr(fnAccounts[index].BLSPublicKey)
-			pubKey := bls.SerializedPublicKey{}
-			pubKey.FromLibBLSPublicKey(pub)
-			// TODO: directly read address for bls too
-			addr, err := common2.ParseAddr(fnAccounts[index].Address)
-			if err != nil {
-				return nil, err
-			}
-			curNodeID := shard.Slot{
-				EcdsaAddress: addr,
-				BLSPublicKey: pubKey,
-			}
-			com.Slots = append(com.Slots, curNodeID)
-		}
-		shardState.Shards = append(shardState.Shards, com)
 	}
 	return shardState, nil
 }
@@ -325,20 +319,34 @@ func eposStakedCommittee(
 	epoch *big.Int, s shardingconfig.Instance, stakerReader DataProvider,
 ) (*shard.State, error) {
 	shardCount := int(s.NumShards())
+	shardSize := s.NumHarmonyOperatedNodesPerShard()
 	shardState := &shard.State{}
 	shardState.Shards = make([]shard.Committee, shardCount)
 	hAccounts := s.HmyAccounts()
-	shardHarmonyNodes := s.NumHarmonyOperatedNodesPerShard()
-
+	shard2accounts := make(map[uint32][]genesis.DeployAccount)
+	for i := 0; i < shardCount; i++ {
+		shard2accounts[uint32(i)] = make([]genesis.DeployAccount, 0)
+	}
+	for _, account := range hAccounts {
+		if account.ShardID >= uint32(shardCount) {
+			continue
+		}
+		if len(shard2accounts[account.ShardID]) >= shardSize {
+			continue
+		}
+		shard2accounts[account.ShardID] = append(shard2accounts[account.ShardID], account)
+	}
+	utils.Logger().Info().Int("shardSize", shardSize).Int("shardCount", shardCount).Msgf("begin to assign shard state, %v", shard2accounts)
 	for i := 0; i < shardCount; i++ {
 		shardState.Shards[i] = shard.Committee{ShardID: uint32(i), Slots: shard.SlotList{}}
-		for j := 0; j < shardHarmonyNodes; j++ {
-			index := i + j*shardCount
-			if s.UseSameAccountEachShard() {
-				index = j
-			}
+		accounts := shard2accounts[uint32(i)]
+		if len(accounts) < shardSize {
+			return nil, errors.Errorf("shard %d has only %d accounts, expected %d", i, len(accounts), shardSize)
+		}
+		for j := 0; j < shardSize; j++ {
+			account := accounts[j]
 			pub := &bls_core.PublicKey{}
-			if err := pub.DeserializeHexStr(hAccounts[index].BLSPublicKey); err != nil {
+			if err := pub.DeserializeHexStr(account.BLSPublicKey); err != nil {
 				return nil, err
 			}
 			pubKey := bls.SerializedPublicKey{}
@@ -346,7 +354,7 @@ func eposStakedCommittee(
 				return nil, err
 			}
 
-			addr, err := common2.ParseAddr(hAccounts[index].Address)
+			addr, err := common2.ParseAddr(account.Address)
 			if err != nil {
 				return nil, err
 			}
@@ -354,6 +362,7 @@ func eposStakedCommittee(
 				EcdsaAddress: addr,
 				BLSPublicKey: pubKey,
 			})
+			utils.Logger().Info().Str("addr", addr.Hex()).Str("pubkey", pubKey.Hex()).Int("shard", i).Msg("Adding account to shard state")
 		}
 	}
 

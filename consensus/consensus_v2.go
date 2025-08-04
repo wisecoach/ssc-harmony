@@ -241,7 +241,7 @@ func (consensus *Consensus) finalCommit() {
 	// tempDelete 	Uint64("blockNum", block.NumberU64()).
 	// tempDelete 	Uint64("epochNum", block.Epoch().Uint64()).
 	// tempDelete 	Uint64("ViewId", block.Header().ViewID().Uint64()).
-	// tempDelete 	Str("blockHash", block.Hash().String()).
+	// tempDelete 	Str("blockHash", block.Hash().ToString()).
 	// tempDelete 	Int("numTxns", len(block.Transactions())).
 	// tempDelete 	Int("numStakingTxns", len(block.StakingTransactions())).
 	// tempDelete 	Msg("HOORAY!!!!!!! CONSENSUS REACHED!!!!!!!")
@@ -346,7 +346,7 @@ func (consensus *Consensus) syncReadyChan() {
 		consensus.current.SetMode(mode)
 		// tempDelete consensus.getLogger().Info().Msg("[syncReadyChan] Start consensus timer")
 		consensus.consensusTimeout[timeoutConsensus].Start()
-		// tempDelete consensus.getLogger().Info().Str("Mode", mode.String()).Msg("Node is IN SYNC")
+		// tempDelete consensus.getLogger().Info().Str("Mode", mode.ToString()).Msg("Node is IN SYNC")
 		consensusSyncCounterVec.With(prometheus.Labels{"consensus": "in_sync"}).Inc()
 	} else if consensus.mode() == Syncing {
 		// Corner case where sync is triggered before `onCommitted` and there is a race
@@ -363,7 +363,7 @@ func (consensus *Consensus) syncNotReadyChan(reason string) {
 	// tempDelete mode := consensus.current.Mode()
 	consensus.setBlockNum(consensus.Blockchain().CurrentHeader().Number().Uint64() + 1)
 	consensus.current.SetMode(Syncing)
-	// tempDelete consensus.getLogger().Info().Msgf("[ConsensusMainLoop] syncNotReadyChan, prev %s, reason %s", mode.String(), reason)
+	// tempDelete consensus.getLogger().Info().Msgf("[ConsensusMainLoop] syncNotReadyChan, prev %s, reason %s", mode.ToString(), reason)
 	// tempDelete consensus.getLogger().Info().Msgf("[ConsensusMainLoop] Node is OUT OF SYNC, reason: %s", reason)
 	consensusSyncCounterVec.With(prometheus.Labels{"consensus": "out_of_sync"}).Inc()
 }
@@ -643,7 +643,7 @@ func (consensus *Consensus) tryCatchup() error {
 		case consensus.VerifiedNewBlock <- blk:
 		default:
 			// tempDelete consensus.getLogger().Info().
-			// tempDelete 	Str("blockHash", blk.Hash().String()).
+			// tempDelete 	Str("blockHash", blk.Hash().ToString()).
 			// tempDelete 	Msg("[TryCatchup] consensus verified block send to chan failed")
 			continue
 		}
@@ -801,11 +801,11 @@ func (consensus *Consensus) setupForNewConsensus(blk *types.Block, committedMsg 
 		if next := consensus.rotateLeader(epoch, committedMsg.SenderPubkeys[0]); next != nil {
 			prev := consensus.getLeaderPubKey()
 			consensus.setLeaderPubKey(next)
-			// tempDelete if consensus.isLeader() {
-			// tempDelete 	utils.Logger().Info().Msgf("We are block %d, I am the new leader %s", blk.NumberU64(), next.Bytes.Hex())
-			// tempDelete } else {
-			// tempDelete 	utils.Logger().Info().Msgf("We are block %d, the leader is %s", blk.NumberU64(), next.Bytes.Hex())
-			// tempDelete }
+			if consensus.isLeader() {
+				utils.Logger().Info().Msgf("We are block %d, I am the new leader %s", blk.NumberU64(), next.Bytes.Hex())
+			} else {
+				utils.Logger().Info().Msgf("We are block %d, the leader is %s", blk.NumberU64(), next.Bytes.Hex())
+			}
 			if consensus.isLeader() && !consensus.getLeaderPubKey().Object.IsEqual(prev.Object) {
 				// leader changed
 				blockPeriod := consensus.BlockPeriod
@@ -942,7 +942,7 @@ func (consensus *Consensus) ValidateVdfAndProof(headerObj *block.Header) bool {
 	copy(vdfOutput[:], headerObj.Vdf())
 	if vdfObject.Verify(vdfOutput) {
 		// tempDelete consensus.getLogger().Info().
-		// tempDelete 	Str("MsgBlockNum", headerObj.Number().String()).
+		// tempDelete 	Str("MsgBlockNum", headerObj.Number().ToString()).
 		// tempDelete 	Int("Num of VRF", consensus.VdfSeedSize()).
 		// tempDelete 	Msg("[OnAnnounce] validated a new VDF")
 

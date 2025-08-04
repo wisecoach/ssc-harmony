@@ -1,6 +1,7 @@
 package consensus
 
 import (
+	"github.com/harmony-one/harmony/core/genesis"
 	"sort"
 	"strings"
 	"time"
@@ -91,6 +92,16 @@ func (consensus *Consensus) ProposeNewBlock(commitSigs chan []byte) (*types.Bloc
 			utils.Logger().Err(err).Msg("Failed to fetch pending transactions")
 			return nil, err
 		}
+		pendingSSCTxs := make(types.Transactions, 0)
+		if len(pendingPoolTxs[genesis.SSCSubmitterAddr]) > 0 {
+			for _, tx := range pendingPoolTxs[genesis.SSCSubmitterAddr] {
+				if sscTx, ok := tx.(*types.Transaction); ok {
+					pendingSSCTxs = append(pendingSSCTxs, sscTx)
+				}
+			}
+			// delete it
+			delete(pendingPoolTxs, genesis.SSCSubmitterAddr)
+		}
 		pendingPlainTxs := map[common.Address]types.Transactions{}
 		pendingStakingTxs := staking.StakingTransactions{}
 		for addr, poolTxs := range pendingPoolTxs {
@@ -117,7 +128,7 @@ func (consensus *Consensus) ProposeNewBlock(commitSigs chan []byte) (*types.Bloc
 		// Try commit normal and staking transactions based on the current state
 		// The successfully committed transactions will be put in the proposed block
 		if err := worker.CommitTransactions(
-			pendingPlainTxs, pendingStakingTxs, beneficiary,
+			pendingSSCTxs, pendingPlainTxs, pendingStakingTxs, beneficiary,
 		); err != nil {
 			utils.Logger().Error().Err(err).Msg("cannot commit transactions")
 			return nil, err
@@ -140,74 +151,74 @@ func (consensus *Consensus) ProposeNewBlock(commitSigs chan []byte) (*types.Bloc
 		}
 	}
 
-	isBeaconchainInCrossLinkEra := consensus.ShardID == shard.BeaconChainShardID &&
-		consensus.Blockchain().Config().IsCrossLink(worker.GetCurrentHeader().Epoch())
+	// isBeaconchainInCrossLinkEra := consensus.ShardID == shard.BeaconChainShardID &&
+	// 	consensus.Blockchain().Config().IsCrossLink(worker.GetCurrentHeader().Epoch())
 
 	isBeaconchainInStakingEra := consensus.ShardID == shard.BeaconChainShardID &&
 		consensus.Blockchain().Config().IsStaking(worker.GetCurrentHeader().Epoch())
 
-	utils.AnalysisStart("proposeNewBlockVerifyCrossLinks")
+	// utils.AnalysisStart("proposeNewBlockVerifyCrossLinks")
 	// Prepare cross links and slashing messages
-	var crossLinksToPropose types.CrossLinks
-	if isBeaconchainInCrossLinkEra {
-		allPending, err := consensus.Blockchain().ReadPendingCrossLinks()
-		invalidToDelete := []types.CrossLink{}
-		if err == nil {
-			for _, pending := range allPending {
-				// ReadCrossLink beacon chain usage.
-				exist, err := consensus.Blockchain().ReadCrossLink(pending.ShardID(), pending.BlockNum())
-				if err == nil || exist != nil {
-					invalidToDelete = append(invalidToDelete, pending)
-					utils.Logger().Debug().
-						AnErr("[ProposeNewBlock] pending crosslink is already committed onchain", err)
-					continue
-				}
-				last, err := consensus.Blockchain().ReadShardLastCrossLink(pending.ShardID())
-				if err != nil {
-					utils.Logger().Debug().
-						AnErr("[ProposeNewBlock] failed to read last crosslink", err)
-					// no return
-				}
-				// if pending crosslink is older than the last crosslink, delete it and continue
-				if err == nil && exist == nil && last != nil && last.BlockNum() >= pending.BlockNum() {
-					invalidToDelete = append(invalidToDelete, pending)
-				}
-
-				// Crosslink is already verified before it's accepted to pending,
-				// no need to verify again in proposal.
-				if !consensus.Blockchain().Config().IsCrossLink(pending.Epoch()) {
-					utils.Logger().Debug().
-						AnErr("[ProposeNewBlock] pending crosslink that's before crosslink epoch", err)
-					continue
-				}
-
-				crossLinksToPropose = append(crossLinksToPropose, pending)
-				if len(crossLinksToPropose) > 15 {
-					break
-				}
-			}
-			utils.Logger().Info().
-				Msgf("[ProposeNewBlock] Proposed %d crosslinks from %d pending crosslinks",
-					len(crossLinksToPropose), len(allPending),
-				)
-		} else {
-			// tempDelete utils.Logger().Warn().Err(err).Msgf(
-			// tempDelete 	"[ProposeNewBlock] Unable to Read PendingCrossLinks, number of crosslinks: %d",
-			// tempDelete 	len(allPending),
-			// tempDelete )
-		}
-		if n, err := consensus.Blockchain().DeleteFromPendingCrossLinks(invalidToDelete); err != nil {
-			// tempDelete utils.Logger().Error().
-			// tempDelete 	Err(err).
-			// tempDelete 	Msg("[ProposeNewBlock] invalid pending cross links failed")
-		} else if len(invalidToDelete) > 0 {
-			utils.Logger().Info().
-				Int("not-deleted", n).
-				Int("deleted", len(invalidToDelete)).
-				Msg("[ProposeNewBlock] deleted invalid pending cross links")
-		}
-	}
-	utils.AnalysisEnd("proposeNewBlockVerifyCrossLinks")
+	// var crossLinksToPropose types.CrossLinks
+	// if isBeaconchainInCrossLinkEra {
+	// 	allPending, err := consensus.Blockchain().ReadPendingCrossLinks()
+	// 	invalidToDelete := []types.CrossLink{}
+	// 	if err == nil {
+	// 		for _, pending := range allPending {
+	// 			// ReadCrossLink beacon chain usage.
+	// 			exist, err := consensus.Blockchain().ReadCrossLink(pending.ShardID(), pending.BlockNum())
+	// 			if err == nil || exist != nil {
+	// 				invalidToDelete = append(invalidToDelete, pending)
+	// 				utils.Logger().Debug().
+	// 					AnErr("[ProposeNewBlock] pending crosslink is already committed onchain", err)
+	// 				continue
+	// 			}
+	// 			last, err := consensus.Blockchain().ReadShardLastCrossLink(pending.ShardID())
+	// 			if err != nil {
+	// 				utils.Logger().Debug().
+	// 					AnErr("[ProposeNewBlock] failed to read last crosslink", err)
+	// 				// no return
+	// 			}
+	// 			// if pending crosslink is older than the last crosslink, delete it and continue
+	// 			if err == nil && exist == nil && last != nil && last.BlockNum() >= pending.BlockNum() {
+	// 				invalidToDelete = append(invalidToDelete, pending)
+	// 			}
+	//
+	// 			// Crosslink is already verified before it's accepted to pending,
+	// 			// no need to verify again in proposal.
+	// 			if !consensus.Blockchain().Config().IsCrossLink(pending.Epoch()) {
+	// 				utils.Logger().Debug().
+	// 					AnErr("[ProposeNewBlock] pending crosslink that's before crosslink epoch", err)
+	// 				continue
+	// 			}
+	//
+	// 			crossLinksToPropose = append(crossLinksToPropose, pending)
+	// 			if len(crossLinksToPropose) > 15 {
+	// 				break
+	// 			}
+	// 		}
+	// 		utils.Logger().Info().
+	// 			Msgf("[ProposeNewBlock] Proposed %d crosslinks from %d pending crosslinks",
+	// 				len(crossLinksToPropose), len(allPending),
+	// 			)
+	// 	} else {
+	// 		utils.Logger().Warn().Err(err).Msgf(
+	// 			"[ProposeNewBlock] Unable to Read PendingCrossLinks, number of crosslinks: %d",
+	// 			len(allPending),
+	// 		)
+	// 	}
+	// if n, err := consensus.Blockchain().DeleteFromPendingCrossLinks(invalidToDelete); err != nil {
+	// 	utils.Logger().Error().
+	// 		Err(err).
+	// 		Msg("[ProposeNewBlock] invalid pending cross links failed")
+	// } else if len(invalidToDelete) > 0 {
+	// 	utils.Logger().Info().
+	// 		Int("not-deleted", n).
+	// 		Int("deleted", len(invalidToDelete)).
+	// 		Msg("[ProposeNewBlock] deleted invalid pending cross links")
+	// }
+	// }
+	// utils.AnalysisEnd("proposeNewBlockVerifyCrossLinks")
 
 	if isBeaconchainInStakingEra {
 		// this will set a meaningful w.current.slashes
@@ -230,14 +241,14 @@ func (consensus *Consensus) ProposeNewBlock(commitSigs chan []byte) (*types.Bloc
 	}
 	finalizedBlock, err := worker.FinalizeNewBlock(
 		commitSigs, viewIDFunc,
-		coinbase, crossLinksToPropose, shardState,
+		coinbase, make(types.CrossLinks, 0), shardState,
 	)
 	if err != nil {
 		utils.Logger().Error().Err(err).Msg("[ProposeNewBlock] Failed finalizing the new block")
 		return nil, err
 	}
 
-	// utils.Logger().Info().Msg("[ProposeNewBlock] verifying the new block header")
+	utils.Logger().Info().Msg("[ProposeNewBlock] verifying the new block header")
 	err = core.NewBlockValidator(consensus.Blockchain()).ValidateHeader(finalizedBlock, true)
 
 	if err != nil {
@@ -431,11 +442,11 @@ func (consensus *Consensus) WaitForConsensusReadyV2(stopChan chan struct{}, stop
 			case proposal := <-consensus.GetReadySignal():
 				for retryCount := 0; retryCount < 3 && consensus.IsLeader(); retryCount++ {
 					time.Sleep(SleepPeriod)
-					// utils.Logger().Info().
-					// 	Uint64("blockNum", consensus.Blockchain().CurrentBlock().NumberU64()+1).
-					// 	Bool("asyncProposal", proposal.Type == AsyncProposal).
-					// 	Str("called", proposal.Caller).
-					// 	Msg("PROPOSING NEW BLOCK ------------------------------------------------")
+					utils.Logger().Info().
+						Uint64("blockNum", consensus.Blockchain().CurrentBlock().NumberU64()+1).
+						Bool("asyncProposal", proposal.Type == AsyncProposal).
+						Str("called", proposal.Caller).
+						Msg("PROPOSING NEW BLOCK ------------------------------------------------")
 
 					// Prepare last commit signatures
 					newCommitSigsChan := make(chan []byte)
@@ -447,11 +458,11 @@ func (consensus *Consensus) WaitForConsensusReadyV2(stopChan chan struct{}, stop
 						}
 						select {
 						case <-time.After(waitTime):
-							// tempDelete if waitTime == 0 {
-							// tempDelete 	utils.Logger().Info().Msg("[ProposeNewBlock] Sync block proposal, reading commit sigs directly from DB")
-							// tempDelete } else {
-							// tempDelete 	utils.Logger().Info().Msg("[ProposeNewBlock] CallTimeout waiting for commit sigs, reading directly from DB")
-							// tempDelete }
+							if waitTime == 0 {
+								utils.Logger().Info().Msg("[ProposeNewBlock] Sync block proposal, reading commit sigs directly from DB")
+							} else {
+								utils.Logger().Info().Msg("[ProposeNewBlock] CallTimeout waiting for commit sigs, reading directly from DB")
+							}
 							sigs, err := consensus.BlockCommitSigs(consensus.Blockchain().CurrentBlock().NumberU64())
 
 							if err != nil {
@@ -460,7 +471,7 @@ func (consensus *Consensus) WaitForConsensusReadyV2(stopChan chan struct{}, stop
 								newCommitSigsChan <- sigs
 							}
 						case commitSigs := <-consensus.GetCommitSigChannel():
-							// tempDelete utils.Logger().Info().Msg("[ProposeNewBlock] received commit sigs asynchronously")
+							utils.Logger().Info().Msg("[ProposeNewBlock] received commit sigs asynchronously")
 							if len(commitSigs) > bls.BLSSignatureSizeInBytes {
 								newCommitSigsChan <- commitSigs
 							}
@@ -468,14 +479,14 @@ func (consensus *Consensus) WaitForConsensusReadyV2(stopChan chan struct{}, stop
 					}()
 					newBlock, err := consensus.ProposeNewBlock(newCommitSigsChan)
 					if err == nil {
-						// tempDelete utils.Logger().Info().
-						// tempDelete 	Uint64("blockNum", newBlock.NumberU64()).
-						// tempDelete 	Uint64("epoch", newBlock.Epoch().Uint64()).
-						// tempDelete 	Uint64("viewID", newBlock.Header().ViewID().Uint64()).
-						// tempDelete 	Int("numTxs", newBlock.Transactions().Len()).
-						// tempDelete 	Int("numStakingTxs", newBlock.StakingTransactions().Len()).
-						// tempDelete 	Int("crossShardReceipts", newBlock.IncomingReceipts().Len()).
-						// tempDelete 	Msgf("=========Successfully Proposed New Block, shard: %d epoch: %d number: %d ==========", newBlock.ShardID(), newBlock.Epoch().Uint64(), newBlock.NumberU64())
+						utils.Logger().Info().
+							Uint64("blockNum", newBlock.NumberU64()).
+							Uint64("epoch", newBlock.Epoch().Uint64()).
+							Uint64("viewID", newBlock.Header().ViewID().Uint64()).
+							Int("numTxs", newBlock.Transactions().Len()).
+							Int("numStakingTxs", newBlock.StakingTransactions().Len()).
+							Int("crossShardReceipts", newBlock.IncomingReceipts().Len()).
+							Msgf("=========Successfully Proposed New Block, shard: %d epoch: %d number: %d ==========", newBlock.ShardID(), newBlock.Epoch().Uint64(), newBlock.NumberU64())
 
 						// Send the new block to Consensus so it can be confirmed.
 						consensus.BlockChannel(newBlock)

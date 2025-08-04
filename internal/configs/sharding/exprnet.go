@@ -12,11 +12,11 @@ import (
 )
 
 func NewExprnetSchedule(shardNum int, shardSize int) Schedule {
-	exprnet := MustNewInstance(true,
+	exprnet := MustNewInstance(false,
 		uint32(shardNum), shardSize,
 		shardSize, 0,
-		numeric.MustNewDecFromStr("0.68"), genesis.LocalHarmonyAccountsV3,
-		genesis.LocalHarmonyAccountsV3, emptyAllowlist, nil,
+		numeric.MustNewDecFromStr("0.68"), genesis.ExprHarmonyAccounts,
+		genesis.ExprHarmonyAccounts, emptyAllowlist, nil,
 		numeric.ZeroDec(), ethCommon.Address{},
 		exprnetReshardingEpoch, exprnetBlocksPerEpochV2,
 	)

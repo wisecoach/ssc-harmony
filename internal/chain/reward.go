@@ -351,7 +351,7 @@ func distributeRewardAfterAggregateEpoch(bc engine.ChainReader, state *state.DB,
 		if !bc.Config().IsStaking(cxLink.Epoch()) {
 			continue
 		}
-		utils.Logger().Info().Msg(fmt.Sprintf("allCrossLinks shard %d block %d", cxLink.ShardID(), cxLink.BlockNum()))
+		// utils.Logger().Info().Msg(fmt.Sprintf("allCrossLinks shard %d block %d", cxLink.ShardID(), cxLink.BlockNum()))
 		payables, _, err := processOneCrossLink(bc, state, cxLink, defaultReward, i)
 
 		if err != nil {

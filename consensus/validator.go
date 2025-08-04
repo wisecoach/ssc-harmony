@@ -1,6 +1,7 @@
 package consensus
 
 import (
+	"encoding/hex"
 	"github.com/pkg/errors"
 
 	"github.com/ethereum/go-ethereum/common"
@@ -159,9 +160,9 @@ func (consensus *Consensus) prepare() {
 	if err := consensus.broadcastConsensusP2pMessages(p2pMsgs); err != nil {
 		consensus.getLogger().Warn().Err(err).Msg("[OnAnnounce] Cannot send prepare message")
 	} else {
-		// tempDelete consensus.getLogger().Info().
-		// tempDelete 	Str("blockHash", hex.EncodeToString(consensus.blockHash[:])).
-		// tempDelete 	Msg("[OnAnnounce] Sent Prepare Message!!")
+		consensus.getLogger().Info().
+			Str("blockHash", hex.EncodeToString(consensus.blockHash[:])).
+			Msg("[OnAnnounce] Sent Prepare Message!!")
 	}
 }
 
@@ -445,7 +446,7 @@ func (consensus *Consensus) constructP2pMessages(msgType msg_pb.MessageType, pay
 			networkMessage, err := consensus.construct(msgType, payloadForSign, []*bls.PrivateKeyWrapper{key})
 			if err != nil {
 				// tempDelete consensus.getLogger().Err(err).
-				// tempDelete 	Str("message-type", msgType.String()).
+				// tempDelete 	Str("message-type", msgType.ToString()).
 				// tempDelete 	Str("key", key.Pri.SerializeToHexStr()).
 				// tempDelete 	Msg("could not construct message")
 				continue

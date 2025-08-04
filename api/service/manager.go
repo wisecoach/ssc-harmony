@@ -113,7 +113,7 @@ func (m *Manager) StartServices() (err error) {
 
 	for _, service := range m.services {
 		t := m.typeByService(service)
-		// tempDelete m.logger.Info().Str("type", t.String()).Msg("Starting service")
+		// tempDelete m.logger.Info().Str("type", t.ToString()).Msg("Starting service")
 		if err = service.Start(); err != nil {
 			err = errors.Wrapf(err, "cannot start service [%v]", t.String())
 			return err
@@ -137,7 +137,7 @@ func (m *Manager) stopServices(services []Service) error {
 		service := services[i]
 		t := m.typeByService(service)
 
-		// tempDelete m.logger.Info().Str("type", t.String()).Msg("Stopping service")
+		// tempDelete m.logger.Info().Str("type", t.ToString()).Msg("Stopping service")
 		if err := service.Stop(); err != nil {
 			err = errors.Wrapf(err, "failed to stop service [%v]", t.String())
 			if rErr != nil {

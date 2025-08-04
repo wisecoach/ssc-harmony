@@ -19,11 +19,12 @@ type GenesisInitializer struct {
 
 // InitChainDB sets up a new genesis block in the database for the given shard.
 func (gi *GenesisInitializer) InitChainDB(db ethdb.Database, shardID uint32) error {
-	shardState, _ := committee.WithStakingEnabled.Compute(
+	shardState, err := committee.WithStakingEnabled.Compute(
 		big.NewInt(GenesisEpoch), nil,
 	)
-	if shardState == nil {
-		return errors.New("failed to create genesis shard state")
+	if err != nil {
+		utils.Logger().Error().Err(err).Msg("failed to compute genesis shard state")
+		return err
 	}
 	switch shardID {
 	case shard.BeaconChainShardID:

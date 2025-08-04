@@ -569,7 +569,7 @@ func (consensus *Consensus) ResetViewChangeState() {
 // ResetViewChangeState resets the view change structure
 func (consensus *Consensus) resetViewChangeState() {
 	// tempDelete consensus.getLogger().Info().
-	// tempDelete 	Str("Phase", consensus.phase.String()).
+	// tempDelete 	Str("Phase", consensus.phase.ToString()).
 	// tempDelete 	Msg("[ResetViewChangeState] Resetting view change state")
 	consensus.current.SetMode(Normal)
 	consensus.vc.Reset()

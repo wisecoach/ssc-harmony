@@ -211,7 +211,7 @@ func (stg *StageStates) Exec(firstCycle bool, invalidBlockRevert bool, s *StageS
 		// tempDelete for i, tx := range block.StakingTransactions() {
 		// tempDelete 	utils.Logger().Info().
 		// tempDelete 		Msgf(
-		// tempDelete 			"StakingTxn %d: %s, %v", i, tx.StakingType().String(), tx.StakingMessage(),
+		// tempDelete 			"StakingTxn %d: %s, %v", i, tx.StakingType().ToString(), tx.StakingMessage(),
 		// tempDelete 		)
 		// tempDelete }
 

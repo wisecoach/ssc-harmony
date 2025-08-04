@@ -9,6 +9,7 @@ import (
 	"github.com/ethereum/go-ethereum/crypto"
 	"github.com/harmony-one/harmony/core/types"
 	"math/big"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -38,11 +39,35 @@ const (
 	ExecutionFailed
 )
 
+func (s SimulationCommitStatus) String() string {
+	switch s {
+	case OK:
+		return "OK"
+	case ExecutionFailed:
+		return "ExecutionFailed"
+	default:
+		return "Unknown"
+	}
+}
+
 const (
 	Commit CXTCommitType = iota
 	Recall
 	Rollback
 )
+
+func (c CXTCommitType) String() string {
+	switch c {
+	case Commit:
+		return "Commit"
+	case Recall:
+		return "Recall"
+	case Rollback:
+		return "Rollback"
+	default:
+		return "Unknown"
+	}
+}
 
 const (
 	Reason_SUCCESS CXTCommitReason = iota
@@ -51,6 +76,23 @@ const (
 	Reason_ConflictRWSet_FailedLock
 	Reason_ConflictRWSet_Recall
 )
+
+func (c CXTCommitReason) String() string {
+	switch c {
+	case Reason_SUCCESS:
+		return "SUCCESS"
+	case Reason_ExecutionFailed:
+		return "ExecutionFailed"
+	case Reason_InvalidSimulation:
+		return "InvalidSimulation"
+	case Reason_ConflictRWSet_FailedLock:
+		return "ConflictRWSet_FailedLock"
+	case Reason_ConflictRWSet_Recall:
+		return "ConflictRWSet_Recall"
+	default:
+		return "Unknown"
+	}
+}
 
 type Epoch uint64
 
@@ -183,7 +225,6 @@ func (m *BaseBLSSignedMessage) GetBLSBitMap() []byte {
 
 // CXTSimulationRequest is the request of the cross-shard transaction simulation
 type CXTSimulationRequest struct {
-	*BaseSSCMessage
 	TxHash        []byte
 	SimulationNum int
 	Author        *common.Address
@@ -191,17 +232,6 @@ type CXTSimulationRequest struct {
 	Tx            *types.Transaction
 	From          common.Address
 	GasPool       uint64
-}
-
-func (m *CXTSimulationRequest) Bytes() []byte {
-	temp := m.BaseSSCMessage
-	m.BaseSSCMessage = nil
-	bytes, err := json.Marshal(m)
-	m.BaseSSCMessage = temp
-	if err != nil {
-		return nil
-	}
-	return bytes
 }
 
 // CXTSimulationResult is the result of the cross-shard transaction simulation
@@ -306,6 +336,19 @@ func (m *CXTSimulation) Bytes() []byte {
 		return nil
 	}
 	return bytes
+}
+
+func (m *CXTSimulation) String() string {
+	callStatesStr := ""
+	for _, callState := range m.CallStates {
+		dependentResultsStr := ""
+		for _, result := range callState.DependentResults {
+			dependentResultsStr += fmt.Sprintf("(%s:%v) ", result.CallIndex.ToString(), result.Result[len(result.Result)-1])
+		}
+		callStatesStr += fmt.Sprintf("%s: [%s]", callState.CallIndex.ToString(), dependentResultsStr)
+		dependentResultsStr += "|"
+	}
+	return fmt.Sprintf("simulation_%s_%d: {%s}", common.Bytes2Hex(m.TxHash), m.SimulationNum, callStatesStr)
 }
 
 // CXTReSimulation is the simulation of the cross-shard transaction
@@ -563,6 +606,19 @@ func (m *CXTRecallSSCResult) Bytes() []byte {
 	return bytes
 }
 
+type SimulationResultRequest struct {
+	SimulationNum int
+	TxHash        []byte
+}
+
+func (m *SimulationResultRequest) Bytes() []byte {
+	bytes, err := json.Marshal(m)
+	if err != nil {
+		return nil
+	}
+	return bytes
+}
+
 // SimulationCommit is the used to notify SSC to commit the simulation
 type SimulationCommit struct {
 	SimulationNum int // the number of the simulation
@@ -656,6 +712,7 @@ type CXTCommitProof struct {
 	SimulationNum int
 	Type          CXTCommitType
 	Reason        CXTCommitReason
+	OriginShard   uint32
 	RelatedShards []uint32
 	Votes         []*CXTCommitSSCVote
 }
@@ -691,12 +748,51 @@ func (m *CXTRecallProof) Bytes() []byte {
 	return bytes
 }
 
+func NewCallStack() *CallStack {
+	return &CallStack{
+		CallFrames: make([]*CallFrame, 0),
+	}
+}
+
+type CallFrame struct {
+	CallIndex CallIndex // the call index of the call
+	PC        int       // the program counter of the call
+}
+
+func (c *CallFrame) Next() {
+	c.PC++
+}
+
+func (c *CallFrame) Reset() {
+	c.PC = 0
+}
+
+func (c *CallFrame) String() string {
+	return c.CallIndex.ToString() + ":" + strconv.Itoa(c.PC)
+}
+
+type CallStack struct {
+	CallFrames []*CallFrame // the call frames of the call stack
+}
+
+func (c *CallStack) Push(frame *CallFrame) {
+	c.CallFrames = append(c.CallFrames, frame)
+}
+
+func (c *CallStack) Pop() *CallFrame {
+	if len(c.CallFrames) == 0 {
+		return nil
+	}
+	frame := c.CallFrames[len(c.CallFrames)-1]
+	c.CallFrames = c.CallFrames[:len(c.CallFrames)-1]
+	return frame
+}
+
 type CXTSimulationState struct {
-	CallIndex            CallIndex // current simulation call index
-	CurrentIndex         int       // current index of the simulation call
-	OldCallIndex         CallIndex
-	OldCurrentIndex      int
+	CurrentCallFrame     *CallFrame
+	CallStack            *CallStack
 	SimulationRequest    *CXTSimulationRequest // the simulation request, only origin member has this
+	SimulationResult     *CXTSimulationSSCResult
 	SimulationCallStates map[int]SimulationCallStates
 	SimulationNum        int       // the number of the simulation used to identify the recall
 	LockedCallIndex      CallIndex // the locked call index, only the recall after this call index need to be executed
@@ -819,8 +915,7 @@ type SimulationRecallState struct {
 type ExecutionVerifyContext struct {
 	Simulation       *CXTSimulation
 	CallStateMap     map[string]*CXTCallState
-	CallIndex        CallIndex
-	CurrentIndex     int
+	CallFrame        *CallFrame
 	CurrentState     *StateSet
 	DependentResults []*CXTCallSSCResult
 }

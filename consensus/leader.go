@@ -307,7 +307,7 @@ func (consensus *Consensus) onCommit(recvMsg *FBFTMessage) {
 			if maxWaitTime > waitTime {
 				waitTime = maxWaitTime
 			}
-			// tempDelete consensus.getLogger().Info().Str("waitTime", waitTime.String()).
+			// tempDelete consensus.getLogger().Info().Str("waitTime", waitTime.ToString()).
 			// tempDelete 	Msg("[OnCommit] Starting Grace Period")
 			time.Sleep(waitTime)
 			// tempDelete logger.Info().Msg("[OnCommit] Commit Grace Period Ended")

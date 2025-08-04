@@ -66,7 +66,8 @@ func (s *LockableState) SetState(address common.Address, key common.Hash, value 
 }
 
 func (s *LockableState) GetStateWithLock(txHash common.Hash, callIndex api.CallIndex, address common.Address, key common.Hash) (common.Hash, error) {
-	lockedTx, exists := s.lockedStates[formKey(address, key)]
+	stateKey := formKey(address, key)
+	lockedTx, exists := s.lockedStates[stateKey]
 	if exists && lockedTx != txHash {
 		return common.Hash{}, ErrLockedByOtherTx
 	}
@@ -80,12 +81,13 @@ func (s *LockableState) GetStateWithLock(txHash common.Hash, callIndex api.CallI
 		s.callIndex2lockedState[txHash][callIndex.ToString()][address] = make(map[common.Hash]common.Hash)
 	}
 	s.callIndex2lockedState[txHash][callIndex.ToString()][address][key], _ = s.DB.GetState(address, key)
-	s.lockedStates[formKey(address, key)] = txHash
+	s.lockedStates[stateKey] = txHash
 	return s.DB.GetState(address, key)
 }
 
 func (s *LockableState) SetStateWithLock(txHash common.Hash, callIndex api.CallIndex, address common.Address, key common.Hash, value common.Hash) error {
-	lockedTx, exists := s.lockedStates[formKey(address, key)]
+	stateKey := formKey(address, key)
+	lockedTx, exists := s.lockedStates[stateKey]
 	if exists && lockedTx != txHash {
 		return ErrLockedByOtherTx
 	}
@@ -99,7 +101,7 @@ func (s *LockableState) SetStateWithLock(txHash common.Hash, callIndex api.CallI
 		s.callIndex2lockedState[txHash][callIndex.ToString()][address] = make(map[common.Hash]common.Hash)
 	}
 	s.callIndex2lockedState[txHash][callIndex.ToString()][address][key], _ = s.DB.GetState(address, key)
-	s.lockedStates[formKey(address, key)] = txHash
+	s.lockedStates[stateKey] = txHash
 	return s.DB.SetState(address, key, value)
 }
 

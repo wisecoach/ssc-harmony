@@ -186,5 +186,5 @@ SimulationCommitGasLimit = 5000000
 SimulationCommitGasPrice = 3000000000
 
 [Network]
-BootNodes = ["/ip4/127.0.0.1/tcp/19876/p2p/Qmc1V6W7BwX8Ugb42Ti8RnXF1rY5PF7nnZ6bKBryCgi6cv"]
+BootNodes = ["/ip4/127.0.0.1/tcp/19875/p2p/Qmc1V6W7BwX8Ugb42Ti8RnXF1rY5PF7nnZ6bKBryCgi6cv"]
 NetworkType = "exprnet"

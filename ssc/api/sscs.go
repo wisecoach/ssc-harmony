@@ -1,6 +1,7 @@
 package api
 
 import (
+	"context"
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/harmony-one/harmony/core/types"
 	"github.com/harmony-one/harmony/numeric"
@@ -22,7 +23,15 @@ const (
 	Method_HandleCXTCommitSSCVote     = "ssc_handleCXTCommitSSCVote"
 	Method_HandleCXTCommitProof       = "ssc_handleCXTCommitProof"
 	Method_BroadcastCXTRecallProof    = "ssc_broadcastCXTRecallProof"
+	Method_RequestSimulationResult    = "ssc_requestSimulationResult"
 )
+
+type ShardLocator interface {
+	// GetShardID returns the shard ID of the given address
+	GetShardID(address common.Address) uint32
+	// ShardNum returns the number of shards
+	ShardNum() uint32
+}
 
 type BLSSigner interface {
 	Sign(msg MessageToSign) ([]byte, error)
@@ -153,9 +162,9 @@ type InternalService interface {
 
 	// VerifySimulation
 	//	@Description: verify the simulation and vote for commit or rollback
-	VerifySimulation(simulationBytes []byte)
+	VerifySimulation(simulationBytes []byte, preExec bool)
 
-	CommitOrRollbackWithProof(unlock bool, commitProofBytes []byte)
+	CommitOrRollbackWithProof(commitProofBytes []byte, preExec bool) error
 }
 
 // ShardService
@@ -174,7 +183,7 @@ type ShardService interface {
 	//	1. simulate the contract execution, and save the read-write set to build the simulation result
 	//	2. once need to call cross-shard contract, then send request to leader of target shard's ssc
 	//  3. after simulation completed, send the result to leader of ssc
-	HandleSimulateRequest(req *CXTSimulationRequest) *CXTSimulationResult
+	HandleSimulateRequest(ctx context.Context, req *CXTSimulationRequest) *CXTSimulationResult
 
 	// HandleReSimulateRequest
 	//  @Description: handle request from ssc's leader
@@ -202,6 +211,8 @@ type ShardService interface {
 	// HandleCommitVote
 	//  @Description: handle the commit vote from ssc's member, aggregate the votes after reaching threshold, then send
 	HandleCommitVote(vote *CXTCommitVote)
+
+	RequestSimulationResult(req *SimulationResultRequest) (*CXTSimulationSSCResult, error)
 }
 
 // CrossService
@@ -235,6 +246,7 @@ type CrossService interface {
 }
 
 type Service interface {
+	ShardLocator
 	CXTStateSimulationDB
 	InternalService
 	ShardService

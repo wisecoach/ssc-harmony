@@ -15,7 +15,7 @@ func mustNewDecFromStr(t *testing.T, str string) (d Dec) {
 	return d
 }
 
-//_______________________________________
+// _______________________________________
 
 func TestPrecisionMultiplier(t *testing.T) {
 	res := precisionMultiplier(5)
@@ -110,7 +110,7 @@ func TestDecString(t *testing.T) {
 		{Dec{Int: nil}, "<nil>"},
 	}
 	for tcIndex, tc := range tests {
-		assert.Equal(t, tc.want, tc.d.String(), "bad String(), index: %v", tcIndex)
+		assert.Equal(t, tc.want, tc.d.String(), "bad ToString(), index: %v", tcIndex)
 	}
 }
 

@@ -77,6 +77,7 @@ func (st *SSCStateTransition) buyGas() error {
 			"had: %s but need: %s", have.String(), mgval.String(),
 		)
 	}
+	utils.SSCLogger().Info().Msgf("buyGas, buy=%d, left=%d", st.msg.Gas(), st.gp.Gas())
 	if err := st.gp.SubGas(st.msg.Gas()); err != nil {
 		return err
 	}

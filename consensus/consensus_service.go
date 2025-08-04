@@ -562,8 +562,8 @@ func (consensus *Consensus) GetFinality() int64 {
 // switchPhase will switch FBFTPhase to desired phase.
 func (consensus *Consensus) switchPhase(subject string, desired FBFTPhase) {
 	// tempDelete consensus.getLogger().Info().
-	// tempDelete 	Str("from:", consensus.phase.String()).
-	// tempDelete 	Str("to:", desired.String()).
+	// tempDelete 	Str("from:", consensus.phase.ToString()).
+	// tempDelete 	Str("to:", desired.ToString()).
 	// tempDelete 	Str("switchPhase:", subject)
 
 	consensus.phase = desired

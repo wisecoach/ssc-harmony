@@ -89,7 +89,6 @@ func (sink *TransactionErrorSink) Add(tx PoolTransaction, err error) {
 	} else {
 		utils.Logger().Error().
 			Str("tag", logTag).
-			Interface("tx", tx).
 			Err(err).
 			Msg("Attempted to add an unknown transaction type")
 	}
@@ -127,7 +126,6 @@ func (sink *TransactionErrorSink) Remove(tx PoolTransaction) {
 	} else {
 		utils.Logger().Error().
 			Str("tag", logTag).
-			Interface("tx", tx).
 			Msg("Attempted to remove an unknown transaction type")
 	}
 }

@@ -116,7 +116,7 @@ func (s *PublicSSCShardService) HandleSimulateRequest(
 	ctx context.Context,
 	req *api.CXTSimulationRequest,
 ) (*api.CXTSimulationResult, error) {
-	ret := s.internalService.HandleSimulateRequest(req)
+	ret := s.internalService.HandleSimulateRequest(ctx, req)
 	return ret, nil
 }
 func (s *PublicSSCShardService) RequestCallCXT(
@@ -157,4 +157,15 @@ func (s *PublicSSCShardService) HandleCommitVote(
 ) ([]byte, error) {
 	s.internalService.HandleCommitVote(vote)
 	return nil, nil
+}
+
+func (s *PublicSSCShardService) RequestSimulationResult(
+	ctx context.Context,
+	req *api.SimulationResultRequest,
+) (*api.CXTSimulationSSCResult, error) {
+	ret, err := s.internalService.RequestSimulationResult(req)
+	if err != nil {
+		return nil, err
+	}
+	return ret, nil
 }

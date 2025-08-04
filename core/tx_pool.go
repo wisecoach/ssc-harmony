@@ -995,6 +995,12 @@ func (pool *TxPool) add(tx types.PoolTransaction, local bool) (replaced bool, er
 		}
 	}()
 
+	if tx.CrossShard() {
+		utils.SSCLogger().Info().Str("txHash", tx.Hash().Hex()).
+			Bool("isPreCompiled", vm.SSCAddrsApplyOnChain[*tx.To()] != nil).
+			Msg("add a cross shard Tx")
+	}
+
 	logger := utils.Logger().With().Stack().Logger()
 	// If the transaction is in the error sink, remove it as it may succeed
 	if pool.txErrorSink.Contains(tx.Hash().String()) {

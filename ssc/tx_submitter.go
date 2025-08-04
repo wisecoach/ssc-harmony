@@ -2,9 +2,11 @@ package ssc
 
 import (
 	"encoding/json"
+	"github.com/ethereum/go-ethereum/common"
 	"github.com/harmony-one/harmony/core/types"
 	"github.com/harmony-one/harmony/core/vm"
 	"github.com/harmony-one/harmony/hmy"
+	"github.com/harmony-one/harmony/internal/utils"
 	"github.com/harmony-one/harmony/ssc/api"
 	"math/big"
 	"sync"
@@ -14,9 +16,10 @@ type txSubmitter struct {
 	lock      sync.Mutex
 	selfShard uint32
 	txSigner  api.TxSigner
-	nonce     uint64
-	nodeAPI   hmy.NodeAPI
-	config    *api.Config
+	// TODO it need to be synchronized with all SSC members, for example, get the nonce from chain state when changed, or complete it when leader build
+	nonce   uint64
+	nodeAPI hmy.NodeAPI
+	config  *api.Config
 }
 
 func (t *txSubmitter) SubmitSimulationTx(simulation *api.CXTSimulation) error {
@@ -30,6 +33,9 @@ func (t *txSubmitter) SubmitSimulationTx(simulation *api.CXTSimulation) error {
 	if err != nil {
 		return err
 	}
+	utils.SSCLogger().Info().Str("txHash", signedTx.Hash().Hex()).
+		Uint64("nonce", t.nonce).
+		Str("originTxHash", common.Bytes2Hex(simulation.TxHash)).Msgf("submit simulation tx")
 	err = t.nodeAPI.AddPendingTransaction(signedTx)
 	if err != nil {
 		return err

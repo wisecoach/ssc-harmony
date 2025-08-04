@@ -232,10 +232,10 @@ func (sc instance) FnAccounts() []genesis.DeployAccount {
 // FindAccount returns the deploy account based on the blskey, and if the account is a leader
 // or not in the bootstrapping process.
 func (sc instance) FindAccount(blsPubKey string) (bool, *genesis.DeployAccount) {
-	for i, item := range sc.hmyAccounts {
+	for _, item := range sc.hmyAccounts {
 		if item.BLSPublicKey == blsPubKey {
-			item.ShardID = uint32(i) % sc.numShards
-			return uint32(i) < sc.numShards, &item
+			// TODO if the account should be leader
+			return false, &item
 		}
 	}
 	for i, item := range sc.fnAccounts {

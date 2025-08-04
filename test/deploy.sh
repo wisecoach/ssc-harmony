@@ -1,4 +1,4 @@
-#!/usr/bin/env bash
+#!/bin/bash
 set -eo pipefail
 
 unset -v progdir
@@ -54,123 +54,55 @@ function setup() {
 
 function launch_bootnode() {
   echo "launching boot node ..."
-  ${DRYRUN} ${ROOT}/bin/bootnode -port 19876 -max_conn_per_ip 100 -force_public true >"${log_folder}"/bootnode.log 2>&1 | tee -a "${LOG_FILE}" &
+  ${DRYRUN} ${ROOT}/bin/bootnode -port 19875 -max_conn_per_ip 100 -force_public true >"${log_folder}"/bootnode.log 2>&1 | tee -a "${LOG_FILE}" &
   sleep 1
   BN_MA=$(grep "BN_MA" "${log_folder}"/bootnode.log | awk -F\= ' { print $2 } ')
   echo "bootnode launched." + " $BN_MA"
 }
 
-function launch_localnet() {
-  launch_bootnode
+function simple_launch_shard() {
+    env=${3-local}
+    config=./test/configs/launch_config_${env}.txt
+    launch_bootnode
 
-  unset -v base_args
-  declare -a base_args args
+    shard_num=$1
+    shard_size=$2
 
-  if ${VERBOSE}; then
-    verbosity=5
-  else
-    verbosity=3
-  fi
+    unset -v base_args
+    declare -a base_args args
+    declare -A per_shard_cnt
+    for ((i=0; i<$shard_num; i++)); do
+        per_shard_cnt[$i]=0
+    done
 
-  base_args=(--log_folder "${log_folder}" --min_peers "${MIN}" --bootnodes "${BN_MA}" "--network_type=$NETWORK" --blspass file:"${ROOT}/.hmy/blspass.txt" "--dns=false" "--verbosity=${verbosity}" "--p2p.security.max-conn-per-ip=100")
-  sleep 2
-
-  # Start nodes
-  i=-1
-  while IFS='' read -r line || [[ -n "$line" ]]; do
-      # 检查行的首字符是否为#
-      if [[ "$line" =~ ^# ]]; then
-        # 如果是，跳过该行（继续下一次循环迭代）
-        continue
-      fi
-
-    i=$((i + 1))
-
-    # Read config for i-th node form config file
-    IFS=' ' read -r ip port mode bls_key shard node_config <<<"${line}"
-    args=("${base_args[@]}" --ip "${ip}" --port "${port}" --key "/tmp/${ip}-${port}.key" --db_dir "${ROOT}/db/db-${ip}-${port}" "--broadcast_invalid_tx=false")
-    if [[ -z "$ip" || -z "$port" || "$ip" == "#" ]]; then
-      echo "skip empty line or node or comment"
-      continue
-    fi
-    if [[ $EXPOSEAPIS == "true" ]]; then
-      args=("${args[@]}" "--http.ip=0.0.0.0" "--ws.ip=0.0.0.0")
-    fi
-
-    # Setup BLS key for i-th localnet node
-    if [[ ! -e "$bls_key" ]]; then
-      args=("${args[@]}" --blskey_file "BLSKEY")
-    elif [[ -f "$bls_key" ]]; then
-      args=("${args[@]}" --blskey_file "${ROOT}/${bls_key}")
-    elif [[ -d "$bls_key" ]]; then
-      args=("${args[@]}" --blsfolder "${ROOT}/${bls_key}")
+    if ${VERBOSE}; then
+      verbosity=5
     else
-      echo "skipping unknown node"
-      continue
+      verbosity=3
     fi
 
-    # Setup node config for i-th localnet node
-    if [[ -f "$node_config" ]]; then
-      echo "node ${i} configuration is loaded from: ${node_config}"
-      args=("${args[@]}" --config "${node_config}")
-    fi
+    base_args=(--log_folder "${log_folder}" --min_peers "${MIN}" --bootnodes "${BN_MA}" "--network_type=$NETWORK" --blspass file:"${ROOT}/.hmy/blspass.txt" "--dns=false" "--verbosity=${verbosity}" "--p2p.security.max-conn-per-ip=100")
+    sleep 2
 
-    # Setup flags for i-th node based on config
-    case "${mode}" in
-    explorer)
-      args=("${args[@]}" "--node_type=explorer" "--shard_id=${shard}" "--http.rosetta=true" "--run.archive")
-      ;;
-    archival)
-      args=("${args[@]}" --is_archival --run.legacy)
-      ;;
-    leader)
-      args=("${args[@]}" --is_leader --run.legacy)
-      ;;
-    external)
-      ;;
-    client)
-      args=("${args[@]}" --run.legacy)
-      ;;
-    validator)
-      args=("${args[@]}" --run.legacy "--rpc.debug=true")
-      ;;
-    esac
+    echo $PWD
+    while read -r addr bls_key shard_id ip port; do
+        if [[ "$shard_id" -ge "${shard_num}" ]]; then
+          echo "shard_num ${shard_num} is full, skipping node ${i}"
+          continue
+        fi
 
-    echo "begin to work: dryrun: ${DRYRUN}" "bin: ${ROOT}/bin/harmony" "${args[@]}" "${extra_args[@]}"
+        if [[ "${per_shard_cnt[$shard_id]}" -ge "${shard_size}" ]]; then
+          echo "shard ${shard_id} is full, skipping node ${i}"
+          continue
+        fi
 
-    # Start the node
-    ${DRYRUN} "${ROOT}/bin/harmony" "${args[@]}" "${extra_args[@]}" 2>&1 | tee -a "${LOG_FILE}" &
-  done <"${config}"
-}
+        ((per_shard_cnt[$shard_id]=per_shard_cnt[$shard_id]+1))
+        echo "Processing node: ${addr} ${bls_key} ${shard_id} ${ip} ${port}"
+        echo "shard_id=$shard_id, cnt=${per_shard_cnt[$shard_id]}, num=${shard_num}"
 
-function launch_same_account_shard_net() {
-  config=./test/configs/local-dev.txt
+        mode='validator'
+        node_config='test/configs/default_config.toml'
 
-  launch_bootnode
-
-  unset -v base_args
-  declare -a base_args args
-
-  if ${VERBOSE}; then
-    verbosity=5
-  else
-    verbosity=3
-  fi
-
-  base_args=(--log_folder "${log_folder}" --min_peers "${MIN}" --bootnodes "${BN_MA}" "--network_type=$NETWORK" --blspass file:"${ROOT}/.hmy/blspass.txt" "--dns=false" "--verbosity=${verbosity}" "--p2p.security.max-conn-per-ip=100")
-  sleep 2
-
-  shard_num=$1
-  shard_size=$2
-  i=-1
-  for ((shard_id=0; shard_id<shard_num; shard_id++)); do
-    for ((j=0; j<shard_size; j++)); do
-        IFS='' read -r line
-        i=$((i + 1))
-
-        # Read config for i-th node form config file
-        IFS=' ' read -r ip port mode bls_key shard node_config <<<"${line}"
-        port=$((port + shard_id * 40))
         args=("${base_args[@]}" --ip "${ip}" --port "${port}" --key "/tmp/${ip}-${port}.key" --db_dir "${ROOT}/db/db-${ip}-${port}" "--broadcast_invalid_tx=false" --shard_num "${shard_num}" --shard_size "${shard_size}" --run.shard "${shard_id}")
         if [[ -z "$ip" || -z "$port" || "$ip" == "#" ]]; then
           echo "skip empty line or node or comment"
@@ -186,6 +118,8 @@ function launch_same_account_shard_net() {
           args=("${args[@]}" --blskey_file "BLSKEY")
         elif [[ -f "$bls_key" ]]; then
           args=("${args[@]}" --blskey_file "${ROOT}/${bls_key}")
+          # 同时设置ssc.bls-key-file
+          args=("${args[@]}" --ssc.bls-key-path "${ROOT}/${bls_key}")
         elif [[ -d "$bls_key" ]]; then
           args=("${args[@]}" --blsfolder "${ROOT}/${bls_key}")
         else
@@ -202,7 +136,7 @@ function launch_same_account_shard_net() {
         # Setup flags for i-th node based on config
         case "${mode}" in
         explorer)
-          args=("${args[@]}" "--node_type=explorer" "--shard_id=${shard}" "--http.rosetta=true" "--run.archive")
+          args=("${args[@]}" "--node_type=explorer" "--shard_id=${shard_id}" "--http.rosetta=true" "--run.archive")
           ;;
         archival)
           args=("${args[@]}" --is_archival --run.legacy)
@@ -220,113 +154,11 @@ function launch_same_account_shard_net() {
           ;;
         esac
 
-#        if [[ "$i" == 0 ]]; then
-#          continue
-#        fi
-
         echo "begin to work: dryrun: ${DRYRUN}" "bin: ${ROOT}/bin/harmony" "${args[@]}" "${extra_args[@]}"
 
         # Start the node
         ${DRYRUN} "${ROOT}/bin/harmony" "${args[@]}" "${extra_args[@]}" 2>&1 | tee -a "${LOG_FILE}" &
-      done <"${config}"
-  done
-
-}
-
-function simple_launch_shard() {
-    config=./test/configs/simple_launch_config.txt
-    launch_bootnode
-
-    unset -v base_args
-    declare -a base_args args
-
-    if ${VERBOSE}; then
-      verbosity=5
-    else
-      verbosity=3
-    fi
-
-    base_args=(--log_folder "${log_folder}" --min_peers "${MIN}" --bootnodes "${BN_MA}" "--network_type=$NETWORK" --blspass file:"${ROOT}/.hmy/blspass.txt" "--dns=false" "--verbosity=${verbosity}" "--p2p.security.max-conn-per-ip=100")
-    sleep 2
-
-    shard_num=$1
-    shard_size=$2
-    i=-1
-    echo $PWD
-    for ((shard_id=0; shard_id<shard_num; shard_id++)); do
-      for ((j=0; j<shard_size; j++)); do
-          IFS='' read -r line
-          i=$((i + 1))
-          # Read config for i-th node form config file
-          ip='127.0.0.1'
-          port=$((9000 + j*2 + shard_id * 40))
-          mode='validator'
-          node_config='test/configs/default_config.toml'
-
-          IFS=' ' read -r addr bls_key <<<"${line}"
-          echo "node's addr and bls_key:"  $addr $bls_key
-
-          args=("${base_args[@]}" --ip "${ip}" --port "${port}" --key "/tmp/${ip}-${port}.key" --db_dir "${ROOT}/db/db-${ip}-${port}" "--broadcast_invalid_tx=false" --shard_num "${shard_num}" --shard_size "${shard_size}" --run.shard "${shard_id}")
-          if [[ -z "$ip" || -z "$port" || "$ip" == "#" ]]; then
-            echo "skip empty line or node or comment"
-            continue
-          fi
-
-          if [[ $EXPOSEAPIS == "true" ]]; then
-            args=("${args[@]}" "--http.ip=0.0.0.0" "--ws.ip=0.0.0.0")
-          fi
-
-          # Setup BLS key for i-th localnet node
-          if [[ ! -e "$bls_key" ]]; then
-            args=("${args[@]}" --blskey_file "BLSKEY")
-          elif [[ -f "$bls_key" ]]; then
-            args=("${args[@]}" --blskey_file "${ROOT}/${bls_key}")
-            # 同时设置ssc.bls-key-file
-            args=("${args[@]}" --ssc.bls-key-path "${ROOT}/${bls_key}")
-          elif [[ -d "$bls_key" ]]; then
-            args=("${args[@]}" --blsfolder "${ROOT}/${bls_key}")
-          else
-            echo "skipping unknown node"
-            continue
-          fi
-
-          # Setup node config for i-th localnet node
-          if [[ -f "$node_config" ]]; then
-            echo "node ${i} configuration is loaded from: ${node_config}"
-            args=("${args[@]}" --config "${node_config}")
-          fi
-
-          # Setup flags for i-th node based on config
-          case "${mode}" in
-          explorer)
-            args=("${args[@]}" "--node_type=explorer" "--shard_id=${shard}" "--http.rosetta=true" "--run.archive")
-            ;;
-          archival)
-            args=("${args[@]}" --is_archival --run.legacy)
-            ;;
-          leader)
-            args=("${args[@]}" --is_leader --run.legacy)
-            ;;
-          external)
-            ;;
-          client)
-            args=("${args[@]}" --run.legacy)
-            ;;
-          validator)
-            args=("${args[@]}" --run.legacy "--rpc.debug=true")
-            ;;
-          esac
-
-  #        if [[ "$i" == 0 ]]; then
-  #          continue
-  #        fi
-
-          echo "begin to work: dryrun: ${DRYRUN}" "bin: ${ROOT}/bin/harmony" "${args[@]}" "${extra_args[@]}"
-
-          # Start the node
-          ${DRYRUN} "${ROOT}/bin/harmony" "${args[@]}" "${extra_args[@]}" 2>&1 | tee -a "${LOG_FILE}" &
-        done <"${config}"
-    done
+    done <<< "$(cat "${config}")"
 }
 
 trap cleanup SIGINT SIGTERM
@@ -357,7 +189,7 @@ EXAMPLES:
 }
 
 DURATION=60000
-MIN=4
+MIN=3
 SHARDS=2
 DRYRUN=
 NETWORK=localnet
@@ -391,6 +223,6 @@ extra_args=("$@")
 setup
 #launch_localnet
 #launch_same_account_shard_net 2 5
-simple_launch_shard 5 4
+simple_launch_shard 4 5 local
 sleep "${DURATION}"
 cleanup || true

@@ -49,41 +49,41 @@ func CreateStagedSync(ctx context.Context,
 	logger zerolog.Logger,
 ) (*StagedStreamSync, error) {
 
-	// tempDelete logger.Info().
-	// tempDelete 	Uint32("shard", bc.ShardID()).
-	// tempDelete 	Bool("beaconNode", isBeaconNode).
-	// tempDelete 	Bool("memdb", config.UseMemDB).
-	// tempDelete 	Str("dbDir", dbDir).
-	// tempDelete 	Bool("serverOnly", config.ServerOnly).
-	// tempDelete 	Int("minStreams", config.MinStreams).
-	// tempDelete 	Msg(WrapStagedSyncMsg("creating staged sync"))
+	logger.Info().
+		Uint32("shard", bc.ShardID()).
+		Bool("beaconNode", isBeaconNode).
+		Bool("memdb", config.UseMemDB).
+		Str("dbDir", dbDir).
+		Bool("serverOnly", config.ServerOnly).
+		Int("minStreams", config.MinStreams).
+		Msg(WrapStagedSyncMsg("creating staged sync"))
 
 	var mainDB kv.RwDB
 	dbs := make([]kv.RwDB, config.Concurrency)
 	if config.UseMemDB {
 		mdbPath := getBlockDbPath(bc.ShardID(), isBeaconNode, -1, dbDir)
-		// tempDelete logger.Info().
-		// tempDelete 	Str("path", mdbPath).
-		// tempDelete 	Msg(WrapStagedSyncMsg("creating main db in memory"))
+		logger.Info().
+			Str("path", mdbPath).
+			Msg(WrapStagedSyncMsg("creating main db in memory"))
 		mainDB = mdbx.NewMDBX(log.New()).InMem(mdbPath).MustOpen()
 		for i := 0; i < config.Concurrency; i++ {
 			dbPath := getBlockDbPath(bc.ShardID(), isBeaconNode, i, dbDir)
-			// tempDelete logger.Info().
-			// tempDelete 	Str("path", dbPath).
-			// tempDelete 	Msg(WrapStagedSyncMsg("creating blocks db in memory"))
+			logger.Info().
+				Str("path", dbPath).
+				Msg(WrapStagedSyncMsg("creating blocks db in memory"))
 			dbs[i] = mdbx.NewMDBX(log.New()).InMem(dbPath).MustOpen()
 		}
 	} else {
 		mdbPath := getBlockDbPath(bc.ShardID(), isBeaconNode, -1, dbDir)
-		// tempDelete ogger.Info().
-		// tempDelete 	Str("path", mdbPath).
-		// tempDelete 	Msg(WrapStagedSyncMsg("creating main db in disk"))
+		logger.Info().
+			Str("path", mdbPath).
+			Msg(WrapStagedSyncMsg("creating main db in disk"))
 		mainDB = mdbx.NewMDBX(log.New()).Path(mdbPath).MustOpen()
 		for i := 0; i < config.Concurrency; i++ {
 			dbPath := getBlockDbPath(bc.ShardID(), isBeaconNode, i, dbDir)
-			// tempDelete logger.Info().
-			// tempDelete 	Str("path", dbPath).
-			// tempDelete 	Msg(WrapStagedSyncMsg("creating blocks db in disk"))
+			logger.Info().
+				Str("path", dbPath).
+				Msg(WrapStagedSyncMsg("creating blocks db in disk"))
 			dbs[i] = mdbx.NewMDBX(log.New()).Path(dbPath).MustOpen()
 		}
 	}
@@ -121,15 +121,15 @@ func CreateStagedSync(ctx context.Context,
 		stageFinishCfg,
 	)
 
-	// tempDelete logger.Info().
-	// tempDelete 	Uint32("shard", bc.ShardID()).
-	// tempDelete 	Bool("beaconNode", isBeaconNode).
-	// tempDelete 	Bool("memdb", config.UseMemDB).
-	// tempDelete 	Str("dbDir", dbDir).
-	// tempDelete 	Bool("serverOnly", config.ServerOnly).
-	// tempDelete 	Int("minStreams", config.MinStreams).
-	// tempDelete 	Str("dbDir", dbDir).
-	// tempDelete 	Msg(WrapStagedSyncMsg("staged stream sync created successfully"))
+	logger.Info().
+		Uint32("shard", bc.ShardID()).
+		Bool("beaconNode", isBeaconNode).
+		Bool("memdb", config.UseMemDB).
+		Str("dbDir", dbDir).
+		Bool("serverOnly", config.ServerOnly).
+		Int("minStreams", config.MinStreams).
+		Str("dbDir", dbDir).
+		Msg(WrapStagedSyncMsg("staged stream sync created successfully"))
 
 	return New(
 		bc,
@@ -284,10 +284,10 @@ func (s *StagedStreamSync) checkPivot(ctx context.Context, estimatedHeight uint6
 				}
 			}
 			s.status.pivotBlock = block
-			// tempDelete s.logger.Info().
-			// tempDelete 	Uint64("estimatedHeight", estimatedHeight).
-			// tempDelete 	Uint64("pivot number", pivotBlockNumber).
-			// tempDelete 	Msg(WrapStagedSyncMsg("fast/snap sync mode, pivot is set successfully"))
+			s.logger.Info().
+				Uint64("estimatedHeight", estimatedHeight).
+				Uint64("pivot number", pivotBlockNumber).
+				Msg(WrapStagedSyncMsg("fast/snap sync mode, pivot is set successfully"))
 			return block, FastSync, nil
 		}
 	}
@@ -318,8 +318,8 @@ func (s *StagedStreamSync) doSync(downloaderContext context.Context, initSync bo
 			s.status.setTargetBN(estimatedHeight)
 		}
 		if curBN := s.CurrentBlockNumber(); estimatedHeight <= curBN {
-			// tempDelete s.logger.Info().Uint64("current number", curBN).Uint64("target number", estimatedHeight).
-			// tempDelete Msg(WrapStagedSyncMsg("early return of long range sync (chain is already ahead of target height)"))
+			s.logger.Info().Uint64("current number", curBN).Uint64("target number", estimatedHeight).
+				Msg(WrapStagedSyncMsg("early return of long range sync (chain is already ahead of target height)"))
 			return estimatedHeight, 0, nil
 		}
 	}
@@ -516,8 +516,8 @@ func (s *StagedStreamSync) estimateCurrentNumber(ctx context.Context) (uint64, e
 			defer wg.Done()
 			bn, stid, err := s.doGetCurrentNumberRequest(ctx)
 			if err != nil {
-				// tempDelete s.logger.Err(err).Str("streamID", string(stid)).
-				// tempDelete 	Msg(WrapStagedSyncMsg("getCurrentNumber request failed"))
+				s.logger.Err(err).Str("streamID", string(stid)).
+					Msg(WrapStagedSyncMsg("getCurrentNumber request failed"))
 				if !errors.Is(err, context.Canceled) {
 					s.protocol.StreamFailed(stid, "getCurrentNumber request failed")
 				}

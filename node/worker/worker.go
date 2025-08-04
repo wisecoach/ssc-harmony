@@ -92,13 +92,70 @@ func newWorker(config *params.ChainConfig, chain, beacon core.BlockChain) *Worke
 		factory:  blockfactory.NewFactory(config),
 		chain:    chain,
 		beacon:   beacon,
-		gasFloor: 80000000,
-		gasCeil:  120000000,
+		gasFloor: 8000000000,
+		gasCeil:  12000000000,
 	}
 }
 
 func (w *Worker) SetSSCService(sscService api.Service) {
 	w.sscService = sscService
+}
+
+func (w *Worker) CommitSSCTransactions(
+	txs types.Transactions,
+	coinbase common.Address,
+) {
+	for _, tx := range txs {
+		// If we don't have enough gas for any further transactions then we're done
+		if w.current.gasPool.Gas() < params.TxGas {
+			utils.Logger().Info().Uint64("have", w.current.gasPool.Gas()).Uint64("want", params.TxGas).Msg("Not enough gas for further transactions")
+			break
+		}
+		// Error may be ignored here. The error has already been checked
+		// during transaction acceptance is the transaction pool.
+		// We use the eip155 signer regardless of the current hf.
+		signer := w.current.signer
+		if tx.IsEthCompatible() {
+			signer = w.current.ethSigner
+		}
+		from, _ := types.Sender(signer, tx)
+		// Check whether the tx is replay protected. If we're not in the EIP155 hf
+		// phase, start ignoring the sender until we do.
+		if tx.Protected() && !w.chain.Config().IsEIP155(w.current.header.Epoch()) {
+			utils.Logger().Info().Str("hash", tx.Hash().Hex()).Str("eip155Epoch", w.config.EIP155Epoch.String()).Msg("Ignoring reply protected transaction")
+			continue
+		}
+
+		if tx.ShardID() != w.chain.ShardID() {
+			continue
+		}
+
+		w.current.state.Prepare(tx.Hash(), common.Hash{}, len(w.current.txs))
+		err := w.commitTransaction(tx, coinbase)
+		sender, _ := common2.AddressToBech32(from)
+
+		switch err {
+		case core.ErrGasLimitReached:
+			// Pop the current out-of-gas transaction without shifting in the next from the account
+			utils.Logger().Info().Str("sender", sender).Msg("Gas limit exceeded for current block")
+
+		case core.ErrNonceTooLow:
+			// New head notification data race between the transaction pool and miner, shift
+			utils.Logger().Info().Str("sender", sender).Uint64("nonce", tx.Nonce()).Msg("Skipping transaction with low nonce")
+
+		case core.ErrNonceTooHigh:
+			// Reorg notification data race between the transaction pool and miner, skip account =
+			utils.Logger().Info().Str("sender", sender).Uint64("nonce", tx.Nonce()).Msg("Skipping account with high nonce")
+
+		case nil:
+			// Everything ok, collect the logs and shift in the next transaction from the same account
+
+		default:
+			// Strange error, discard the transaction and get the next in line (note, the
+			// nonce-too-high clause will prevent us from executing in vain).
+			utils.Logger().Info().Str("hash", tx.Hash().Hex()).AnErr("err", err).Msg("Transaction failed, account skipped")
+		}
+	}
 }
 
 // CommitSortedTransactions commits transactions for new block.
@@ -174,6 +231,7 @@ func (w *Worker) CommitSortedTransactions(
 
 // CommitTransactions commits transactions for new block.
 func (w *Worker) CommitTransactions(
+	pendingSSCTxs types.Transactions,
 	pendingNormal map[common.Address]types.Transactions,
 	pendingStaking staking.StakingTransactions, coinbase common.Address,
 ) error {
@@ -218,6 +276,7 @@ func (w *Worker) CommitTransactions(
 
 	startTime := time.Now()
 
+	w.CommitSSCTransactions(pendingSSCTxs, coinbase)
 	w.CommitSortedTransactions(normalTxns, coinbase)
 
 	utils.Logger().Info().Str("duration", time.Since(startTime).String()).Msg("Leader apply transactions for duration")
@@ -321,20 +380,22 @@ func (w *Worker) commitTransaction(
 			vm.Config{},
 		)
 	} else {
-		utils.Logger().Info().Msgf("Cross shard transaction: tx %s", tx.Hash().Hex())
+		utils.SSCLogger().Info().
+			Uint64("blockNum", w.current.header.NumberU64()).
+			Str("txHash", tx.Hash().Hex()).Msgf("Cross shard transaction")
 		// simulate cross-shard transaction with SSCService, use the blockchain current header, and state is not needed
 		receipt, cx, stakeMsgs, _, err = core.SimulateCXTransaction(w.sscService, w.chain, &coinbase, w.current.gasPool, w.current.state, w.chain.CurrentHeader(), tx, &gasUsed, vm.Config{})
 	}
 	w.current.header.SetGasUsed(gasUsed)
 	if err != nil {
 		w.current.state.RevertToSnapshot(snap)
-		utils.Logger().Error().
-			Err(err).Interface("txn", tx).
+		utils.SSCLogger().Error().
+			Err(err).Str("txash", tx.Hash().Hex()).
 			Msg("Transaction failed commitment")
 		return errNilReceipt
 	}
 	if receipt == nil {
-		utils.Logger().Warn().Interface("tx", tx).Interface("cx", cx).Msg("Receipt is Nil!")
+		utils.Logger().Warn().Interface("cx", cx).Msg("Receipt is Nil!")
 		return errNilReceipt
 	}
 
@@ -647,9 +708,9 @@ func (w *Worker) FinalizeNewBlock(
 }
 
 func (w *Worker) GasFloor(epoch *big.Int) uint64 {
-	if w.config.IsBlockGas30M(epoch) {
-		return 30_000_000
-	}
+	// if w.config.IsBlockGas30M(epoch) {
+	// 	return 30_000_000
+	// }
 
 	return w.gasFloor
 }

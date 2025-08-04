@@ -386,13 +386,13 @@ func (node *Node) AddPendingTransaction(newTx *types.Transaction) error {
 		var err error
 		for i := range errs {
 			if errs[i] != nil {
-				// tempDelete utils.Logger().Info().Err(errs[i]).Msg("[AddPendingTransaction] Failed adding new transaction")
+				utils.Logger().Info().Err(errs[i]).Msg("[AddPendingTransaction] Failed adding new transaction")
 				err = errs[i]
 				break
 			}
 		}
 		if err == nil || node.BroadcastInvalidTx {
-			// tempDelete utils.Logger().Info().Str("Hash", newTx.Hash().Hex()).Str("HashByType", newTx.HashByType().Hex()).Msg("Broadcasting Tx")
+			utils.Logger().Info().Str("Hash", newTx.Hash().Hex()).Str("HashByType", newTx.HashByType().Hex()).Msg("Broadcasting Tx")
 			node.tryBroadcast(newTx)
 		}
 		return err
@@ -750,6 +750,7 @@ func (node *Node) StartPubSub() error {
 				if len(hmyMsg) < p2pMsgPrefixSize {
 					// TODO (lc): block peers sending empty messages
 					nodeP2PMessageCounterVec.With(prometheus.Labels{"type": "invalid_size"}).Inc()
+					utils.Logger().Error().Msgf("validation reject: message with size %d, expected at least %d", len(hmyMsg), p2pMsgPrefixSize)
 					return libp2p_pubsub.ValidationReject
 				}
 
@@ -764,6 +765,7 @@ func (node *Node) StartPubSub() error {
 						errChan <- withError{
 							errors.WithStack(errConsensusMessageOnUnexpectedTopic), msg,
 						}
+						utils.Logger().Error().Msgf("validation reject: received consensus message on non-consensus topic %s", topicNamed)
 						return libp2p_pubsub.ValidationReject
 					}
 					nodeP2PMessageCounterVec.With(prometheus.Labels{"type": "consensus_total"}).Inc()
@@ -775,6 +777,7 @@ func (node *Node) StartPubSub() error {
 
 					if err != nil {
 						errChan <- withError{err, msg.GetFrom()}
+						utils.Logger().Error().Err(err).Msgf("validation reject: %s", err.Error())
 						return libp2p_pubsub.ValidationReject
 					}
 
@@ -796,6 +799,7 @@ func (node *Node) StartPubSub() error {
 					// node message is almost empty
 					if len(openBox) <= p2pNodeMsgPrefixSize {
 						nodeP2PMessageCounterVec.With(prometheus.Labels{"type": "invalid_size"}).Inc()
+						utils.Logger().Error().Msgf("validation reject: node message with size %d, expected at least %d", len(openBox), p2pNodeMsgPrefixSize)
 						return libp2p_pubsub.ValidationReject
 					}
 					nodeP2PMessageCounterVec.With(prometheus.Labels{"type": "node_total"}).Inc()
@@ -811,6 +815,7 @@ func (node *Node) StartPubSub() error {
 						default:
 							// TODO (lc): block peers sending error messages
 							errChan <- withError{err, msg.GetFrom()}
+							utils.Logger().Error().Err(err).Msgf("validation reject: %s", err.Error())
 							return libp2p_pubsub.ValidationReject
 						}
 					}
@@ -825,6 +830,7 @@ func (node *Node) StartPubSub() error {
 				default:
 					// ignore garbled messages
 					nodeP2PMessageCounterVec.With(prometheus.Labels{"type": "ignored"}).Inc()
+					utils.Logger().Error().Msgf("validation reject: unknown message category %d", openBox[proto.MessageCategoryBytes-1])
 					return libp2p_pubsub.ValidationReject
 				}
 			},
@@ -1114,7 +1120,7 @@ func New(
 		go func() {
 			for doubleSign := range node.Consensus.SlashChan {
 				// tempDelete utils.Logger().Info().
-				// tempDelete 	RawJSON("double-sign-candidate", []byte(doubleSign.String())).
+				// tempDelete 	RawJSON("double-sign-candidate", []byte(doubleSign.ToString())).
 				// tempDelete 	Msg("double sign notified by consensus leader")
 				// no point to broadcast the slash if we aren't even in the right epoch yet
 				if !node.Blockchain().Config().IsStaking(
@@ -1331,8 +1337,6 @@ func (node *Node) syncFromTiKVWriter() {
 			}
 			if err != nil {
 				utils.Logger().Debug().
-					Err(err).
-					Interface("tx", tx).
 					Msg("cannot sync txpool from tikv writer")
 				return
 			}

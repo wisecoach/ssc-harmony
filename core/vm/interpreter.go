@@ -208,7 +208,7 @@ func (in *EVMInterpreter) Run(contract *Contract, input []byte, readOnly bool) (
 		op = contract.GetOp(pc)
 		operation := in.cfg.JumpTable[op]
 		if !operation.valid {
-			return nil, fmt.Errorf("invalid opcode 0x%x", int(op))
+			return nil, fmt.Errorf("invalid opcode 0x%x, pc=%d, op", int(op), pc)
 		}
 		// Validate Stack
 		if sLen := stack.len(); sLen < operation.minStack {
@@ -291,8 +291,10 @@ func (in *EVMInterpreter) Run(contract *Contract, input []byte, readOnly bool) (
 
 		switch {
 		case err != nil:
+			utils.SSCLogger().Error().Err(err).Uint64("pc", pc).Str("code", common.Bytes2Hex(contract.Code)).Msg("error during execution")
 			return nil, err
 		case operation.reverts:
+			utils.SSCLogger().Error().Str("reason", common.Bytes2Hex(ret)).Err(err).Uint64("pc", pc).Str("code", common.Bytes2Hex(contract.Code)).Msg("error during execution")
 			return res, ErrExecutionReverted
 		case operation.halts:
 			return res, nil

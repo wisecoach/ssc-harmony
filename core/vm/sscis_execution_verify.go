@@ -1,10 +1,10 @@
 package vm
 
 import (
-	"bytes"
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/common/math"
 	"github.com/harmony-one/harmony/internal/params"
+	"github.com/harmony-one/harmony/internal/utils"
 )
 
 var (
@@ -72,14 +72,29 @@ func opCall_SSC_EV(pc *uint64, inp Interpreter, contract *Contract, memory *Memo
 		err       error
 	)
 
-	if len(args) > 8+16 && bytes.Compare(args[9:21], CTX_PREFIX) == 0 {
+	targetShardId := interpreter.vm.SSCService.GetShardID(toAddr)
+	isCrossCall := targetShardId != interpreter.vm.Context.ShardID
+	if isCrossCall {
 		ret, returnGas, err = interpreter.vm.SSCService.GetResult(interpreter.vm.Context.TxHash)
 		if err != nil {
+			utils.SSCLogger().Error().Err(err).
+				Str("ExecutionType", interpreter.vm.ExecutionType.String()).
+				Str("txHash", interpreter.vm.Context.TxHash.Hex()).
+				Str("callIndex", interpreter.vm.Context.CrossCallIndex.ToString()).
+				Msgf("Cross call failed, shard: %d->%d", interpreter.vm.Context.ShardID, targetShardId)
 			return nil, err
 		}
 	} else {
 		ret, returnGas, err = interpreter.vm.Call(contract, toAddr, args, gas, value)
 	}
+
+	utils.SSCLogger().Info().
+		Str("ExecutionType", interpreter.vm.ExecutionType.String()).
+		Str("txHash", interpreter.vm.Context.TxHash.Hex()).
+		Str("callIndex", interpreter.vm.Context.CrossCallIndex.ToString()).
+		Bool("isCrossCall", isCrossCall).
+		Uint64("pc", *pc).
+		Msgf("ec_call, index=%v, rfaet=%v, err=%v", args[35], ret, err)
 
 	if err != nil {
 		stack.push(interpreter.intPool.getZero())
@@ -120,9 +135,16 @@ func opCallCode_SSC_EV(pc *uint64, inp Interpreter, contract *Contract, memory *
 		err       error
 	)
 
-	if len(args) > 8+16 && bytes.Compare(args[9:21], CTX_PREFIX) == 0 {
+	targetShardId := interpreter.vm.SSCService.GetShardID(common.BigToAddress(addr))
+	isCrossCall := targetShardId != interpreter.vm.Context.ShardID
+	if isCrossCall {
 		ret, returnGas, err = interpreter.vm.SSCService.GetResult(interpreter.vm.Context.TxHash)
 		if err != nil {
+			utils.SSCLogger().Error().Err(err).
+				Str("ExecutionType", interpreter.vm.ExecutionType.String()).
+				Str("txHash", interpreter.vm.Context.TxHash.Hex()).
+				Str("callIndex", interpreter.vm.Context.CrossCallIndex.ToString()).
+				Msgf("Cross call failed, shard: %d->%d", interpreter.vm.Context.ShardID, targetShardId)
 			return nil, err
 		}
 	} else {
@@ -162,9 +184,16 @@ func opDelegateCall_SSC_EV(pc *uint64, inp Interpreter, contract *Contract, memo
 		err       error
 	)
 
-	if len(args) > 8+16 && bytes.Compare(args[9:21], CTX_PREFIX) == 0 {
+	targetShardId := interpreter.vm.SSCService.GetShardID(common.BigToAddress(addr))
+	isCrossCall := targetShardId != interpreter.vm.Context.ShardID
+	if isCrossCall {
 		ret, returnGas, err = interpreter.vm.SSCService.GetResult(interpreter.vm.Context.TxHash)
 		if err != nil {
+			utils.SSCLogger().Error().Err(err).
+				Str("ExecutionType", interpreter.vm.ExecutionType.String()).
+				Str("txHash", interpreter.vm.Context.TxHash.Hex()).
+				Str("callIndex", interpreter.vm.Context.CrossCallIndex.ToString()).
+				Msgf("Cross call failed, shard: %d->%d", interpreter.vm.Context.ShardID, targetShardId)
 			return nil, err
 		}
 	} else {
@@ -204,9 +233,16 @@ func opStaticCall_SSC_EV(pc *uint64, inp Interpreter, contract *Contract, memory
 		err       error
 	)
 
-	if len(args) > 8+16 && bytes.Compare(args[9:21], CTX_PREFIX) == 0 {
+	targetShardId := interpreter.vm.SSCService.GetShardID(common.BigToAddress(addr))
+	isCrossCall := targetShardId != interpreter.vm.Context.ShardID
+	if isCrossCall {
 		ret, returnGas, err = interpreter.vm.SSCService.GetResult(interpreter.vm.Context.TxHash)
 		if err != nil {
+			utils.SSCLogger().Error().Err(err).
+				Str("ExecutionType", interpreter.vm.ExecutionType.String()).
+				Str("txHash", interpreter.vm.Context.TxHash.Hex()).
+				Str("callIndex", interpreter.vm.Context.CrossCallIndex.ToString()).
+				Msgf("Cross call failed, shard: %d->%d", interpreter.vm.Context.ShardID, targetShardId)
 			return nil, err
 		}
 	} else {

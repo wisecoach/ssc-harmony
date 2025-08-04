@@ -21,6 +21,7 @@ package filters
 import (
 	"context"
 	"fmt"
+	"github.com/harmony-one/harmony/internal/utils"
 	"sync"
 	"time"
 
@@ -480,7 +481,9 @@ func (es *EventSystem) eventLoop() {
 		select {
 		// Handle subscribed events
 		case ev := <-es.txsCh:
-			fmt.Printf("get tx: %v\n", ev.Txs)
+			for i, tx := range ev.Txs {
+				utils.Logger().Info().Msgf("get tx[%d]: %s", i, tx.Hash().Hex())
+			}
 			es.broadcast(index, ev)
 		case ev := <-es.logsCh:
 			es.broadcast(index, ev)

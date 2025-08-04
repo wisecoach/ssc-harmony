@@ -124,10 +124,10 @@ func (v *stakedVoteWeight) AddNewVote(
 		// }
 	}
 	// utils.Logger().Info().
-	// 	Str("phase", p.String()).
+	// 	Str("phase", p.ToString()).
 	// 	Int64("signer-count", v.SignersCount(p)).
-	// 	Str("new-power-added", additionalVotePower.String()).
-	// 	Str("total-power-of-signers", tallyQuorum.tally.String()).
+	// 	Str("new-power-added", additionalVotePower.ToString()).
+	// 	Str("total-power-of-signers", tallyQuorum.tally.ToString()).
 	// 	Msg(msg)
 	return ballet, nil
 }

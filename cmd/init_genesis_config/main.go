@@ -5,23 +5,27 @@ import (
 	common2 "github.com/ethereum/go-ethereum/common"
 	"github.com/harmony-one/harmony/core"
 	"github.com/harmony-one/harmony/internal/common"
+	"github.com/harmony-one/harmony/internal/genesis"
+	"github.com/harmony-one/harmony/internal/utils"
+	"github.com/harmony-one/harmony/ssc"
 	"github.com/harmony-one/harmony/ssc/api"
 	"gopkg.in/yaml.v2"
+	"math"
 	"math/big"
 	"os"
 )
 
-func main() {
+func buildGenesisConfig() {
 	genesis := core.Genesis{}
 
 	sscCommittees := make([]*api.ShardSimulateCommittee, 0)
 
 	shard0Members := make([]*api.Member, 0)
 	shard0Member := &api.Member{
-		Address:   common.MustBech32ToAddress("one1pdv9lrdwl0rg5vglh4xtyrv3wjk3wsqket7zxy"),
+		Address:   common.MustBech32ToAddress("one13c9xmt4f73t8ct73csrmnptz6ydd2t9fx08llk"),
 		Stake:     big.NewInt(1000000000),
-		Endpoint:  "http://localhost:9000",
-		BLSPubKey: common2.Hex2Bytes("65f55eb3052f9e9f632b2923be594ba77c55543f5c58ee1454b9cfd658d25e06373b0f7d42a19c84768139ea294f6204"),
+		Endpoint:  "http://localhost:9500",
+		BLSPubKey: common2.Hex2Bytes("9035f9fafa7afe0d7237de9becff06365aaefdd46f937489354c86d4a72b485e386e25ec2b5bbfcc2dec5b1bb90ac711"),
 	}
 	shard0Members = append(shard0Members, shard0Member)
 	shard0 := &api.ShardSimulateCommittee{
@@ -33,10 +37,10 @@ func main() {
 	}
 	shard1Members := make([]*api.Member, 0)
 	shard1Member := &api.Member{
-		Address:   common.MustBech32ToAddress("one1m6m0ll3q7ljdqgmth2t5j7dfe6stykucpj2nr5"),
+		Address:   common.MustBech32ToAddress("one105clp5lulaqq96x64cvjt5fw2yh0he0frdlqdj"),
 		Stake:     big.NewInt(1000000000),
-		Endpoint:  "http://localhost:9002",
-		BLSPubKey: common2.Hex2Bytes("40379eed79ed82bebfb4310894fd33b6a3f8413a78dc4d43b98d0adc9ef69f3285df05eaab9f2ce5f7227f8cb920e809"),
+		Endpoint:  "http://localhost:9540",
+		BLSPubKey: common2.Hex2Bytes("4baf0b53e9c9c70c67a57dd68ce1d955424d7253f5be572d3872730c533233373ed435c054aacdd591a1aef8757d3508"),
 	}
 	shard1Members = append(shard1Members, shard1Member)
 	shard1 := &api.ShardSimulateCommittee{
@@ -46,9 +50,42 @@ func main() {
 		Number:    1,
 		Threshold: 1,
 	}
+	shard2Members := make([]*api.Member, 0)
+	shard2Member := &api.Member{
+		Address:   common.MustBech32ToAddress("one14gtzsk0kz6p5ne6uku4yy2q6438352fzhzf2ef"),
+		Stake:     big.NewInt(1000000000),
+		Endpoint:  "http://localhost:9580",
+		BLSPubKey: common2.Hex2Bytes("e5d2d5003a0e60cefaa40d3fd8a5338974bf0cd4d2c3e5a7f4468d7f09e443ea406d408352a0df736206ca8eefd55b0e"),
+	}
+	shard2Members = append(shard2Members, shard2Member)
+	shard2 := &api.ShardSimulateCommittee{
+		ShardID:   2,
+		Epoch:     0,
+		Members:   shard2Members,
+		Number:    1,
+		Threshold: 1,
+	}
+	shard3Members := make([]*api.Member, 0)
+	shard3Member := &api.Member{
+		Address:   common.MustBech32ToAddress("one10tkmez3662chu04cpww74m24gntfau0xxscnu3"),
+		Stake:     big.NewInt(1000000000),
+		Endpoint:  "http://localhost:9620",
+		BLSPubKey: common2.Hex2Bytes("9dbd0e1068292794d4f648e4cf90e40c58854a73a22d334bc5a06f4f96dd878380169dcf2d9d176890c6ad5e575a7c02"),
+	}
+	shard3Members = append(shard3Members, shard3Member)
+	shard3 := &api.ShardSimulateCommittee{
+		ShardID:   3,
+		Epoch:     0,
+		Members:   shard3Members,
+		Number:    1,
+		Threshold: 1,
+	}
 	sscCommittees = append(sscCommittees, shard0)
 	sscCommittees = append(sscCommittees, shard1)
+	sscCommittees = append(sscCommittees, shard2)
+	sscCommittees = append(sscCommittees, shard3)
 	genesis.SSCConfig = &api.ShardSimulateCommitteeConfig{Committees: sscCommittees}
+	genesis.GenesisAccountsDir = ".hmy/expr_accounts"
 
 	bytes, _ := yaml.Marshal(genesis)
 	println(string(bytes))
@@ -63,4 +100,39 @@ func main() {
 		fmt.Println("Error writing to file:", err)
 		return
 	}
+}
+
+func selectShard() {
+	accounts := make(map[uint32][]genesis.DeployAccount)
+	for i, account := range genesis.ExprHarmonyAccounts {
+		blsKeyBytes := common2.Hex2Bytes(account.BLSPublicKey)
+		address := utils.GetAddressFromBLSPubKeyBytes(blsKeyBytes)
+		shardNum := 4
+		shardBits := int(math.Ceil(math.Log2(float64(shardNum))))
+		shardId := ssc.BitsToUint32(address, shardBits)
+		fmt.Printf("account %d, address: %s, actualShardId: %d, shardID: %d\n", i, address.Hex(), shardId, account.ShardID)
+		accounts[shardId] = append(accounts[shardId], account)
+	}
+	for i := 0; i < 4; i++ {
+		shardId := uint32(i)
+		deployAccounts := accounts[shardId]
+		for k, account := range deployAccounts {
+			fmt.Printf("%s .hmy/new_validator_bls/%s.key %d 127.0.0.1 %d\n", account.Address, account.BLSPublicKey, shardId, int(shardId)*40+k*2+9000)
+		}
+	}
+	cnt := 0
+	for i := 0; i < 4; i++ {
+		shardId := uint32(i)
+		deployAccounts := accounts[shardId]
+		for _, account := range deployAccounts {
+			fmt.Printf("{Index: \" %d \", Address: \"%s\", EthAddr: \"%s\", BLSPublicKey: \"%s\", ShardID: %d},\n",
+				cnt, account.Address, account.EthAddr, account.BLSPublicKey, account.ShardID)
+			cnt++
+		}
+	}
+}
+
+func main() {
+	buildGenesisConfig()
+	// selectShard()
 }

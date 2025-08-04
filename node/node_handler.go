@@ -3,7 +3,6 @@ package node
 import (
 	"bytes"
 	"context"
-	"fmt"
 	"math/rand"
 	"time"
 
@@ -343,11 +342,11 @@ func (node *Node) PostConsensusProcessing(newBlock *types.Block) error {
 			// tempDelete 	Uint64("blockNum", newBlock.NumberU64()).
 			// tempDelete 	Uint64("epochNum", newBlock.Epoch().Uint64()).
 			// tempDelete 	Uint64("ViewId", newBlock.Header().ViewID().Uint64()).
-			// tempDelete 	Str("blockHash", newBlock.Hash().String()).
+			// tempDelete 	Str("blockHash", newBlock.Hash().ToString()).
 			// tempDelete 	Int("numTxns", len(newBlock.Transactions())).
 			// tempDelete 	Int("numStakingTxns", len(newBlock.StakingTransactions())).
 			// tempDelete 	Uint32("numSignatures", numSignatures).
-			// tempDelete 	Str("mode", mode.String()).
+			// tempDelete 	Str("mode", mode.ToString()).
 			// tempDelete 	Msg("BINGO !!! Reached Consensus")
 			if node.Consensus.Mode() == consensus.Syncing {
 				mode = node.Consensus.UpdateConsensusInformation()
@@ -420,25 +419,24 @@ func IsRunningBeaconChain(c *consensus.Consensus) bool {
 func (node *Node) BootstrapConsensus() error {
 	ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
 	defer cancel()
-	min := node.Consensus.MinPeers
+	min := node.Consensus.MinPeers * node.HarmonyConfig.General.ShardNum
 	enoughMinPeers := make(chan struct{}, 1)
-	const checkEvery = 3 * time.Second
+	const checkEvery = 1 * time.Second
 	go func() {
 		for {
 			<-time.After(checkEvery)
 			numPeersNow := node.host.GetPeerCount()
 			connectedPeers := len(node.host.Network().Peers())
 			if connectedPeers >= min {
-				utils.Logger().Info().Msg("[bootstrap] StartConsensus")
+				utils.Logger().Info().Msgf("Bootstrap consensus done. Connected %d, known %d, shard: %d, connected: %v", connectedPeers, numPeersNow, node.Consensus.ShardID, node.host.Network().Peers())
 				enoughMinPeers <- struct{}{}
-				fmt.Printf("Bootstrap consensus done. Connected %d, known %d, shard: %d\n", connectedPeers, numPeersNow, node.Consensus.ShardID)
 				return
 			}
 			utils.Logger().Info().
 				Int("numPeersNow", numPeersNow).
 				Int("targetNumPeers", min).
 				Dur("next-peer-count-check-in-seconds", checkEvery).
-				Msg("do not have enough min peers yet in bootstrap of consensus")
+				Msgf("do not have enough min peers yet in bootstrap of consensus, now connnected: %v", node.host.Network().Peers())
 		}
 	}()
 

@@ -117,7 +117,7 @@ func (st *syncStream) handleReqLoop() {
 			err := st.handleReq(req)
 
 			if err != nil {
-				// tempDelete st.logger.Info().Err(err).Str("request", req.String()).
+				// tempDelete st.logger.Info().Err(err).Str("request", req.ToString()).
 				// tempDelete Msg("handle request error. Closing stream")
 				if err := st.Close(); err != nil {
 					st.logger.Err(err).Msg("failed to close sync stream")

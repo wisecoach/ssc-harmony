@@ -31,6 +31,7 @@ var (
 
 	// ZeroLog
 	zeroLogger      *zerolog.Logger
+	sscLogger       *zerolog.Logger
 	zeroLoggerLevel = zerolog.Disabled
 
 	onceForSampleLogger sync.Once
@@ -59,6 +60,10 @@ func SetLogVerbosity(verbosity log.Lvl) {
 // max rotateCount files
 func AddLogFile(filepath string, maxSize int, rotateCount int, rotateMaxAge int) {
 	setZeroLoggerFileOutput(filepath, maxSize, rotateCount, rotateMaxAge)
+}
+
+func AddSSCLogFile(filepath string, maxSize int, rotateCount int, rotateMaxAge int) {
+	setSSCLoggerFileOutput(filepath, maxSize, rotateCount, rotateMaxAge)
 }
 
 // AddLogHandler add a log handler
@@ -122,6 +127,20 @@ func setZeroLoggerFileOutput(filepath string, maxSize int, rotateCount int, rota
 	return nil
 }
 
+func setSSCLoggerFileOutput(filepath string, maxSize int, rotateCount int, rotateMaxAge int) error {
+	w := io.MultiWriter(os.Stdout, &lumberjack.Logger{
+		Filename:   filepath,
+		MaxSize:    maxSize,
+		MaxBackups: rotateCount,
+		MaxAge:     rotateMaxAge,
+		Compress:   true,
+	})
+
+	childLogger := Logger().Output(w)
+	sscLogger = &childLogger
+	return nil
+}
+
 const (
 	dataScienceTopic = "ds"
 )
@@ -164,6 +183,10 @@ func Logger() *zerolog.Logger {
 		zeroLogger = &logger
 	}
 	return zeroLogger
+}
+
+func SSCLogger() *zerolog.Logger {
+	return sscLogger
 }
 
 // SampledLogger returns a sampled zerolog singleton to be used in criticial path like p2p message handling

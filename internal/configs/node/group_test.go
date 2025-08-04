@@ -14,7 +14,7 @@ func TestGroupID_String(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			if got := tt.id.String(); got != tt.want {
-				t.Errorf("GroupID.String() = %v, want %v", got, tt.want)
+				t.Errorf("GroupID.ToString() = %v, want %v", got, tt.want)
 			}
 		})
 	}
@@ -35,7 +35,7 @@ func TestActionTypeString(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			if got := tt.actionType.String(); got != tt.expectedActionName {
-				t.Errorf("ActionType.String() = %v, expected %v", got, tt.expectedActionName)
+				t.Errorf("ActionType.ToString() = %v, expected %v", got, tt.expectedActionName)
 			}
 		})
 	}
@@ -56,7 +56,7 @@ func TestGroupAction(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			if got := tt.groupAction.String(); got != tt.expectedGroupActionName {
-				t.Errorf("ActionType.String() = %v, expected %v", got, tt.expectedGroupActionName)
+				t.Errorf("ActionType.ToString() = %v, expected %v", got, tt.expectedGroupActionName)
 			}
 		})
 	}

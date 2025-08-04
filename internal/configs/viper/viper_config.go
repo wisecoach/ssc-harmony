@@ -99,7 +99,7 @@ func ResetConfBool(value *bool, envViper *viper.Viper, configFileViper *viper.Vi
 	}
 }
 
-// ResetConfString resets String value to value from config files and system environment variable
+// ResetConfString resets ToString value to value from config files and system environment variable
 func ResetConfString(value *string, envViper *viper.Viper, configFileViper *viper.Viper, sectionName string, flagName string) {
 	var confRet = configFileViper.GetString(getConfName(sectionName, flagName))
 	if confRet != "" {

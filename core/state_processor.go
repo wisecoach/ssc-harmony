@@ -113,7 +113,7 @@ func (p *StateProcessor) Process(
 			// Return the cached result to avoid process the same block again.
 			// Only the successful results are cached in case for retry.
 			result := cached.(*ProcessorResult)
-			// tempDelete utils.Logger().Info().Str("block num", block.Number().String()).Msg("result cache hit.")
+			// tempDelete utils.Logger().Info().Str("block num", block.Number().ToString()).Msg("result cache hit.")
 			return result.Receipts, result.CxReceipts, result.StakeMsgs, result.Logs, result.UsedGas, result.Reward, result.State, nil
 		}
 	}
@@ -415,7 +415,7 @@ func ApplyCXTTransaction(service api.Service, bc ChainContext, author *common.Ad
 	if vm.SSCAddrsApplyOnChain[*tx.To()] != nil {
 
 		vmCtx := NewSSCVMContext(msg.From(), tx.Hash(), api.CallIndex{}, tx.GasPrice(), header, bc, author)
-		sscvm := vm.NewSSCVM(vmCtx, statedb, config, cfg, service, vm.ExecutionVerify)
+		sscvm := vm.NewSSCVM(vmCtx, statedb, config, cfg, service, vm.ExecutionVerify, false)
 		result, err := NewSSCStateTransition(sscvm, msg, gp).TransitionDb()
 		if err != nil {
 			return nil, nil, nil, 0, err
@@ -441,6 +441,9 @@ func ApplyCXTTransaction(service api.Service, bc ChainContext, author *common.Ad
 	return receipt, nil, make([]staking.StakeMsg, 0), 0, nil
 }
 
+// SimulateCXTransaction
+//
+//	get the result of the cross-shard transaction simulation when the transaction was submitted
 func SimulateCXTransaction(service api.Service, bc ChainContext, author *common.Address, gp *GasPool, statedb *state.DB, header *block.Header, tx *types.Transaction, usedGas *uint64, cfg vm.Config) (*types.Receipt, *types.CXReceipt, []staking.StakeMsg, uint64, error) {
 	config := bc.Config()
 	txType := getTransactionType(bc.Config(), header, tx)
@@ -460,9 +463,10 @@ func SimulateCXTransaction(service api.Service, bc ChainContext, author *common.
 	if err != nil {
 		return nil, nil, nil, 0, err
 	}
+	// SimulationCommit and CxtCommitOrRollback needs to be executed for every validator
 	if vm.SSCAddrsApplyOnChain[*tx.To()] != nil {
 		vmCtx := NewSSCVMContext(msg.From(), tx.Hash(), api.CallIndex{}, tx.GasPrice(), header, bc, author)
-		sscvm := vm.NewSSCVM(vmCtx, statedb, config, cfg, service, vm.SimulationCall)
+		sscvm := vm.NewSSCVM(vmCtx, statedb, config, cfg, service, vm.Precompiled, true)
 		result, err := NewSSCStateTransition(sscvm, msg, gp).TransitionDb()
 		if err != nil {
 			return nil, nil, nil, 0, err
@@ -594,7 +598,7 @@ func StakingToMessage(
 }
 
 // MayShardReduction handles the change in the number of Shards. It will mark the affected validator as inactive.
-// This function does not handle all cases, only for ShardNum from 4 to 2.
+// This function does not handle all cases, only for shardNum from 4 to 2.
 func MayShardReduction(bc ChainContext, statedb *state.DB, header *block.Header) error {
 	isBeaconChain := header.ShardID() == shard.BeaconChainShardID
 	isLastBlock := shard.Schedule.IsLastBlock(header.Number().Uint64())

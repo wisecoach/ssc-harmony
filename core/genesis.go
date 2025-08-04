@@ -132,7 +132,7 @@ func NewGenesisSpec(netType nodeconfig.NetworkType, shardID uint32, configPath s
 		// Smart contract deployer account used to deploy initial smart contract
 
 		contractDeployerAddress := crypto.PubkeyToAddress(genesis.ContractDeployerKey.PublicKey)
-		fmt.Printf("use netType: %v, contractDeployer: %v\n", netType, contractDeployerAddress)
+		utils.Logger().Info().Msgf("use netType: %v, contractDeployer: %v\n", netType, contractDeployerAddress)
 		contractDeployerFunds := big.NewInt(ContractDeployerInitFund)
 		contractDeployerFunds = contractDeployerFunds.Mul(
 			contractDeployerFunds, big.NewInt(denominations.One),
@@ -140,7 +140,7 @@ func NewGenesisSpec(netType nodeconfig.NetworkType, shardID uint32, configPath s
 		genesisAlloc[contractDeployerAddress] = GenesisAccount{Balance: contractDeployerFunds}
 
 		sscSubmitterAddress := crypto.PubkeyToAddress(genesis.SSCSubmitterKey.PublicKey)
-		fmt.Printf("use netType: %v, sscSubmitter: %v\n", netType, sscSubmitterAddress)
+		utils.Logger().Info().Msgf("use netType: %v, sscSubmitter: %v\n", netType, sscSubmitterAddress)
 		sscSubmitterFunds := big.NewInt(ContractDeployerInitFund)
 		sscSubmitterFunds = sscSubmitterFunds.Mul(
 			sscSubmitterFunds, big.NewInt(denominations.One),
@@ -189,7 +189,7 @@ func NewGenesisSpec(netType nodeconfig.NetworkType, shardID uint32, configPath s
 						committee.Members = append(committee.Members, &api.Member{
 							Address:   member.Address,
 							Stake:     member.Stake,
-							Endpoint:  strings.Replace(member.Endpoint, "00", fmt.Sprintf("%d", i*20), 1),
+							Endpoint:  strings.Replace(member.Endpoint, "9500", fmt.Sprintf("%d", 9500+i*40), 1),
 							BLSPubKey: member.BLSPubKey,
 						})
 					}

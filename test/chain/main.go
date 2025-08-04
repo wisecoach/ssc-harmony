@@ -28,11 +28,11 @@ const (
 )
 
 var (
-	//FaucetPriKey for the faucet contract Test accounts
+	// FaucetPriKey for the faucet contract Test accounts
 	FaucetPriKey, _ = crypto.GenerateKey()
-	//FaucetAddress generated via the key.
+	// FaucetAddress generated via the key.
 	FaucetAddress = crypto.PubkeyToAddress(FaucetPriKey.PublicKey)
-	//FaucetInitFunds initial funds in facuet contract
+	// FaucetInitFunds initial funds in facuet contract
 	FaucetInitFunds = big.NewInt(8000000000000000000)
 	testUserKey, _  = crypto.GenerateKey()
 	testUserAddress = crypto.PubkeyToAddress(testUserKey.PublicKey)
@@ -70,15 +70,15 @@ func init() {
 	thirdRandomUserKey, _ := crypto.GenerateKey()
 	thirdRandomUserAddress := crypto.PubkeyToAddress(thirdRandomUserKey.PublicKey)
 
-	//Transactions by first, second and third user with different staking amounts.
+	// Transactions by first, second and third user with different staking amounts.
 	tx1, _ := types.SignTx(types.NewTransaction(0, firstRandomUserAddress, 0, big.NewInt(10), params.TxGas, nil, nil), types.HomesteadSigner{}, FaucetPriKey)
 	tx2, _ := types.SignTx(types.NewTransaction(1, secondRandomUserAddress, 0, big.NewInt(20), params.TxGas, nil, nil), types.HomesteadSigner{}, FaucetPriKey)
 	tx3, _ := types.SignTx(types.NewTransaction(2, thirdRandomUserAddress, 0, big.NewInt(30), params.TxGas, nil, nil), types.HomesteadSigner{}, FaucetPriKey)
 	pendingTxs = append(pendingTxs, tx1)
 	pendingTxs = append(pendingTxs, tx2)
 	pendingTxs = append(pendingTxs, tx3)
-	//tx4, _ := types.SignTx(types.NewTransaction(1, testUserAddress, 0, big.NewInt(1000), params.TxGas, nil, nil), types.HomesteadSigner{}, FaucetPriKey)
-	//newTxs = append(newTxs, tx4)
+	// tx4, _ := types.SignTx(types.NewTransaction(1, testUserAddress, 0, big.NewInt(1000), params.TxGas, nil, nil), types.HomesteadSigner{}, FaucetPriKey)
+	// newTxs = append(newTxs, tx4)
 
 }
 
@@ -123,7 +123,7 @@ func fundFaucetContract(chain core.BlockChain) {
 	txmap := make(map[common.Address]types.Transactions)
 	txmap[FaucetAddress] = txs
 	err := contractworker.CommitTransactions(
-		txmap, nil, testUserAddress,
+		make(types.Transactions, 0), txmap, nil, testUserAddress,
 	)
 	if err != nil {
 		fmt.Println(err)
@@ -169,7 +169,7 @@ func callFaucetContractToFundAnAddress(chain core.BlockChain) {
 	txmap[FaucetAddress] = types.Transactions{callfaucettx}
 
 	err = contractworker.CommitTransactions(
-		txmap, nil, testUserAddress,
+		make(types.Transactions, 0), txmap, nil, testUserAddress,
 	)
 	if err != nil {
 		fmt.Println(err)
@@ -219,7 +219,7 @@ func main() {
 	}
 	backend.txPool.AddLocals(poolPendingTx)
 
-	//// Generate a small n-block chain and an uncle block for it
+	// // Generate a small n-block chain and an uncle block for it
 	n := 3
 	if n > 0 {
 		blocks, _ := chain2.GenerateChain(chainConfig, genesis.Header(), chain.Engine(), database, n, func(i int, gen *chain2.BlockGen) {
