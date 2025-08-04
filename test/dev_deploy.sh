@@ -1,67 +1,50 @@
-#!/bin/bash
-set -eo pipefail
+#!/usr/bin/env bash
 
-unset -v progdir
-case "${0}" in
-*/*) progdir="${0%/*}" ;;
-*) progdir=. ;;
-esac
+SERVERS=("zjnu@10.7.95.200" "zjnu@10.7.95.201" "zjnu@10.7.95.202" "zjnu@10.7.95.203")
+WORK_DIR="/home/zjnu/ssc-harmony"
 
-ROOT="${progdir}/.."
-USER=$(whoami)
-OS=$(uname -s)
-
-. "${ROOT}/scripts/setup_bls_build_flags.sh"
-
-function cleanup() {
-  "${progdir}/kill_node.sh"
+function call_for_shard() {
+    shard_id=$1
+    cmd=$2
+    ssh -p 10022 "$SERVERS[$shard_id]" "cd $WORK_DIR && $cmd"
 }
 
-function build() {
-  if [[ "${NOBUILD}" != "true" ]]; then
-    pushd ${ROOT}
-    export GO111MODULE=on
-    if [[ "$OS" == "Darwin" ]]; then
-      # MacOS doesn't support static build
-      scripts/go_executable_build.sh -S
-    else
-      # Static build on Linux platform
-      scripts/go_executable_build.sh -s
-    fi
-    popd
-  fi
+function call_for_shards() {
+    cmd=$1
+    for SERVER in "${SERVERS[@]}"; do
+        echo "Executing on $SERVER: $cmd"
+        ssh -p 10022 "$SERVER" "cd $WORK_DIR && $cmd"
+    done
 }
 
-function setup() {
-  # Setup blspass file
-  mkdir -p ${ROOT}/.hmy
-  if [[ ! -f "${ROOT}/.hmy/blspass.txt" ]]; then
-    touch "${ROOT}/.hmy/blspass.txt"
-  fi
+function clean() {
+    call_for_shards "./test/kill_node.sh"
+    call_for_shards "rm -rf tmp_log* 2> /dev/null"
+    call_for_shards "rm *.rlp 2> /dev/null"
+    call_for_shards "rm -rf .dht* 2> /dev/null"
+}
 
-  # Kill nodes if any
-  cleanup
+function preset() {
+    scripts/go_executable_build.sh -S || exit 1
 
-  # Note that the binarys only works on MacOS & Linux
-  build
-
-  # Create a tmp folder for logs
-  t=$(date +"%Y%m%d-%H%M%S")
-  log_folder="${ROOT}/tmp_log/log-$t"
-  mkdir -p "${log_folder}"
-  LOG_FILE=${log_folder}/r.log
+    # upload binary to servers
+    for SERVER in "${SERVERS[@]}"; do
+        echo "Uploading binary to $SERVER"
+        scp -P 10022 ./bin/harmony "$SERVER:$WORK_DIR/bin/"
+        scp -P 10022 ./bin/bootnode "$SERVER:$WORK_DIR/bin/"
+    done
 }
 
 function launch_bootnode() {
   echo "launching boot node ..."
-  ${DRYRUN} ${ROOT}/bin/bootnode -port 19875 -max_conn_per_ip 100 -force_public true >"${log_folder}"/bootnode.log 2>&1 | tee -a "${LOG_FILE}" &
+  call_for_shard 0 'bin/bootnode -port 19875 -max_conn_per_ip 100 -force_public true >"${log_folder}"/bootnode.log 2>&1 | tee -a "${LOG_FILE}" &'
   sleep 1
   BN_MA=$(grep "BN_MA" "${log_folder}"/bootnode.log | awk -F\= ' { print $2 } ')
-  echo "bootnode launched." + " $BN_MA"
+  echo "bootnode launched."
 }
 
-function simple_launch_shard() {
-    env=${3-local}
+function deploy() {
+    env=${3-dev}
     config=./test/configs/launch_config_${env}.txt
     launch_bootnode
 
@@ -154,74 +137,15 @@ function simple_launch_shard() {
           ;;
         esac
 
-        echo "begin to work: dryrun: ${DRYRUN}" "bin: ${ROOT}/bin/harmony" "${args[@]}" "${extra_args[@]}"
+        echo "begin to work:" "bin: ${ROOT}/bin/harmony" "${args[@]}" "${extra_args[@]}"
 
-        # Start the node
-        ${DRYRUN} "${ROOT}/bin/harmony" "${args[@]}" "${extra_args[@]}" 2>&1 | tee -a "${LOG_FILE}" &
+        call_for_shard $shard_id '"${ROOT}/bin/harmony" "${args[@]}" "${extra_args[@]}" 2>&1 | tee -a "${LOG_FILE}" &'
+
     done <<< "$(cat "${config}")"
 }
 
-trap cleanup SIGINT SIGTERM
-
-function usage() {
-  local ME=$(basename $0)
-
-  echo "
-USAGE: $ME [OPTIONS] config_file_name [extra args to node]
-
-   -h             print this help message
-   -D duration    test run duration (default: $DURATION)
-   -m min_peers   minimal number of peers to start consensus (default: $MIN)
-   -s shards      number of shards (default: $SHARDS)
-   -n             dryrun mode (default: $DRYRUN)
-   -N network     network type (default: $NETWORK)
-   -B             don't build the binary
-   -v             verbosity in log (default: $VERBOSE)
-   -e             expose WS & HTTP ip (default: $EXPOSEAPIS)
-
-This script will build all the binaries and start harmony and based on the configuration file.
-
-EXAMPLES:
-
-   $ME local_config.txt
-"
-  exit 0
+function test() {
+    clean
+    preset
+    deploy 4 5 dev
 }
-
-DURATION=60000
-MIN=3
-SHARDS=2
-DRYRUN=
-NETWORK=localnet
-VERBOSE=false
-NOBUILD=false
-EXPOSEAPIS=false
-
-while getopts "hD:m:s:nBN:ve" option; do
-  case ${option} in
-  h) usage ;;
-  D) DURATION=$OPTARG ;;
-  m) MIN=$OPTARG ;;
-  s) SHARDS=$OPTARG ;;
-  n) DRYRUN=echo ;;
-  B) NOBUILD=true ;;
-  N) NETWORK=$OPTARG ;;
-  v) VERBOSE=true ;;
-  e) EXPOSEAPIS=true ;;
-  *) usage ;;
-  esac
-done
-
-shift $((OPTIND - 1))
-
-config=$1
-shift 1 || usage
-unset -v extra_args
-declare -a extra_args
-extra_args=("$@")
-
-setup
-simple_launch_shard 4 5 local
-#simple_launch_shard 4 5 dev
-sleep "${DURATION}"
-cleanup || true

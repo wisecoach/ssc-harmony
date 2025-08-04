@@ -103,7 +103,7 @@ ProfileNames = []
 
 [Prometheus]
 EnablePush = false
-Enabled = true
+Enabled = false
 Gateway = "https://gateway.harmony.one"
 IP = "0.0.0.0"
 Port = 9900
