@@ -101,7 +101,7 @@ function simple_launch_shard() {
         echo "shard_id=$shard_id, cnt=${per_shard_cnt[$shard_id]}, num=${shard_num}"
 
         mode='validator'
-        node_config='test/configs/default_config.toml'
+        node_config='test/configs/local/default_config_local.toml'
 
         args=("${base_args[@]}" --ip "${ip}" --port "${port}" --key "/tmp/${ip}-${port}.key" --db_dir "${ROOT}/db/db-${ip}-${port}" "--broadcast_invalid_tx=false" --shard_num "${shard_num}" --shard_size "${shard_size}" --run.shard "${shard_id}")
         if [[ -z "$ip" || -z "$port" || "$ip" == "#" ]]; then
