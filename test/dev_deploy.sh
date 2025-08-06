@@ -60,7 +60,7 @@ function preset() {
 }
 
 function launch_bootnode() {
-  cmd="nohup bin/bootnode -port 19875 -max_conn_per_ip 100 -force_public true > ${log_folder}/bootnode.log 2>&1 | tee -a ${LOG_FILE} &"
+  cmd="nohup bin/bootnode -ip 0.0.0.0 -port 19875 -max_conn_per_ip 100 -force_public true > ${log_folder}/bootnode.log 2>&1 | tee -a ${LOG_FILE} &"
   echo "launching boot node ... cmd: $cmd"
   call_for_shard 0 "$cmd" &
   sleep 1
@@ -166,6 +166,16 @@ function deploy() {
         call_for_shard $shard_id "$cmd" &
 
     done <<< "$(cat "${config}")"
+}
+
+function download_log() {
+    echo "Downloading logs from all servers..."
+    mkdir -p "${log_folder}/logs"
+    for SERVER in "${SERVERS[@]}"; do
+        echo "Downloading logs from $SERVER"
+        scp -r -P 10022 "$SERVER:$WORK_DIR/tmp_log/*" "logs/"
+    done
+    echo "Logs downloaded to ${log_folder}/logs"
 }
 
 function test() {

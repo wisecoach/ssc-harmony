@@ -203,6 +203,7 @@ func NewGenesisSpec(netType nodeconfig.NetworkType, shardID uint32, configPath s
 						gen.Alloc[addr] = GenesisAccount{
 							Balance: big.NewInt(InitFreeFund).Mul(big.NewInt(InitFreeFund), big.NewInt(denominations.One)),
 						}
+						utils.Logger().Info().Msgf("genesis account: %s", path)
 					}
 					return nil
 				})

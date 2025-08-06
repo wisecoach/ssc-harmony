@@ -43,7 +43,7 @@ Transactions = 3
 
 [General]
 EnablePruneBeaconChain = false
-GenesisConfigFile = "./test/configs/genesis_config_dev.yaml"
+GenesisConfigFile = "./test/configs/dev/genesis_config_dev.yaml"
 IsArchival = false
 IsBackup = false
 IsBeaconArchival = false
@@ -56,7 +56,7 @@ TraceEnable = false
 [HTTP]
 AuthPort = 9501
 Enabled = true
-IP = "127.0.0.1"
+IP = "0.0.0.0"
 IdleTimeout = "120s"
 Port = 9500
 ReadTimeout = "30s"
