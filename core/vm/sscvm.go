@@ -67,8 +67,6 @@ type SSCVM struct {
 	Context Context
 	// DB gives access to the underlying state
 	StateDB *state.DB
-	// LockableState provides access to the underlying state with lock
-	LockableState *LockableState
 	// Depth is the current call Stack
 	depth int
 	// SSC Service used to implement the Cross-Shard Transaction
@@ -76,8 +74,6 @@ type SSCVM struct {
 
 	// ExecutionType of SSCVM, used to determine the instruction set of the VM
 	ExecutionType ExecutionType
-	// PreExec indicates whether the VM work for pre-execution to propose new block or apply transaction when block committed
-	PreExec bool
 
 	// chainConfig contains information about the current chain
 	chainConfig *params.ChainConfig
@@ -99,7 +95,7 @@ type SSCVM struct {
 	callGasTemp uint64
 }
 
-func NewSSCVM(ctx Context, statedb *state.DB, chainConfig *params.ChainConfig, vmConfig Config, sscService api.Service, executionType ExecutionType, preExec bool) *SSCVM {
+func NewSSCVM(ctx Context, statedb *state.DB, chainConfig *params.ChainConfig, vmConfig Config, sscService api.Service, executionType ExecutionType) *SSCVM {
 	vm := &SSCVM{
 		Context:       ctx,
 		StateDB:       statedb,
@@ -109,15 +105,12 @@ func NewSSCVM(ctx Context, statedb *state.DB, chainConfig *params.ChainConfig, v
 		interpreters:  make([]Interpreter, 0, 1),
 		SSCService:    sscService,
 		ExecutionType: executionType,
-		PreExec:       preExec,
 	}
 
 	// vmConfig.EVMInterpreter will be used by EVM-C, it won't be checked here
 	// as we always want to have the built-in EVM as the failover option.
 	vm.interpreters = append(vm.interpreters, NewSSCVMInterpreter(vm, vmConfig))
 	vm.interpreter = vm.interpreters[0]
-
-	vm.LockableState = NewLockableStateWrapper().WithDB(statedb)
 
 	return vm
 }
@@ -581,7 +574,6 @@ func (vm *SSCVM) run(contract *Contract, input []byte, readOnly bool) ([]byte, e
 			if p := writeCapablePrecompiles[*contract.CodeAddr]; p != nil {
 				utils.SSCLogger().Info().Str("txHash", vm.Context.TxHash.Hex()).
 					Str("executionType", vm.ExecutionType.String()).
-					Bool("preExec", vm.PreExec).
 					Msgf("RunWriteCapablePrecompiledContract: %s", contract.CodeAddr.Hex())
 				if readOnly {
 					return nil, errWriteProtection

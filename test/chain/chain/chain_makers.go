@@ -205,7 +205,7 @@ func GenerateChain(
 		return nil, nil
 	}
 	for i := 0; i < n; i++ {
-		statedb, err := state.New(parent.Root(), state.NewDatabase(db), nil)
+		statedb, err := state.New(parent.Root(), state.NewDatabase(db), nil, nil)
 		if err != nil {
 			panic(err)
 		}

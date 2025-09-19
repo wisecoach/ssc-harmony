@@ -34,7 +34,7 @@ func opSload_SSC_LE(pc *uint64, inp Interpreter, contract *Contract, memory *Mem
 	interpreter := inp.(*SSCVMInterpreter)
 	ctx := interpreter.vm.Context
 	loc := stack.peek()
-	val, err := interpreter.vm.LockableState.GetStateWithLock(ctx.TxHash, ctx.CrossCallIndex, contract.Address(), common.BigToHash(loc))
+	val, err := interpreter.vm.StateDB.GetStateWithLock(ctx.TxHash, ctx.CrossCallIndex, contract.Address(), common.BigToHash(loc))
 	if err != nil {
 		return nil, err
 	}
@@ -47,7 +47,7 @@ func opSstore_SSC_LE(pc *uint64, inp Interpreter, contract *Contract, memory *Me
 	ctx := interpreter.vm.Context
 	loc := common.BigToHash(stack.pop())
 	val := stack.pop()
-	err := interpreter.vm.LockableState.SetStateWithLock(ctx.TxHash, ctx.CrossCallIndex, contract.Address(), loc, common.BigToHash(val))
+	err := interpreter.vm.StateDB.SetStateWithLock(ctx.TxHash, ctx.CrossCallIndex, contract.Address(), loc, common.BigToHash(val))
 	if err != nil {
 		return nil, err
 	}

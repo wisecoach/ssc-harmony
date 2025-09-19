@@ -62,7 +62,7 @@ function launch_bootnode() {
 
 function simple_launch_shard() {
     env=${3-local}
-    config=./test/configs/launch_config_${env}.txt
+    config=./test/configs/${env}/launch_config_${env}.txt
     launch_bootnode
 
     shard_num=$1
@@ -85,7 +85,7 @@ function simple_launch_shard() {
     sleep 2
 
     echo $PWD
-    while read -r addr bls_key shard_id ip port; do
+    while read -r addr ethAddrHex bls_key shard_id ip port; do
         if [[ "$shard_id" -ge "${shard_num}" ]]; then
           echo "shard_num ${shard_num} is full, skipping node ${i}"
           continue
@@ -118,8 +118,8 @@ function simple_launch_shard() {
           args=("${args[@]}" --blskey_file "BLSKEY")
         elif [[ -f "$bls_key" ]]; then
           args=("${args[@]}" --blskey_file "${ROOT}/${bls_key}")
-          # 同时设置ssc.bls-key-file
           args=("${args[@]}" --ssc.bls-key-path "${ROOT}/${bls_key}")
+          args=("${args[@]}" --ssc.self-addr-hex "${ethAddrHex}")
         elif [[ -d "$bls_key" ]]; then
           args=("${args[@]}" --blsfolder "${ROOT}/${bls_key}")
         else
@@ -222,6 +222,5 @@ extra_args=("$@")
 
 setup
 simple_launch_shard 4 5 local
-#simple_launch_shard 4 5 dev
 sleep "${DURATION}"
 cleanup || true

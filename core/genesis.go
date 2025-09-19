@@ -305,7 +305,7 @@ func (g *Genesis) ToBlock(db ethdb.Database) *types.Block {
 		utils.Logger().Error().Msg("db should be initialized")
 		os.Exit(1)
 	}
-	statedb, _ := state.New(common.Hash{}, state.NewDatabase(db), nil)
+	statedb, _ := state.New(common.Hash{}, state.NewDatabase(db), nil, nil)
 	// write alloc of genesis account
 	for addr, account := range g.Alloc {
 		statedb.AddBalance(addr, account.Balance)
@@ -348,6 +348,8 @@ func (g *Genesis) ToBlock(db ethdb.Database) *types.Block {
 		Header()
 	statedb.Commit(false)
 	statedb.Database().TrieDB().Commit(root, true)
+
+	utils.Logger().Info().Msgf("Genesis block created: %s, coinbase: %s", head.Hash().Hex(), head.Coinbase().Hex())
 
 	return types.NewBlock(head, nil, nil, nil, nil, nil)
 }

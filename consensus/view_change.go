@@ -141,6 +141,8 @@ func (consensus *Consensus) getNextViewID() (uint64, time.Duration) {
 func (consensus *Consensus) getNextLeaderKey(viewID uint64, committee *shard.Committee) *bls.PublicKeyWrapper {
 	gap := 1
 
+	utils.Logger().Info().Msgf("get leader key for view=%d", viewID)
+
 	cur := consensus.getCurBlockViewID()
 	if viewID > cur {
 		gap = int(viewID - cur)
@@ -167,6 +169,7 @@ func (consensus *Consensus) getNextLeaderKey(viewID uint64, committee *shard.Com
 					Msg("[getNextLeaderKey] Unable to get leaderPubKey from coinbase. Set it to consensus.LeaderPubKey")
 				lastLeaderPubKey = consensus.LeaderPubKey
 			}
+			utils.Logger().Info().Msgf("get leader key from coinbase: %s: %s", curHeader.Coinbase().Hex(), lastLeaderPubKey.Bytes.Hex())
 			epoch = curHeader.Epoch()
 			// viewchange happened at the first block of new epoch
 			// use the LeaderPubKey as the base of the next leader

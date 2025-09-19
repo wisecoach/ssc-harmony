@@ -8,12 +8,12 @@ import (
 	"github.com/harmony-one/harmony/hmy"
 	"github.com/harmony-one/harmony/internal/utils"
 	"github.com/harmony-one/harmony/ssc/api"
+	"github.com/harmony-one/harmony/ssc/lm"
 	"math/big"
-	"sync"
 )
 
 type txSubmitter struct {
-	lock      sync.Mutex
+	lock      lm.Mutex
 	selfShard uint32
 	txSigner  api.TxSigner
 	// TODO it need to be synchronized with all SSC members, for example, get the nonce from chain state when changed, or complete it when leader build
@@ -34,7 +34,7 @@ func (t *txSubmitter) SubmitSimulationTx(simulation *api.CXTSimulation) error {
 		return err
 	}
 	utils.SSCLogger().Info().Str("txHash", signedTx.Hash().Hex()).
-		Uint64("nonce", t.nonce).
+		Uint64("Nonce", t.nonce).
 		Str("originTxHash", common.Bytes2Hex(simulation.TxHash)).Msgf("submit simulation tx")
 	err = t.nodeAPI.AddPendingTransaction(signedTx)
 	if err != nil {

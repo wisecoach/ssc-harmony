@@ -37,6 +37,7 @@ type CXTCommitReason int
 const (
 	OK SimulationCommitStatus = iota
 	ExecutionFailed
+	LockConflict
 )
 
 func (s SimulationCommitStatus) String() string {
@@ -45,6 +46,8 @@ func (s SimulationCommitStatus) String() string {
 		return "OK"
 	case ExecutionFailed:
 		return "ExecutionFailed"
+	case LockConflict:
+		return "LockConflict"
 	default:
 		return "Unknown"
 	}
@@ -96,8 +99,38 @@ func (c CXTCommitReason) String() string {
 
 type Epoch uint64
 
+type RelatedShards []uint32
+
+func (r RelatedShards) Contains(shard uint32) bool {
+	for _, s := range r {
+		if s == shard {
+			return true
+		}
+	}
+	return false
+}
+
+func (r RelatedShards) ToMap() map[uint32]struct{} {
+	m := make(map[uint32]struct{})
+	for _, s := range r {
+		m[s] = struct{}{}
+	}
+	return m
+}
+
+func (r RelatedShards) Add(shard uint32) RelatedShards {
+	for _, s := range r {
+		if s == shard {
+			return r
+		}
+	}
+	return append(r, shard)
+}
+
 // CallIndex is the index of the cross-shard call
 type CallIndex []int
+
+var MINCallIndex = CallIndex{-1}
 
 // Top is the call is the top call
 func (c CallIndex) Top() bool {
@@ -320,6 +353,8 @@ func (m *CXTReSimulationSSCResult) Bytes() []byte {
 type CXTSimulation struct {
 	SimulationNum int
 	TxHash        []byte
+	Nonce         uint64
+	Sender        []byte
 	ShardId       uint32
 	OriginShardId uint32
 	RelatedShards []uint32
@@ -403,6 +438,8 @@ type CXTCallRequest struct {
 	SimulationNum int
 	RelatedShards []uint32
 	TxHash        []byte
+	Nonce         uint64
+	TxSender      []byte
 	CallIndex     CallIndex
 	Caller        common.Address
 	Addr          common.Address
@@ -431,6 +468,8 @@ type CXTCallSSCRequest struct {
 	SimulationNum int
 	RelatedShards []uint32
 	TxHash        []byte
+	Nonce         uint64
+	TxSender      []byte
 	CallIndex     CallIndex
 	Caller        common.Address
 	Addr          common.Address
@@ -623,6 +662,8 @@ func (m *SimulationResultRequest) Bytes() []byte {
 type SimulationCommit struct {
 	SimulationNum int // the number of the simulation
 	TxHash        []byte
+	Nonce         uint64
+	Sender        []byte
 	RelatedShards []uint32
 	Commit        bool
 	Status        SimulationCommitStatus
@@ -748,6 +789,16 @@ func (m *CXTRecallProof) Bytes() []byte {
 	return bytes
 }
 
+type ReSimulationSignal struct {
+	TxHash           []byte
+	ShardId          uint32
+	OriginShardId    uint32
+	SimulationNum    int
+	Ready            bool
+	NeedResimulate   bool
+	SimulateOrVerify bool
+}
+
 func NewCallStack() *CallStack {
 	return &CallStack{
 		CallFrames: make([]*CallFrame, 0),
@@ -789,6 +840,8 @@ func (c *CallStack) Pop() *CallFrame {
 }
 
 type CXTSimulationState struct {
+	Nonce                uint64
+	TxSender             common.Address
 	CurrentCallFrame     *CallFrame
 	CallStack            *CallStack
 	SimulationRequest    *CXTSimulationRequest // the simulation request, only origin member has this
@@ -797,10 +850,10 @@ type CXTSimulationState struct {
 	SimulationNum        int       // the number of the simulation used to identify the recall
 	LockedCallIndex      CallIndex // the locked call index, only the recall after this call index need to be executed
 	OriginShardId        uint32
-	RelatedShards        []uint32
-	RelatedShardMap      map[uint32]struct{}
-	TimeoutCtx           context.Context
-	TimeoutCancel        context.CancelFunc
+	RelatedShards        RelatedShards
+	ReSimulationSignals  map[int]map[uint32]*ReSimulationSignal
+	TimeoutCtx           context.Context    `json:"-"`
+	TimeoutCancel        context.CancelFunc `json:"-"`
 }
 
 type SimulationCallStates []*SimulationCallState
@@ -845,10 +898,11 @@ type SimulationCallState struct {
 	Result            *CXTCallResult
 	CallSSCResult     *CXTCallSSCResult
 	TopSSCResult      *CXTSimulationSSCResult
+	LockedByOtherTx   error
 
-	DB       StateDB       // the state db of the simulation
-	SyncedCh chan struct{} // used to notify the state is synced
-	Lock     sync.Mutex
+	DB       StateDB       `json:"-"` // the state db of the simulation
+	SyncedCh chan struct{} `json:"-"` // used to notify the state is synced
+	Lock     sync.Mutex    `json:"-"`
 	Executed bool
 }
 
@@ -862,7 +916,7 @@ type DependentCXTCall struct {
 	SignedRequest *CXTCallSSCRequest
 	Executed      bool
 	SSCResult     *CXTCallSSCResult
-	WaitingChs    []chan *CXTCallSSCResult
+	WaitingChs    []chan *CXTCallSSCResult `json:"-"`
 }
 
 type ExecutionVerifyState struct {

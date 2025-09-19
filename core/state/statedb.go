@@ -144,10 +144,12 @@ type DB struct {
 	StorageUpdated int
 	AccountDeleted int
 	StorageDeleted int
+
+	locker api.StateLocker
 }
 
 // New creates a new state from a given trie.
-func New(root common.Hash, db Database, snaps *snapshot.Tree) (*DB, error) {
+func New(root common.Hash, db Database, snaps *snapshot.Tree, locker api.StateLocker) (*DB, error) {
 	tr, err := db.OpenTrie(root)
 	if err != nil {
 		return nil, err
@@ -168,12 +170,16 @@ func New(root common.Hash, db Database, snaps *snapshot.Tree) (*DB, error) {
 		accessList:           newAccessList(),
 		transientStorage:     newTransientStorage(),
 		hasher:               crypto.NewKeccakState(),
+		locker:               locker,
 	}
 	if sdb.snaps != nil {
 		if sdb.snap = sdb.snaps.Snapshot(root); sdb.snap != nil {
 			sdb.snapAccounts = make(map[common.Hash][]byte)
 			sdb.snapStorage = make(map[common.Hash]map[common.Hash][]byte)
 		}
+	}
+	if locker != nil {
+		locker.BindStateDB(sdb)
 	}
 	return sdb, nil
 }
@@ -370,6 +376,17 @@ func (db *DB) GetCodeHash(addr common.Address) common.Hash {
 
 // GetState retrieves a value from the given account's storage trie.
 func (db *DB) GetState(addr common.Address, hash common.Hash) (common.Hash, error) {
+	if db.locker != nil {
+		err := db.locker.CheckLock(api.FormKey(addr, hash))
+		if err != nil {
+			state, _ := db.getState(addr, hash)
+			return state, err
+		}
+	}
+	return db.getState(addr, hash)
+}
+
+func (db *DB) getState(addr common.Address, hash common.Hash) (common.Hash, error) {
 	Object := db.getStateObject(addr)
 	if Object != nil {
 		return Object.GetState(db.db, hash), nil
@@ -485,6 +502,16 @@ func (db *DB) SetCode(addr common.Address, code []byte, isValidatorCode bool) {
 }
 
 func (db *DB) SetState(addr common.Address, key, value common.Hash) error {
+	if db.locker != nil {
+		err := db.locker.CheckLock(api.FormKey(addr, key))
+		if err != nil {
+			return err
+		}
+	}
+	return db.setState(addr, key, value)
+}
+
+func (db *DB) setState(addr common.Address, key, value common.Hash) error {
 	Object := db.GetOrNewStateObject(addr)
 	if Object != nil {
 		Object.SetState(db.db, key, value)
@@ -492,8 +519,42 @@ func (db *DB) SetState(addr common.Address, key, value common.Hash) error {
 	return nil
 }
 
+func (db *DB) GetStateWithLock(txHash common.Hash, callIndex api.CallIndex, address common.Address, key common.Hash) (common.Hash, error) {
+	stateKey := api.FormKey(address, key)
+	err := db.locker.CheckReentrantLock(stateKey, txHash)
+	if err != nil {
+		return common.Hash{}, err
+	}
+	value, err := db.getState(address, key)
+	if err != nil {
+		return common.Hash{}, err
+	}
+	err = db.locker.Lock(txHash, callIndex, stateKey, value)
+	if err != nil {
+		return common.Hash{}, err
+	}
+	return value, nil
+}
+
+func (db *DB) SetStateWithLock(txHash common.Hash, callIndex api.CallIndex, address common.Address, key common.Hash, value common.Hash) error {
+	stateKey := api.FormKey(address, key)
+	err := db.locker.CheckReentrantLock(stateKey, txHash)
+	if err != nil {
+		return err
+	}
+	oldValue, err := db.getState(address, key)
+	if err != nil {
+		return err
+	}
+	err = db.locker.Lock(txHash, callIndex, stateKey, oldValue)
+	if err != nil {
+		return err
+	}
+	return db.setState(address, key, value)
+}
+
 func (db *DB) GetSSCConfig() *api.ShardSimulateCommitteeConfig {
-	byteSize, err := db.GetState(api.SSCPrecompileContractAddr, api.CommitteesByteSize)
+	byteSize, err := db.getState(api.SSCPrecompileContractAddr, api.CommitteesByteSize)
 	if err != nil {
 		return nil
 	}
@@ -508,7 +569,7 @@ func (db *DB) GetSSCConfig() *api.ShardSimulateCommitteeConfig {
 	}
 	for i := 0; i < batchNum; i++ {
 		key := common.BigToHash(api.CommitteeOffset.Big().Add(api.CommitteeOffset.Big(), big.NewInt(int64(i))))
-		value, _ := db.GetState(api.SSCPrecompileContractAddr, key)
+		value, _ := db.getState(api.SSCPrecompileContractAddr, key)
 		committeesBytes = append(committeesBytes, value.Bytes()...)
 	}
 	committeesBytes = committeesBytes[:size]
@@ -528,11 +589,11 @@ func (db *DB) SetSSCConfig(config *api.ShardSimulateCommitteeConfig) {
 	size := len(committeesBytes)
 	byteSize := big.NewInt(int64(size))
 	committeesBytes = append(committeesBytes, make([]byte, common.HashLength-size%common.HashLength)...)
-	db.SetState(api.SSCPrecompileContractAddr, api.CommitteesByteSize, common.BigToHash(byteSize))
+	db.setState(api.SSCPrecompileContractAddr, api.CommitteesByteSize, common.BigToHash(byteSize))
 	for i := 0; i < len(committeesBytes)/common.HashLength; i++ {
 		key := common.BigToHash(api.CommitteeOffset.Big().Add(api.CommitteeOffset.Big(), big.NewInt(int64(i))))
 		value := common.BytesToHash(committeesBytes[i*common.HashLength : (i+1)*common.HashLength])
-		db.SetState(api.SSCPrecompileContractAddr, key, value)
+		db.setState(api.SSCPrecompileContractAddr, key, value)
 	}
 }
 
@@ -910,6 +971,9 @@ func (db *DB) Snapshot() int {
 	id := db.nextRevisionId
 	db.nextRevisionId++
 	db.validRevisions = append(db.validRevisions, revision{id, db.journal.length()})
+	if db.locker != nil {
+		db.locker.Snapshot()
+	}
 	return id
 }
 
@@ -927,6 +991,9 @@ func (db *DB) RevertToSnapshot(revid int) {
 	// Replay the journal to undo changes and remove invalidated snapshots
 	db.journal.revert(db, snapshot)
 	db.validRevisions = db.validRevisions[:idx]
+	if db.locker != nil {
+		db.locker.RevertToSnapshot(revid)
+	}
 }
 
 // GetRefund returns the current value of the refund counter.
@@ -1084,6 +1151,14 @@ func (db *DB) SetTxHashETH(ethTxHash common.Hash) {
 	db.ethTxHash = ethTxHash
 }
 
+func (db *DB) CommitTx(txHash common.Hash) error {
+	return db.locker.CommitTx(txHash)
+}
+
+func (db *DB) RollbackTx(txHash common.Hash) error {
+	return db.locker.RollbackTx(txHash)
+}
+
 // Commit writes the state to the underlying in-memory trie database.
 func (db *DB) Commit(deleteEmptyObjects bool) (common.Hash, error) {
 	if db.dbErr != nil {
@@ -1091,6 +1166,13 @@ func (db *DB) Commit(deleteEmptyObjects bool) (common.Hash, error) {
 	}
 	// Finalize any pending changes and merge everything into the tries
 	db.IntermediateRoot(deleteEmptyObjects)
+
+	if db.locker != nil {
+		err := db.locker.Commit()
+		if err != nil {
+			return common.Hash{}, err
+		}
+	}
 
 	// Commit objects to the trie, measuring the elapsed time
 	var (
@@ -1379,7 +1461,7 @@ func (db *DB) SetValidatorFirstElectionEpoch(addr common.Address, epoch *big.Int
 	if firstEpoch.Uint64() == 0 {
 		// Set only when it's not set (or it's 0)
 		bytes := common.BigToHash(epoch)
-		db.SetState(addr, staking.FirstElectionEpochKey, bytes)
+		db.setState(addr, staking.FirstElectionEpochKey, bytes)
 	}
 }
 
@@ -1392,12 +1474,12 @@ func (db *DB) GetValidatorFirstElectionEpoch(addr common.Address) *big.Int {
 
 // SetValidatorFlag checks whether it is a validator object
 func (db *DB) SetValidatorFlag(addr common.Address) {
-	db.SetState(addr, staking.IsValidatorKey, staking.IsValidator)
+	db.setState(addr, staking.IsValidatorKey, staking.IsValidator)
 }
 
 // UnsetValidatorFlag checks whether it is a validator object
 func (db *DB) UnsetValidatorFlag(addr common.Address) {
-	db.SetState(addr, staking.IsValidatorKey, common.Hash{})
+	db.setState(addr, staking.IsValidatorKey, common.Hash{})
 }
 
 // IsValidator checks whether it is a validator object

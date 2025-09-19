@@ -93,8 +93,10 @@ func (consensus *Consensus) ProposeNewBlock(commitSigs chan []byte) (*types.Bloc
 			return nil, err
 		}
 		pendingSSCTxs := make(types.Transactions, 0)
+		utils.Logger().Info().Msgf("[ProposeNewBlock] Found %d pending ssc transactions in pool", len(pendingPoolTxs[genesis.SSCSubmitterAddr]))
 		if len(pendingPoolTxs[genesis.SSCSubmitterAddr]) > 0 {
 			for _, tx := range pendingPoolTxs[genesis.SSCSubmitterAddr] {
+				utils.SSCLogger().Info().Str("txHash", tx.Hash().Hex()).Msgf("Found pending SSC tx %s to propose, nonce=%d", tx.Hash().Hex(), tx.Nonce())
 				if sscTx, ok := tx.(*types.Transaction); ok {
 					pendingSSCTxs = append(pendingSSCTxs, sscTx)
 				}

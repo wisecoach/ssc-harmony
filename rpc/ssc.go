@@ -2,6 +2,7 @@ package rpc
 
 import (
 	"context"
+	"github.com/ethereum/go-ethereum/common"
 	rpc2 "github.com/harmony-one/harmony/eth/rpc"
 	"github.com/harmony-one/harmony/ssc/api"
 	"golang.org/x/time/rate"
@@ -95,6 +96,19 @@ func (s *PublicSSCCrossService) HandleCXTCommitProof(
 ) error {
 	s.internalService.HandleCXTCommitProof(proof)
 	return nil
+}
+
+func (s *PublicSSCCrossService) SignalReSimulation(
+	ctx context.Context,
+	signal *api.ReSimulationSignal) error {
+	s.internalService.SignalReSimulation(signal)
+	return nil
+}
+
+func (s *PublicSSCCrossService) NotifyReSimulationStart(
+	ctx context.Context,
+	txHash common.Hash) {
+	s.internalService.NotifyReSimulationStart(txHash)
 }
 
 type PublicSSCShardService struct {

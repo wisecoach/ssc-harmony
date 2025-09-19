@@ -35,7 +35,7 @@ func (s *simulationCommit) RequiredGas(vm *SSCVM, contract *Contract, input []by
 }
 
 func (s *simulationCommit) RunWriteCapable(vm *SSCVM, contract *Contract, input []byte) ([]byte, error) {
-	vm.SSCService.VerifySimulation(input, vm.PreExec)
+	vm.SSCService.VerifySimulation(input, vm.StateDB)
 	return nil, nil
 }
 
@@ -48,7 +48,7 @@ func (c *cxtCommitOrRollback) RequiredGas(vm *SSCVM, contract *Contract, input [
 
 func (c *cxtCommitOrRollback) RunWriteCapable(vm *SSCVM, contract *Contract, input []byte) ([]byte, error) {
 	// unlock when it's executed on chain
-	err := vm.SSCService.CommitOrRollbackWithProof(input, vm.PreExec)
+	err := vm.SSCService.CommitOrRollbackWithProof(input, vm.StateDB)
 	if err != nil {
 		return nil, err
 	}

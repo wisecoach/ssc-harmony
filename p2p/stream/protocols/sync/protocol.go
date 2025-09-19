@@ -181,7 +181,7 @@ func (p *Protocol) HandleStream(raw libp2p_network.Stream) {
 		return
 	}
 	// to get my ID use raw.Conn().LocalPeer().ToString()
-	// tempDelete p.logger.Info().Msgf("Connected to %s (%s)", raw.Conn().RemotePeer().ToString(), st.ProtoID())
+	p.logger.Info().Msgf("Connected to %s (%s)", raw.Conn().RemotePeer().String(), st.ProtoID())
 	st.run()
 }
 

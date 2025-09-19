@@ -43,7 +43,7 @@ Transactions = 3
 
 [General]
 EnablePruneBeaconChain = false
-GenesisConfigFile = "./test/genesis_config.yaml"
+GenesisConfigFile = "./test/configs/local/genesis_config_local.yaml"
 IsArchival = false
 IsBackup = false
 IsBeaconArchival = false

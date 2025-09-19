@@ -1,14 +1,15 @@
 package ssc
 
 import (
+	"bytes"
 	"encoding/binary"
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/harmony-one/harmony/core"
 	"github.com/harmony-one/harmony/internal/utils"
 	"github.com/harmony-one/harmony/ssc/api"
+	"github.com/harmony-one/harmony/ssc/lm"
 	"math"
 	"math/big"
-	"sync"
 )
 
 type CommitteeMechanism struct {
@@ -16,14 +17,12 @@ type CommitteeMechanism struct {
 	SelfShard    uint32
 	shardNum     uint32
 	CurrentEpoch api.Epoch
+	lock         lm.RWMutex
 	Committees   map[uint32]*api.ShardSimulateCommittee
 	Candidates   map[common.Address]*api.Candidate
 	Validators   map[uint32]map[common.Address]*api.Validator
-
-	isMember bool
-	bc       core.BlockChain
-
-	lock sync.RWMutex
+	isMember     bool
+	bc           core.BlockChain
 }
 
 func NewCommitteeMechanism(selfAddr common.Address, selfShard uint32, bc core.BlockChain) *CommitteeMechanism {
@@ -35,7 +34,7 @@ func NewCommitteeMechanism(selfAddr common.Address, selfShard uint32, bc core.Bl
 		Candidates:   make(map[common.Address]*api.Candidate),
 		Validators:   make(map[uint32]map[common.Address]*api.Validator),
 		bc:           bc,
-		lock:         sync.RWMutex{},
+		lock:         lm.NewRWMutex(),
 	}
 	cm.loadFromState()
 	utils.SSCLogger().Info().Msgf("CommitteeMechanism initialized: SelfAddr: %s, SelfShard: %d, CurrentEpoch: %d, ShardNum: %d",
@@ -106,6 +105,22 @@ func (cm *CommitteeMechanism) GetLeader(shardId uint32, txhash common.Hash) *api
 	utils.SSCLogger().Error().Msgf("committee for shard %d not found", shardId)
 
 	return nil
+}
+
+func (cm *CommitteeMechanism) IsLeader(txhash common.Hash) bool {
+	cm.lock.RLock()
+	defer cm.lock.RUnlock()
+
+	if committee, ok := cm.Committees[cm.SelfShard]; ok {
+		index := int(binary.BigEndian.Uint32(txhash[:4])) % committee.Number
+		isLeader := bytes.Compare(committee.Members[index].Address.Bytes(), cm.SelfAddr.Bytes()) == 0
+		utils.SSCLogger().Info().Msgf("leader index: %d, self addr: %s, leader addr: %s, is leader: %v", index, cm.SelfAddr.Hex(), committee.Members[index].Address.Hex(), isLeader)
+		return isLeader
+	}
+
+	utils.SSCLogger().Error().Msgf("committee for shard %d not found", cm.SelfShard)
+
+	return false
 }
 
 func (cm *CommitteeMechanism) IsMember() bool {

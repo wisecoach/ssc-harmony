@@ -361,8 +361,6 @@ type BlockChain interface {
 
 	// ========== Used for SSC CXTransaction Start ==========
 
-	LockableState() (*vm.LockableState, error)
-
 	SetSSCService(sscService api.Service)
 
 	// ========== Used for SSC CXTransaction End ==========

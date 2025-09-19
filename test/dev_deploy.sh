@@ -6,7 +6,8 @@ ROOT=$WORK_DIR
 t=$(date +"%Y%m%d-%H%M%S")
 log_folder="${ROOT}/tmp_log/log-$t"
 LOG_FILE="$log_folder/r.log"
-RECOMPILE=false
+#RECOMPILE=false
+RECOMPILE=true
 MIN=3
 NETWORK=exprnet
 
@@ -92,7 +93,7 @@ function deploy() {
     sleep 2
 
     echo $PWD
-    while read -r addr bls_key shard_id ip port; do
+    while read -r addr ethAddrHex bls_key shard_id ip port; do
         if [[ "$shard_id" -ge "${shard_num}" ]]; then
           echo "shard_num ${shard_num} is full, skipping node ${i}"
           continue
@@ -108,7 +109,7 @@ function deploy() {
         echo "shard_id=$shard_id, cnt=${per_shard_cnt[$shard_id]}, num=${shard_num}"
 
         mode='validator'
-        node_config='test/configs/dev/default_config_dev.toml'
+        node_config="test/configs/${env}/default_config_${env}.toml"
 
         args=("${base_args[@]}" --ip "${ip}" --port "${port}" --key "/tmp/${ip}-${port}.key" --db_dir "${ROOT}/db/db-${ip}-${port}" "--broadcast_invalid_tx=false" --shard_num "${shard_num}" --shard_size "${shard_size}" --run.shard "${shard_id}")
         if [[ -z "$ip" || -z "$port" || "$ip" == "#" ]]; then
@@ -125,8 +126,8 @@ function deploy() {
           args=("${args[@]}" --blskey_file "BLSKEY")
         elif [[ -f "$bls_key" ]]; then
           args=("${args[@]}" --blskey_file "${ROOT}/${bls_key}")
-          # 同时设置ssc.bls-key-file
           args=("${args[@]}" --ssc.bls-key-path "${ROOT}/${bls_key}")
+          args=("${args[@]}" --ssc.self-addr-hex "${ethAddrHex}")
         elif [[ -d "$bls_key" ]]; then
           args=("${args[@]}" --blsfolder "${ROOT}/${bls_key}")
         else

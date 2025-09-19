@@ -107,8 +107,8 @@ func (p *StateProcessor) Process(
 	[]*types.Log, UsedGas, reward.Reader, *state.DB, error,
 ) {
 	cacheKey := block.Hash()
-	// if readCache {
-	if false {
+	if readCache {
+		// if false {
 		if cached, ok := p.resultCache.Get(cacheKey); ok {
 			// Return the cached result to avoid process the same block again.
 			// Only the successful results are cached in case for retry.
@@ -413,9 +413,8 @@ func ApplyCXTTransaction(service api.Service, bc ChainContext, author *common.Ad
 	}
 	// if the transaction is a transaction need to be executed on chain
 	if vm.SSCAddrsApplyOnChain[*tx.To()] != nil {
-
 		vmCtx := NewSSCVMContext(msg.From(), tx.Hash(), api.CallIndex{}, tx.GasPrice(), header, bc, author)
-		sscvm := vm.NewSSCVM(vmCtx, statedb, config, cfg, service, vm.ExecutionVerify, false)
+		sscvm := vm.NewSSCVM(vmCtx, statedb, config, cfg, service, vm.ExecutionVerify)
 		result, err := NewSSCStateTransition(sscvm, msg, gp).TransitionDb()
 		if err != nil {
 			return nil, nil, nil, 0, err
@@ -466,7 +465,7 @@ func SimulateCXTransaction(service api.Service, bc ChainContext, author *common.
 	// SimulationCommit and CxtCommitOrRollback needs to be executed for every validator
 	if vm.SSCAddrsApplyOnChain[*tx.To()] != nil {
 		vmCtx := NewSSCVMContext(msg.From(), tx.Hash(), api.CallIndex{}, tx.GasPrice(), header, bc, author)
-		sscvm := vm.NewSSCVM(vmCtx, statedb, config, cfg, service, vm.Precompiled, true)
+		sscvm := vm.NewSSCVM(vmCtx, statedb, config, cfg, service, vm.Precompiled)
 		result, err := NewSSCStateTransition(sscvm, msg, gp).TransitionDb()
 		if err != nil {
 			return nil, nil, nil, 0, err
@@ -482,9 +481,11 @@ func SimulateCXTransaction(service api.Service, bc ChainContext, author *common.
 	} else {
 		result, err := service.SimulationResult(tx.Hash())
 		if err != nil {
+			utils.SSCLogger().Error().Err(err).Msg("SimulateCXTransaction: cannot get simulation result")
 			return nil, nil, nil, 0, err
 		}
 		if len(result.Err) > 0 {
+			utils.Logger().Error().Str("err", result.Err).Msg("SimulateCXTransaction: simulation failed")
 			return nil, nil, nil, 0, errors.New(result.Err)
 		}
 		// return the empty receipt, since the cx transaction is not executed on chain, shouldn't update the state

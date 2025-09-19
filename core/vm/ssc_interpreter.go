@@ -159,6 +159,10 @@ func (in *SSCVMInterpreter) Run(contract *Contract, input []byte, readOnly bool)
 			mem.Resize(memorySize)
 		}
 
+		if op.String() == "SSTORE" {
+			utils.SSCLogger().Info().Str("txHash", in.vm.Context.TxHash.Hex()).
+				Msgf("executing opcode, pc=%d, op=%s, executionType=%s", pc, op.String(), in.vm.ExecutionType)
+		}
 		// execute the operation
 		res, err = operation.execute(&pc, in, contract, mem, stack)
 

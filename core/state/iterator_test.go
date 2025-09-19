@@ -39,7 +39,7 @@ func makeTestState() (ethdb.Database, Database, common.Hash, []*testAccount) {
 	// Create an empty state
 	db := rawdb.NewMemoryDatabase()
 	sdb := NewDatabase(db)
-	state, _ := New(common.Hash{}, sdb, nil)
+	state, _ := New(common.Hash{}, sdb, nil, nil)
 
 	// Fill it with some arbitrary data
 	var accounts []*testAccount
@@ -78,7 +78,7 @@ func TestNodeIteratorCoverage(t *testing.T) {
 	db, sdb, root, _ := makeTestState()
 	sdb.TrieDB().Commit(root, false)
 
-	state, err := New(root, sdb, nil)
+	state, err := New(root, sdb, nil, nil)
 	if err != nil {
 		t.Fatalf("failed to create state trie at %x: %v", root, err)
 	}

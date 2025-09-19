@@ -346,7 +346,7 @@ func (db *KakashiDB) stateDataDump(block *types.Block) {
 	fmt.Println("stateDataDump:", snapdbInfo.LastAccountKey.String(), snapdbInfo.LastAccountStateKey.String())
 	stateDB0 := state.NewDatabaseWithCache(db, STATEDB_CACHE_SIZE)
 	rootHash := block.Root()
-	stateDB, err := state.New(rootHash, stateDB0, nil)
+	stateDB, err := state.New(rootHash, stateDB0, nil, nil)
 	if err != nil {
 		panic(err)
 	}

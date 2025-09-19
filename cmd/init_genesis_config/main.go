@@ -132,7 +132,14 @@ func selectShard() {
 	}
 }
 
+func convertBeth2Eth() {
+	for _, account := range genesis.ExprHarmonyAccounts {
+		fmt.Println(common.MustBech32ToAddress(account.Address))
+	}
+}
+
 func main() {
-	buildGenesisConfig()
+	convertBeth2Eth()
+	// buildGenesisConfig()
 	// selectShard()
 }

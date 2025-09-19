@@ -313,12 +313,14 @@ func (w *Worker) CommitTransactions(
 		}
 	}
 
-	// tempDelete utils.Logger().Info().
-	// tempDelete 	Int("newTxns", len(w.current.txs)).
-	// tempDelete 	Int("newStakingTxns", len(w.current.stakingTxs)).
-	// tempDelete 	Uint64("blockGasLimit", w.current.header.GasLimit()).
-	// tempDelete 	Uint64("blockGasUsed", w.current.header.GasUsed()).
-	// tempDelete 	Msg("Block gas limit and usage info")
+	utils.SSCLogger().Info().
+		Int("newSSCTxns", len(pendingSSCTxs)).
+		Int("newTxns", len(w.current.txs)).
+		Int("newStakingTxns", len(w.current.stakingTxs)).
+		Uint64("blockGasLimit", w.current.header.GasLimit()).
+		Uint64("blockGasUsed", w.current.header.GasUsed()).
+		Uint64("blockNum", w.current.header.NumberU64()).
+		Msg("Block gas limit and usage info")
 	return nil
 }
 

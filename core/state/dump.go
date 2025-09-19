@@ -126,7 +126,7 @@ func (d iterativeDump) OnRoot(root common.Hash) {
 
 // DumpToCollector iterates the state according to the given options and inserts
 // the items into a collector for aggregation or serialization.
-func (s *DB) DumpToCollector(c DumpCollector, conf *DumpConfig) (nextKey []byte) {
+func (db *DB) DumpToCollector(c DumpCollector, conf *DumpConfig) (nextKey []byte) {
 	// Sanitize the input to allow nil configs
 	if conf == nil {
 		conf = new(DumpConfig)
@@ -137,10 +137,10 @@ func (s *DB) DumpToCollector(c DumpCollector, conf *DumpConfig) (nextKey []byte)
 		start            = time.Now()
 		logged           = time.Now()
 	)
-	log.Info("Trie dumping started", "root", s.trie.Hash())
-	c.OnRoot(s.trie.Hash())
+	log.Info("Trie dumping started", "root", db.trie.Hash())
+	c.OnRoot(db.trie.Hash())
 
-	it := trie.NewIterator(s.trie.NodeIterator(conf.Start))
+	it := trie.NewIterator(db.trie.NodeIterator(conf.Start))
 	for it.Next() {
 		var data types.StateAccount
 		if err := rlp.DecodeBytes(it.Value, &data); err != nil {
@@ -153,7 +153,7 @@ func (s *DB) DumpToCollector(c DumpCollector, conf *DumpConfig) (nextKey []byte)
 			CodeHash:  data.CodeHash,
 			SecureKey: it.Key,
 		}
-		addrBytes := s.trie.GetKey(it.Key)
+		addrBytes := db.trie.GetKey(it.Key)
 		if addrBytes == nil {
 			// Preimage missing
 			missingPreimages++
@@ -163,13 +163,13 @@ func (s *DB) DumpToCollector(c DumpCollector, conf *DumpConfig) (nextKey []byte)
 			account.SecureKey = it.Key
 		}
 		addr := common.BytesToAddress(addrBytes)
-		obj := newObject(s, addr, data)
+		obj := newObject(db, addr, data)
 		if !conf.SkipCode {
-			account.Code = obj.Code(s.db)
+			account.Code = obj.Code(db.db)
 		}
 		if !conf.SkipStorage {
 			account.Storage = make(map[common.Hash]string)
-			tr, err := obj.getTrie(s.db)
+			tr, err := obj.getTrie(db.db)
 			if err != nil {
 				utils.Logger().Error().Err(err).Msg("Failed to load storage trie")
 				continue
@@ -181,7 +181,7 @@ func (s *DB) DumpToCollector(c DumpCollector, conf *DumpConfig) (nextKey []byte)
 					utils.Logger().Error().Err(err).Msg("Failed to decode the value returned by iterator")
 					continue
 				}
-				account.Storage[common.BytesToHash(s.trie.GetKey(storageIt.Key))] = common.Bytes2Hex(content)
+				account.Storage[common.BytesToHash(db.trie.GetKey(storageIt.Key))] = common.Bytes2Hex(content)
 			}
 		}
 		c.OnAccount(addr, account)
@@ -208,17 +208,17 @@ func (s *DB) DumpToCollector(c DumpCollector, conf *DumpConfig) (nextKey []byte)
 }
 
 // RawDump returns the entire state an a single large object
-func (s *DB) RawDump(opts *DumpConfig) Dump {
+func (db *DB) RawDump(opts *DumpConfig) Dump {
 	dump := &Dump{
 		Accounts: make(map[common.Address]DumpAccount),
 	}
-	s.DumpToCollector(dump, opts)
+	db.DumpToCollector(dump, opts)
 	return *dump
 }
 
 // Dump returns a JSON string representing the entire state as a single json-object
-func (s *DB) Dump(opts *DumpConfig) []byte {
-	dump := s.RawDump(opts)
+func (db *DB) Dump(opts *DumpConfig) []byte {
+	dump := db.RawDump(opts)
 	json, err := json.MarshalIndent(dump, "", "    ")
 	if err != nil {
 		fmt.Println("Dump err", err)
@@ -227,15 +227,15 @@ func (s *DB) Dump(opts *DumpConfig) []byte {
 }
 
 // IterativeDump dumps out accounts as json-objects, delimited by linebreaks on stdout
-func (s *DB) IterativeDump(opts *DumpConfig, output *json.Encoder) {
-	s.DumpToCollector(iterativeDump{output}, opts)
+func (db *DB) IterativeDump(opts *DumpConfig, output *json.Encoder) {
+	db.DumpToCollector(iterativeDump{output}, opts)
 }
 
 // IteratorDump dumps out a batch of accounts starts with the given start key
-func (s *DB) IteratorDump(opts *DumpConfig) IteratorDump {
+func (db *DB) IteratorDump(opts *DumpConfig) IteratorDump {
 	iterator := &IteratorDump{
 		Accounts: make(map[common.Address]DumpAccount),
 	}
-	iterator.Next = s.DumpToCollector(iterator, opts)
+	iterator.Next = db.DumpToCollector(iterator, opts)
 	return *iterator
 }

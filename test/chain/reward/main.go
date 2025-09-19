@@ -106,7 +106,7 @@ func main() {
 	_ = genesis
 	engine := chain.NewEngine()
 	bc, _ := core.NewBlockChain(database, nil, nil, nil, gspec.Config, engine, vm.Config{})
-	statedb, _ := state.New(common2.Hash{}, state.NewDatabase(rawdb.NewMemoryDatabase()), nil)
+	statedb, _ := state.New(common2.Hash{}, state.NewDatabase(rawdb.NewMemoryDatabase()), nil, nil)
 	msg := createValidator()
 	statedb.AddBalance(msg.ValidatorAddress, new(big.Int).Mul(big.NewInt(5e18), big.NewInt(2000)))
 	validator, err := core.VerifyAndCreateValidatorFromMsg(
@@ -234,14 +234,14 @@ func main() {
 
 	// A example result of a single run:
 	//
-	//Time required to calc percentage 100001 delegations: 0.058205 seconds
-	//Time required to reward a validator with 100001 delegations: 0.015543 seconds
-	//Time required to sign: 0.479827 seconds
-	//Time required to unmarshall: 0.000662 seconds
-	//Time required to marshal: 0.000453 seconds
-	//Time required to deserialize sig: 0.517965 seconds
-	//Time required to hash message: 0.001191 seconds
-	//Time required to verify sig: 1.444604 seconds
+	// Time required to calc percentage 100001 delegations: 0.058205 seconds
+	// Time required to reward a validator with 100001 delegations: 0.015543 seconds
+	// Time required to sign: 0.479827 seconds
+	// Time required to unmarshall: 0.000662 seconds
+	// Time required to marshal: 0.000453 seconds
+	// Time required to deserialize sig: 0.517965 seconds
+	// Time required to hash message: 0.001191 seconds
+	// Time required to verify sig: 1.444604 seconds
 }
 
 func lookupDelegatorShares(

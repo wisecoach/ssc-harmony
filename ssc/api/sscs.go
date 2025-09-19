@@ -24,6 +24,8 @@ const (
 	Method_HandleCXTCommitProof       = "ssc_handleCXTCommitProof"
 	Method_BroadcastCXTRecallProof    = "ssc_broadcastCXTRecallProof"
 	Method_RequestSimulationResult    = "ssc_requestSimulationResult"
+	Method_SignalReSimulation         = "ssc_signalReSimulation"
+	Method_NotifyReSimulationStart    = "ssc_notifyReSimulationStart"
 )
 
 type ShardLocator interface {
@@ -61,17 +63,6 @@ type StateDB interface {
 	GetNonce(common.Address) uint64
 	SetNonce(common.Address, uint64)
 
-	GetCodeHash(common.Address) common.Hash
-	GetCode(common.Address) []byte
-	SetCode(common.Address, []byte, bool)
-	GetCodeSize(common.Address) int
-
-	ValidatorWrapper(common.Address, bool, bool) (*staking.ValidatorWrapper, error)
-	UpdateValidatorWrapper(common.Address, *staking.ValidatorWrapper) error
-	UpdateValidatorWrapperWithRevert(common.Address, *staking.ValidatorWrapper) error
-	SetValidatorFlag(common.Address)
-	UnsetValidatorFlag(common.Address)
-	IsValidator(common.Address) bool
 	GetValidatorFirstElectionEpoch(addr common.Address) *big.Int
 	AddReward(*staking.ValidatorWrapper, *big.Int, map[common.Address]numeric.Dec) error
 
@@ -85,29 +76,18 @@ type StateDB interface {
 	GetCommittedState(common.Address, common.Hash) common.Hash
 	GetState(common.Address, common.Hash) (common.Hash, error)
 	SetState(common.Address, common.Hash, common.Hash) error
+	GetStateWithLock(txHash common.Hash, callIndex CallIndex, address common.Address, key common.Hash) (common.Hash, error)
+	SetStateWithLock(txHash common.Hash, callIndex CallIndex, address common.Address, key common.Hash, value common.Hash) error
 
-	Suicide(common.Address) bool
-	HasSuicided(common.Address) bool
-
-	// Exist reports whether the given account exists in state.
-	// Notably this should also return true for suicided accounts.
 	Exist(common.Address) bool
-	// Empty returns whether the given account is empty. Empty
-	// is defined according to EIP161 (balance = nonce = code = 0).
 	Empty(common.Address) bool
 
 	RevertToSnapshot(int)
 	Snapshot() int
 
-	AddLog(*types.Log)
-	AddPreimage(common.Hash, []byte)
-
-	ForEachStorage(common.Address, func(common.Hash, common.Hash) bool) error
-
-	TxIndex() int
-	BlockHash() common.Hash
-	TxHash() common.Hash
-	TxHashETH() common.Hash // used by tracer
+	CommitTx(txHash common.Hash) error
+	RollbackTx(txHash common.Hash) error
+	Commit(deleteEmptyObjects bool) (common.Hash, error)
 }
 
 // CXTStateSimulationDB will save the state of the cross-shard transaction simulation
@@ -162,9 +142,11 @@ type InternalService interface {
 
 	// VerifySimulation
 	//	@Description: verify the simulation and vote for commit or rollback
-	VerifySimulation(simulationBytes []byte, preExec bool)
+	VerifySimulation(simulationBytes []byte, stateDB StateDB)
 
-	CommitOrRollbackWithProof(commitProofBytes []byte, preExec bool) error
+	CommitOrRollbackWithProof(commitProofBytes []byte, stateDB StateDB) error
+
+	StateLockManager() StateLockManager
 }
 
 // ShardService
@@ -243,6 +225,14 @@ type CrossService interface {
 	//					commit: 	1. all shards of cross-shard contract are successfully executed
 	//					rollback:	1. execution or simulation failed; 2. transaction timeout; 3. ssc's malicious behavior
 	HandleCXTCommitProof(proof *CXTCommitProof)
+
+	// SignalReSimulation
+	//  @Description: handle the signal to re-simulate the cross-shard transaction
+	//  @param signal
+	//
+	SignalReSimulation(signal *ReSimulationSignal)
+
+	NotifyReSimulationStart(txHash common.Hash)
 }
 
 type Service interface {

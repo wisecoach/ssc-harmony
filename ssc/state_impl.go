@@ -4,8 +4,18 @@ import (
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/harmony-one/harmony/internal/utils"
 	"github.com/harmony-one/harmony/ssc/api"
+	"github.com/pkg/errors"
 	"math/big"
 )
+
+func (s *sscService) GetCallState(txHash common.Hash) *api.SimulationCallState {
+	s.stateLock.RLock()
+	defer s.stateLock.RUnlock()
+
+	state := s.simulationState[txHash]
+	callState := state.SimulationCallStates[state.SimulationNum].Get(state.CurrentCallFrame.CallIndex)
+	return callState
+}
 
 func (s *sscService) GetRWSet(txHash common.Hash) *api.RWSet {
 	s.stateLock.RLock()
@@ -71,7 +81,13 @@ func (s *sscService) GetBalance(db api.StateDB, txHash common.Hash, address comm
 }
 
 func (s *sscService) GetState(db api.StateDB, txHash common.Hash, address common.Address, key common.Hash) (common.Hash, error) {
-	rwset := s.GetRWSet(txHash)
+	callState := s.GetCallState(txHash)
+	if callState == nil {
+		utils.SSCLogger().Error().Str("txHash", txHash.Hex()).
+			Msg("failed to set state: call state not found")
+		return common.Hash{}, api.ErrInvalidExecution
+	}
+	rwset := callState.RWSet
 	if rwset.ReadState.State[address] == nil {
 		rwset.ReadState.State[address] = make(map[common.Hash]common.Hash)
 	}
@@ -79,7 +95,14 @@ func (s *sscService) GetState(db api.StateDB, txHash common.Hash, address common
 		rwset.CurrentState.State[address] = make(map[common.Hash]common.Hash)
 	}
 	if value, exists := rwset.CurrentState.State[address][key]; !exists {
-		val, _ := db.GetState(address, key)
+		val, err := db.GetState(address, key)
+		if err != nil {
+			if errors.Is(err, api.ErrLockedByOtherTx) {
+				callState.LockedByOtherTx = err
+			} else {
+				return common.Hash{}, err
+			}
+		}
 		rwset.CurrentState.State[address][key] = val
 		rwset.ReadState.State[address][key] = val
 		return val, nil
@@ -89,12 +112,34 @@ func (s *sscService) GetState(db api.StateDB, txHash common.Hash, address common
 }
 
 func (s *sscService) SetState(db api.StateDB, txHash common.Hash, address common.Address, key common.Hash, value common.Hash) error {
-	rwset := s.GetRWSet(txHash)
+	callState := s.GetCallState(txHash)
+	if callState == nil {
+		utils.SSCLogger().Error().Str("txHash", txHash.Hex()).
+			Msg("failed to set state: call state not found")
+		return api.ErrInvalidExecution
+	}
+	rwset := callState.RWSet
 	if rwset.CurrentState.State[address] == nil {
 		rwset.CurrentState.State[address] = make(map[common.Hash]common.Hash)
 	}
 	if rwset.WriteState.State[address] == nil {
 		rwset.WriteState.State[address] = make(map[common.Hash]common.Hash)
+	}
+	if rwset.ReadState.State[address] == nil {
+		rwset.ReadState.State[address] = make(map[common.Hash]common.Hash)
+	}
+	if _, exists := rwset.ReadState.State[address][key]; !exists {
+		val, err := db.GetState(address, key)
+		if err != nil {
+			utils.SSCLogger().Error().Err(err).Str("txHash", txHash.Hex()).
+				Msgf("failed to set state: get conflict state [%s:%s]", address.Hex(), key.Hex())
+			if errors.Is(err, api.ErrLockedByOtherTx) {
+				callState.LockedByOtherTx = err
+			} else {
+				return err
+			}
+		}
+		rwset.ReadState.State[address][key] = val
 	}
 	rwset.CurrentState.State[address][key] = value
 	rwset.WriteState.State[address][key] = value

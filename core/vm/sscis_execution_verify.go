@@ -94,7 +94,7 @@ func opCall_SSC_EV(pc *uint64, inp Interpreter, contract *Contract, memory *Memo
 		Str("callIndex", interpreter.vm.Context.CrossCallIndex.ToString()).
 		Bool("isCrossCall", isCrossCall).
 		Uint64("pc", *pc).
-		Msgf("ec_call, index=%v, rfaet=%v, err=%v", args[35], ret, err)
+		Msgf("ec_call, index=%v, result=%v, err=%v", args[35], ret, err)
 
 	if err != nil {
 		stack.push(interpreter.intPool.getZero())

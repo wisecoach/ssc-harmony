@@ -23,7 +23,7 @@ type prefetchJob struct {
 // Prefetch If redis is empty, the hit rate will be too low and the synchronization block speed will be slow
 // this function will parallel load the latest block statedb to redis
 // this function used by debug or first time to init tikv cluster
-func (s *DB) Prefetch(parallel int) {
+func (db *DB) Prefetch(parallel int) {
 	wg := sync.WaitGroup{}
 
 	jobChan := make(chan *prefetchJob, 10000)
@@ -35,7 +35,7 @@ func (s *DB) Prefetch(parallel int) {
 			defer wg.Done()
 			for job := range jobChan {
 				atomic.AddInt64(&waitWorker, -1)
-				s.prefetchWorker(job, jobChan)
+				db.prefetchWorker(job, jobChan)
 				atomic.AddInt64(&waitWorker, 1)
 			}
 		}()
@@ -80,10 +80,10 @@ func (s *DB) Prefetch(parallel int) {
 }
 
 // prefetchWorker used to process one job
-func (s *DB) prefetchWorker(job *prefetchJob, jobs chan *prefetchJob) {
+func (db *DB) prefetchWorker(job *prefetchJob, jobs chan *prefetchJob) {
 	if job.account == nil {
 		// scan one account
-		nodeIterator := s.trie.NodeIterator(job.start)
+		nodeIterator := db.trie.NodeIterator(job.start)
 		it := trie.NewIterator(nodeIterator)
 
 		for it.Next() {
@@ -96,15 +96,15 @@ func (s *DB) prefetchWorker(job *prefetchJob, jobs chan *prefetchJob) {
 			if err := rlp.DecodeBytes(it.Value, &data); err != nil {
 				panic(err)
 			}
-			addrBytes := s.trie.GetKey(it.Key)
+			addrBytes := db.trie.GetKey(it.Key)
 			addr := common.BytesToAddress(addrBytes)
-			obj := newObject(s, addr, data)
+			obj := newObject(db, addr, data)
 			if data.CodeHash != nil {
-				obj.Code(s.db)
+				obj.Code(db.db)
 			}
 
 			// build account trie tree
-			tr, _ := obj.getTrie(s.db)
+			tr, _ := obj.getTrie(db.db)
 			storageIt := trie.NewIterator(tr.NodeIterator(nil))
 			storageJob := &prefetchJob{
 				accountAddr: addrBytes,
@@ -112,21 +112,21 @@ func (s *DB) prefetchWorker(job *prefetchJob, jobs chan *prefetchJob) {
 			}
 
 			// fetch data
-			s.prefetchAccountStorage(jobs, storageJob, storageIt)
+			db.prefetchAccountStorage(jobs, storageJob, storageIt)
 		}
 	} else {
 		// scan main trie tree
-		obj := newObject(s, common.BytesToAddress(job.accountAddr), *job.account)
-		tr, _ := obj.getTrie(s.db)
+		obj := newObject(db, common.BytesToAddress(job.accountAddr), *job.account)
+		tr, _ := obj.getTrie(db.db)
 		storageIt := trie.NewIterator(tr.NodeIterator(job.start))
 
 		// fetch data
-		s.prefetchAccountStorage(jobs, job, storageIt)
+		db.prefetchAccountStorage(jobs, job, storageIt)
 	}
 }
 
 // prefetchAccountStorage used for fetch account storage
-func (s *DB) prefetchAccountStorage(jobs chan *prefetchJob, job *prefetchJob, it *trie.Iterator) {
+func (db *DB) prefetchAccountStorage(jobs chan *prefetchJob, job *prefetchJob, it *trie.Iterator) {
 	start := time.Now()
 	count := 0
 

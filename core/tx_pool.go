@@ -1075,7 +1075,7 @@ func (pool *TxPool) add(tx types.PoolTransaction, local bool) (replaced bool, er
 		// Set or refresh beat for account timeout eviction
 		pool.beats[from] = time.Now()
 
-		logger.Debug().
+		logger.Info().
 			Str("hash", tx.Hash().Hex()).
 			Interface("from", from).
 			Interface("to", tx.To()).
@@ -1104,11 +1104,11 @@ func (pool *TxPool) add(tx types.PoolTransaction, local bool) (replaced bool, er
 	// Set or refresh beat for account timeout eviction
 	pool.beats[from] = time.Now()
 
-	logger.Debug().
+	utils.SSCLogger().Info().
 		Str("hash", hash.Hex()).
 		Interface("from", from).
 		Interface("to", tx.To()).
-		Msg("Pooled new future transaction")
+		Msgf("Pooled new future transaction, nonce=%d", tx.Nonce())
 	return replace, nil
 }
 
@@ -1417,7 +1417,7 @@ func (pool *TxPool) promoteExecutables(accounts []common.Address) {
 		for _, tx := range list.Ready(pool.pendingState.GetNonce(addr)) {
 			hash := tx.Hash()
 			if pool.promoteTx(addr, tx) {
-				logger.Debug().Str("hash", hash.Hex()).Msg("Promoting queued transaction")
+				logger.Info().Str("hash", hash.Hex()).Msgf("Promoting queued transaction, from=%s, nonce=%d, pendingTxs=%v", addr.Hex(), tx.Nonce(), pool.pending[addr].Len())
 				promoted = append(promoted, tx)
 			}
 		}

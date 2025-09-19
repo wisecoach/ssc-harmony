@@ -19,7 +19,7 @@ import (
 	"github.com/ethereum/go-ethereum/rlp"
 	"github.com/ethereum/go-ethereum/trie"
 
-	//"github.com/ethereum/go-ethereum/trie/trienode"
+	// "github.com/ethereum/go-ethereum/trie/trienode"
 	"github.com/harmony-one/harmony/common/math"
 	"github.com/harmony-one/harmony/core"
 	"github.com/harmony-one/harmony/core/rawdb"
@@ -106,7 +106,7 @@ var (
 
 // accountTask represents the sync task for a chunk of the account snapshot.
 type accountTask struct {
-	id uint64 //unique id for account task
+	id uint64 // unique id for account task
 
 	root   common.Hash
 	origin common.Hash
@@ -231,14 +231,14 @@ func (t *healRequestSort) Merge() []*message.TrieNodePathSet {
 }
 
 type byteCodeTasksBundle struct {
-	id     uint64 //unique id for bytecode task bundle
+	id     uint64 // unique id for bytecode task bundle
 	task   *accountTask
 	hashes []common.Hash
 	cap    int
 }
 
 type storageTaskBundle struct {
-	id       uint64 //unique id for storage task bundle
+	id       uint64 // unique id for storage task bundle
 	root     common.Hash
 	accounts []common.Hash
 	roots    []common.Hash
@@ -272,10 +272,10 @@ type tasks struct {
 
 func newTasks() *tasks {
 	return &tasks{
-		accountTasks: make(map[uint64]*accountTask, 0),
-		storageTasks: make(map[uint64]*storageTaskBundle, 0),
+		accountTasks: make(map[uint64]*accountTask),
+		storageTasks: make(map[uint64]*storageTaskBundle),
 		codeTasks:    make(map[uint64]*byteCodeTasksBundle),
-		healer:       make(map[uint64]*healTask, 0),
+		healer:       make(map[uint64]*healTask),
 	}
 }
 
@@ -801,7 +801,7 @@ func (s *FullStateDownloadManager) cleanAccountTasks() {
 		s.lock.Unlock()
 
 		// Push the final sync report
-		//s.reportSyncProgress(true)
+		// s.reportSyncProgress(true)
 	}
 }
 
@@ -1125,8 +1125,8 @@ func (s *FullStateDownloadManager) getBatchFromUnprocessed() (
 		// index 0 keeps all tasks, later we split it into multiple batch
 		if len(s.tasks.healer) == 0 {
 			s.tasks.healer[0] = &healTask{
-				trieTasks: make(map[string]common.Hash, 0),
-				codeTasks: make(map[common.Hash]struct{}, 0),
+				trieTasks: make(map[string]common.Hash),
+				codeTasks: make(map[common.Hash]struct{}),
 			}
 		}
 

@@ -696,11 +696,11 @@ func createGlobalConfig(hc harmonyconfig.HarmonyConfig) (*nodeconfig.ConfigType,
 	nodeConfig.DebugMode = hc.Sync.StagedSyncCfg.DebugMode
 	// P2P private key is used for secure message transfer between p2p nodes.
 	nodeConfig.P2PPriKey, _, err = utils.LoadKeyFromFile(hc.P2P.KeyFile)
-	nodeConfig.GenesisConfigFile = hc.General.GenesisConfigFile
 	if err != nil {
 		return nil, errors.Wrapf(err, "cannot load or create P2P key at %#v",
 			hc.P2P.KeyFile)
 	}
+	nodeConfig.GenesisConfigFile = hc.General.GenesisConfigFile
 
 	selfPeer := p2p.Peer{
 		IP:              hc.P2P.IP,

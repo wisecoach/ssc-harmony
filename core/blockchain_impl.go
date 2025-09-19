@@ -223,21 +223,22 @@ type BlockChainImpl struct {
 	maxGarbCollectedBlkNum int64
 	leaderRotationMeta     LeaderRotationMeta
 
-	lockableStateWrapper *vm.LockableState
+	stateLockManager api.StateLockManager
 
 	options Options
 }
 
 func (bc *BlockChainImpl) SetSSCService(sscService api.Service) {
 	bc.processor.sscService = sscService
+	bc.stateLockManager = sscService.StateLockManager()
 }
 
 // NewBlockChainWithOptions same as NewBlockChain but can accept additional behaviour options.
 func NewBlockChainWithOptions(
 	db ethdb.Database, stateCache state.Database, beaconChain BlockChain, cacheConfig *CacheConfig, chainConfig *params.ChainConfig,
-	engine consensus_engine.Engine, vmConfig vm.Config, options Options, lockableState *vm.LockableState,
+	engine consensus_engine.Engine, vmConfig vm.Config, options Options,
 ) (*BlockChainImpl, error) {
-	return newBlockChainWithOptions(db, stateCache, beaconChain, cacheConfig, chainConfig, engine, vmConfig, options, lockableState)
+	return newBlockChainWithOptions(db, stateCache, beaconChain, cacheConfig, chainConfig, engine, vmConfig, options)
 }
 
 // NewBlockChain returns a fully initialised block chain using information
@@ -245,15 +246,15 @@ func NewBlockChainWithOptions(
 // Processor. As of Aug-23, this is only used by tests
 func NewBlockChain(
 	db ethdb.Database, stateCache state.Database, beaconChain BlockChain, cacheConfig *CacheConfig, chainConfig *params.ChainConfig,
-	engine consensus_engine.Engine, vmConfig vm.Config, lockableState *vm.LockableState,
+	engine consensus_engine.Engine, vmConfig vm.Config,
 ) (*BlockChainImpl, error) {
-	return newBlockChainWithOptions(db, stateCache, beaconChain, cacheConfig, chainConfig, engine, vmConfig, Options{}, lockableState)
+	return newBlockChainWithOptions(db, stateCache, beaconChain, cacheConfig, chainConfig, engine, vmConfig, Options{})
 }
 
 func newBlockChainWithOptions(
 	db ethdb.Database, stateCache state.Database, beaconChain BlockChain,
 	cacheConfig *CacheConfig, chainConfig *params.ChainConfig,
-	engine consensus_engine.Engine, vmConfig vm.Config, options Options, lockableState *vm.LockableState,
+	engine consensus_engine.Engine, vmConfig vm.Config, options Options,
 ) (*BlockChainImpl, error) {
 
 	if cacheConfig == nil {
@@ -318,7 +319,6 @@ func newBlockChainWithOptions(
 		pendingSlashes:                slash.Records{},
 		maxGarbCollectedBlkNum:        -1,
 		options:                       options,
-		lockableStateWrapper:          lockableState,
 	}
 
 	var err error
@@ -547,7 +547,7 @@ func (bc *BlockChainImpl) ValidateNewBlock(block *types.Block, beaconChain Block
 }
 
 func (bc *BlockChainImpl) validateNewBlock(block *types.Block) error {
-	state, err := state.New(bc.CurrentBlock().Root(), bc.stateCache, bc.snaps)
+	state, err := state.New(bc.CurrentBlock().Root(), bc.stateCache, bc.snaps, bc.stateLockManager.GetLocker())
 	if err != nil {
 		return err
 	}
@@ -605,7 +605,7 @@ func (bc *BlockChainImpl) loadLastState() error {
 		return bc.reset()
 	}
 	// Make sure the state associated with the block is available
-	if _, err := state.New(currentBlock.Root(), bc.stateCache, bc.snaps); err != nil {
+	if _, err := state.New(currentBlock.Root(), bc.stateCache, bc.snaps, nil); err != nil {
 		// Dangling block without a state associated, init from scratch
 		utils.Logger().Warn().
 			Str("number", currentBlock.Number().String()).
@@ -698,7 +698,7 @@ func (bc *BlockChainImpl) setHead(head uint64) error {
 		headBlockGauge.Update(int64(newHeadBlock.NumberU64()))
 	}
 	if currentBlock := bc.CurrentBlock(); currentBlock != nil {
-		if _, err := state.New(currentBlock.Root(), bc.stateCache, bc.snaps); err != nil {
+		if _, err := state.New(currentBlock.Root(), bc.stateCache, bc.snaps, bc.stateLockManager.GetLocker()); err != nil {
 			// Rewound state missing, rolled back to before pivot, reset to genesis
 			bc.currentBlock.Store(bc.genesisBlock)
 			headBlockGauge.Update(int64(bc.genesisBlock.NumberU64()))
@@ -763,7 +763,11 @@ func (bc *BlockChainImpl) StateAt(root common.Hash) (*state.DB, error) {
 	if root == (common.Hash{}) {
 		return nil, errors.New("state root is empty")
 	}
-	return state.New(root, bc.stateCache, bc.snaps)
+	var locker api.StateLocker
+	if bc.stateLockManager != nil {
+		locker = bc.stateLockManager.GetLocker()
+	}
+	return state.New(root, bc.stateCache, bc.snaps, locker)
 }
 
 // Snapshots returns the blockchain snapshot tree.
@@ -835,7 +839,7 @@ func (bc *BlockChainImpl) repairValidatorsAndCommitSigs(head **types.Block) erro
 	valsToRemove := map[common.Address]struct{}{}
 	for {
 		// Abort if we've rewound to a head block that does have associated state
-		if _, err := state.New((*head).Root(), bc.stateCache, bc.snaps); err == nil {
+		if _, err := state.New((*head).Root(), bc.stateCache, bc.snaps, bc.stateLockManager.GetLocker()); err == nil {
 			// tempDelete utils.Logger().Info().
 			// tempDelete 	Str("number", (*head).Number().ToString()).
 			// tempDelete 	Str("hash", (*head).Hash().Hex()).
@@ -1845,7 +1849,7 @@ func (bc *BlockChainImpl) insertChain(chain types.Blocks, verifyHeaders bool) (i
 		} else {
 			parent = chain[i-1]
 		}
-		state, err := state.New(parent.Root(), bc.stateCache, bc.snaps)
+		state, err := state.New(parent.Root(), bc.stateCache, bc.snaps, bc.stateLockManager.GetLocker())
 		if err != nil {
 			return i, events, coalescedLogs, err
 		}
@@ -3500,14 +3504,14 @@ func (bc *BlockChainImpl) tikvCleanCache() {
 		for i := bc.latestCleanCacheNum + 1; i <= to; i++ {
 			// build previous block statedb
 			fromBlock := bc.GetBlockByNumber(i)
-			fromTrie, err := state.New(fromBlock.Root(), bc.stateCache, bc.snaps)
+			fromTrie, err := state.New(fromBlock.Root(), bc.stateCache, bc.snaps, bc.stateLockManager.GetLocker())
 			if err != nil {
 				continue
 			}
 
 			// build current block statedb
 			toBlock := bc.GetBlockByNumber(i + 1)
-			toTrie, err := state.New(toBlock.Root(), bc.stateCache, bc.snaps)
+			toTrie, err := state.New(toBlock.Root(), bc.stateCache, bc.snaps, bc.stateLockManager.GetLocker())
 			if err != nil {
 				continue
 			}
@@ -3607,7 +3611,7 @@ func (bc *BlockChainImpl) InitTiKV(conf *harmonyconfig.TiKVConfig) {
 		// If redis is empty, the hit rate will be too low and the synchronization block speed will be slow
 		// set LOAD_PRE_FETCH is yes can significantly improve this.
 		if os.Getenv("LOAD_PRE_FETCH") == "yes" {
-			if trie, err := state.New(bc.CurrentBlock().Root(), bc.stateCache, bc.snaps); err == nil {
+			if trie, err := state.New(bc.CurrentBlock().Root(), bc.stateCache, bc.snaps, bc.stateLockManager.GetLocker()); err == nil {
 				trie.Prefetch(512)
 			} else {
 				log.Println("LOAD_PRE_FETCH ERR: ", err)
@@ -3662,12 +3666,4 @@ func isUnrecoverableErr(err error) bool {
 	isLeveldbErr := strings.Contains(err.Error(), leveldbErrSpec)
 	isTooManyOpenFiles := strings.Contains(err.Error(), tooManyOpenFilesErrStr)
 	return isLeveldbErr && !isTooManyOpenFiles
-}
-
-func (bc *BlockChainImpl) LockableState() (*vm.LockableState, error) {
-	db, err := bc.State()
-	if err != nil {
-		return nil, err
-	}
-	return bc.lockableStateWrapper.WithDB(db), nil
 }

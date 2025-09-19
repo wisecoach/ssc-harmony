@@ -1,6 +1,7 @@
 package worker
 
 import (
+	"github.com/harmony-one/harmony/core/state"
 	"math/big"
 	"math/rand"
 	"testing"
@@ -45,7 +46,7 @@ func TestNewWorker(t *testing.T) {
 	genesis := gspec.MustCommit(database)
 	_ = genesis
 	cacheConfig := &core.CacheConfig{SnapshotLimit: 0}
-	chain, err := core.NewBlockChain(database, nil, &core.BlockChainImpl{}, cacheConfig, gspec.Config, engine, vm.Config{})
+	chain, err := core.NewBlockChain(database, nil, &core.BlockChainImpl{}, cacheConfig, gspec.Config, engine, vm.Config{}, state.NewLockableStateWrapper())
 
 	if err != nil {
 		t.Error(err)
@@ -73,7 +74,7 @@ func TestCommitTransactions(t *testing.T) {
 
 	gspec.MustCommit(database)
 	cacheConfig := &core.CacheConfig{SnapshotLimit: 0}
-	chain, _ := core.NewBlockChain(database, nil, nil, cacheConfig, gspec.Config, engine, vm.Config{})
+	chain, _ := core.NewBlockChain(database, nil, nil, cacheConfig, gspec.Config, engine, vm.Config{}, state.NewLockableStateWrapper())
 
 	// Create a new worker
 	worker := New(chain, nil)

@@ -52,11 +52,11 @@ func EditValidatorFn() EditValidatorFunc {
 	}
 }
 
-//func MigrateDelegationsFn() MigrateDelegationsFunc {
+// func MigrateDelegationsFn() MigrateDelegationsFunc {
 //	return func(db StateDB, migrationMsg *stakingTypes.MigrationMsg) ([]interface{}, error) {
 //		return nil, nil
 //	}
-//}
+// }
 
 func CalculateMigrationGasFn() CalculateMigrationGasFunc {
 	return func(db StateDB, migrationMsg *stakingTypes.MigrationMsg, homestead bool, istanbul bool) (uint64, error) {
@@ -98,7 +98,7 @@ func testStakingPrecompile(test writeCapablePrecompileTest, t *testing.T) {
 		CreateValidator: CreateValidatorFn(),
 		EditValidator:   EditValidatorFn(),
 		ShardID:         0,
-		//MigrateDelegations:    MigrateDelegationsFn(),
+		// MigrateDelegations:    MigrateDelegationsFn(),
 		CalculateMigrationGas: CalculateMigrationGasFn(),
 	}, nil, params.TestChainConfig, Config{})
 	p := &stakingPrecompile{}
@@ -167,36 +167,36 @@ var StakingPrecompileTests = []writeCapablePrecompileTest{
 		expectedError: errors.New("[StakingPrecompile] Address mismatch, expected 0x0000000000000000000000000000000000001337 have 0x0000000000000000000000000000000000001338"),
 		name:          "undelegateAddressMismatch",
 	},
-	//{
+	// {
 	//	input:         []byte{42, 5, 187, 113},
 	//	expectedError: errors.New("abi: attempting to unmarshall an empty string while arguments are expected"),
 	//	name:          "yesMethodNoData",
-	//},
-	//{
+	// },
+	// {
 	//	input:         []byte{0, 0},
 	//	expectedError: errors.New("data too short (2 bytes) for abi method lookup"),
 	//	name:          "malformedInput",
-	//},
-	//{
+	// },
+	// {
 	//	input:    []byte{42, 5, 187, 113, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 19, 55, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 19, 56},
 	//	expected: nil,
 	//	name:     "migrationSuccess",
-	//},
-	//{
+	// },
+	// {
 	//	input:         []byte{42, 5, 187, 113, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 19, 56, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 19, 55},
 	//	expectedError: errors.New("[StakingPrecompile] Address mismatch, expected 0x0000000000000000000000000000000000001337 have 0x0000000000000000000000000000000000001338"),
 	//	name:          "migrationAddressMismatch",
-	//},
-	//{
+	// },
+	// {
 	//	input:         []byte{42, 6, 187, 113, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 19, 56, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 19, 55},
 	//	expectedError: errors.New("no method with id: 0x2a06bb71"),
 	//	name:          "migrationNoMatchingMethod",
-	//},
-	//{
+	// },
+	// {
 	//	input:         []byte{42, 5, 187, 113, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 19, 55, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 19},
 	//	expectedError: errors.New("abi: cannot marshal in to go type: length insufficient 63 require 64"),
 	//	name:          "migrationAddressMismatch",
-	//},
+	// },
 }
 
 func TestStakingPrecompiles(t *testing.T) {
@@ -235,7 +235,7 @@ func testCrossShardXferPrecompile(test writeCapablePrecompileTest, t *testing.T)
 		t.Fatalf("Could not initialize db %s", err)
 	}
 	stateCache := state.NewDatabase(db)
-	state, err := state.New(common.Hash{}, stateCache, nil)
+	state, err := state.New(common.Hash{}, stateCache, nil, nil)
 	if err != nil {
 		t.Fatalf("Error while initializing state %s", err)
 	}

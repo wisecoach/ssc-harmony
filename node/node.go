@@ -300,14 +300,19 @@ func (node *Node) addPendingTransactions(registry *registry.Registry, newTxs typ
 				// if transaction is cross-shard tx and it is not the tx apply on chain
 				if tx.CrossShard() && vm.SSCAddrsApplyOnChain[*tx.To()] == nil {
 					utils.Logger().Info().Str("txHash", tx.Hash().Hex()).Msg("Pre-Simulating cross shard transaction")
+					senderAddress, err := tx.SenderAddress()
+					if err != nil {
+						utils.SSCLogger().Error().Err(err).Msg("Cannot get sender address from tx")
+						return nil
+					}
 					req := &api.CXTSimulationRequest{
 						SimulationNum: 0,
 						Tx:            tx.(*types.Transaction),
 						TxHash:        tx.Hash().Bytes(),
-						From:          common.Address{},
+						From:          senderAddress,
 						GasPool:       gasLimit,
 					}
-					node.SSCService.SimulateCXTransaction(req)
+					go node.SSCService.SimulateCXTransaction(req)
 				}
 			}
 		}
