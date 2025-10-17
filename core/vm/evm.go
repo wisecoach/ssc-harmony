@@ -17,7 +17,7 @@
 package vm
 
 import (
-	"github.com/harmony-one/harmony/internal/utils"
+	"github.com/harmony-one/harmony/block"
 	"github.com/harmony-one/harmony/ssc/api"
 	"math/big"
 	"sync/atomic"
@@ -185,6 +185,7 @@ type Context struct {
 
 	ShardID   uint32 // Used by staking and cross shard transfer precompile
 	NumShards uint32 // Used by cross shard transfer precompile
+	Header    *block.Header
 }
 
 // EVM is the Ethereum Virtual Machine base object and provides
@@ -545,10 +546,7 @@ func (evm *EVM) create(caller ContractRef, codeAndHash *codeAndHash, gas uint64,
 		evm.vmConfig.Tracer.CaptureStart(evm, caller.Address(), address, true, codeAndHash.code, gas, value)
 	}
 	start := time.Now()
-	hex := common.Bytes2Hex(codeAndHash.code)
 	ret, err := run(evm, contract, nil, false)
-	utils.Logger().Info().Msgf("create contract with code %s", hex)
-	utils.Logger().Info().Msgf("initialized contract with code %s", common.Bytes2Hex(ret))
 
 	// check whether the max code size has been exceeded
 	maxCodeSizeExceeded := evm.ChainConfig().IsEIP155(evm.EpochNumber) && len(ret) > params.MaxCodeSize

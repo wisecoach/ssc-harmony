@@ -186,9 +186,9 @@ func (stg *StageStates) Exec(firstCycle bool, invalidBlockRevert bool, s *StageS
 				Uint32("shard", block.ShardID()).
 				Msgf("[STAGED_SYNC] UpdateBlockAndStatus: Error adding new block to blockchain")
 			// rollback bc
-			// tempDelete utils.Logger().Info().
-			// tempDelete 	Interface("block", stg.configs.bc.CurrentBlock()).
-			// tempDelete 	Msg("[STAGED_SYNC] Rolling back last added blocks!")
+			utils.Logger().Info().
+				Interface("block", stg.configs.bc.CurrentBlock()).
+				Msg("[STAGED_SYNC] Rolling back last added blocks!")
 			if rbErr := stg.configs.bc.Rollback([]common.Hash{headHashBeforeNewBlocks}); rbErr != nil {
 				utils.Logger().Error().
 					Err(rbErr).
@@ -198,22 +198,22 @@ func (stg *StageStates) Exec(firstCycle bool, invalidBlockRevert bool, s *StageS
 			s.state.RevertTo(headBeforeNewBlocks, headHashBeforeNewBlocks)
 			return err
 		}
-		// tempDelete utils.Logger().Info().
-		// tempDelete 	Uint64("blockHeight", block.NumberU64()).
-		// tempDelete 	Uint64("blockEpoch", block.Epoch().Uint64()).
-		// tempDelete 	Str("blockHex", block.Hash().Hex()).
-		// tempDelete 	Uint32("ShardID", block.ShardID()).
-		// tempDelete 	Msg("[STAGED_SYNC] UpdateBlockAndStatus: New Block Added to Blockchain")
+		utils.Logger().Info().
+			Uint64("blockHeight", block.NumberU64()).
+			Uint64("blockEpoch", block.Epoch().Uint64()).
+			Str("blockHex", block.Hash().Hex()).
+			Uint32("ShardID", block.ShardID()).
+			Msg("[STAGED_SYNC] UpdateBlockAndStatus: New Block Added to Blockchain")
 
 		// update cur progress
 		currProgress = stg.configs.bc.CurrentBlock().NumberU64()
 
-		// tempDelete for i, tx := range block.StakingTransactions() {
-		// tempDelete 	utils.Logger().Info().
-		// tempDelete 		Msgf(
-		// tempDelete 			"StakingTxn %d: %s, %v", i, tx.StakingType().ToString(), tx.StakingMessage(),
-		// tempDelete 		)
-		// tempDelete }
+		for i, tx := range block.StakingTransactions() {
+			utils.Logger().Info().
+				Msgf(
+					"StakingTxn %d: %s, %v", i, tx.StakingType().String(), tx.StakingMessage(),
+				)
+		}
 
 		nBlock = 0
 		newBlocks = newBlocks[:0]

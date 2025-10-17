@@ -129,6 +129,8 @@ func (consensus *Consensus) ProposeNewBlock(commitSigs chan []byte) (*types.Bloc
 
 		// Try commit normal and staking transactions based on the current state
 		// The successfully committed transactions will be put in the proposed block
+		utils.Logger().Info().Msgf("ProposeNewBlock: begin to commit transactions, ssc_txs=%d, plain_txs=%d, staking_txs=%d",
+			len(pendingSSCTxs), len(pendingPlainTxs), len(pendingStakingTxs))
 		if err := worker.CommitTransactions(
 			pendingSSCTxs, pendingPlainTxs, pendingStakingTxs, beneficiary,
 		); err != nil {
@@ -479,7 +481,17 @@ func (consensus *Consensus) WaitForConsensusReadyV2(stopChan chan struct{}, stop
 							}
 						}
 					}()
+					proposeCh := make(chan struct{})
+					go func() {
+						select {
+						case <-proposeCh:
+							utils.Logger().Info().Msgf("propose block succuessfully, blockNum=%d", consensus.Blockchain().CurrentBlock().NumberU64()+1)
+						case <-time.After(time.Second * 5):
+							utils.Logger().Error().Msgf("propose block timeout, blockNum=%d", consensus.Blockchain().CurrentBlock().NumberU64()+1)
+						}
+					}()
 					newBlock, err := consensus.ProposeNewBlock(newCommitSigsChan)
+					proposeCh <- struct{}{}
 					if err == nil {
 						utils.Logger().Info().
 							Uint64("blockNum", newBlock.NumberU64()).

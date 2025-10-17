@@ -2,6 +2,7 @@ package rpc
 
 import (
 	"fmt"
+	"github.com/harmony-one/harmony/internal/utils"
 	"net"
 	"strings"
 
@@ -123,9 +124,9 @@ func StopServers() error {
 			return err
 		}
 		httpListener = nil
-		// tempDelete utils.Logger().Info().
-		// tempDelete 	Str("url", fmt.Sprintf("http://%s", httpEndpoint)).
-		// tempDelete 	Msg("HTTP endpoint closed")
+		utils.Logger().Info().
+			Str("url", fmt.Sprintf("http://%s", httpEndpoint)).
+			Msg("HTTP endpoint closed")
 	}
 	if httpHandler != nil {
 		httpHandler.Stop()
@@ -136,9 +137,9 @@ func StopServers() error {
 			return err
 		}
 		wsListener = nil
-		// tempDelete utils.Logger().Info().
-		// tempDelete 	Str("url", fmt.Sprintf("http://%s", wsEndpoint)).
-		// tempDelete 	Msg("WS endpoint closed")
+		utils.Logger().Info().
+			Str("url", fmt.Sprintf("http://%s", wsEndpoint)).
+			Msg("WS endpoint closed")
 	}
 	if wsHandler != nil {
 		wsHandler.Stop()
@@ -227,11 +228,11 @@ func startHTTP(apis []rpc.API, rmf *rpc.RpcMethodFilter, httpTimeouts rpc.HTTPTi
 		return err
 	}
 
-	// tempDelete utils.Logger().Info().
-	// tempDelete 	Str("url", fmt.Sprintf("http://%s", httpEndpoint)).
-	// tempDelete 	Str("cors", strings.Join(httpOrigins, ",")).
-	// tempDelete 	Str("vhosts", strings.Join(httpVirtualHosts, ",")).
-	// tempDelete 	Msg("HTTP endpoint opened")
+	utils.Logger().Info().
+		Str("url", fmt.Sprintf("http://%s", httpEndpoint)).
+		Str("cors", strings.Join(httpOrigins, ",")).
+		Str("vhosts", strings.Join(httpVirtualHosts, ",")).
+		Msg("HTTP endpoint opened")
 	fmt.Printf("Started RPC server at: %v\n", httpEndpoint)
 	return nil
 }
@@ -244,11 +245,11 @@ func startAuthHTTP(apis []rpc.API, rmf *rpc.RpcMethodFilter, httpTimeouts rpc.HT
 		return err
 	}
 
-	// tempDelete utils.Logger().Info().
-	// tempDelete 	Str("url", fmt.Sprintf("http://%s", httpAuthEndpoint)).
-	// tempDelete 	Str("cors", strings.Join(httpOrigins, ",")).
-	// tempDelete 	Str("vhosts", strings.Join(httpVirtualHosts, ",")).
-	// tempDelete 	Msg("HTTP endpoint opened")
+	utils.Logger().Info().
+		Str("url", fmt.Sprintf("http://%s", httpAuthEndpoint)).
+		Str("cors", strings.Join(httpOrigins, ",")).
+		Str("vhosts", strings.Join(httpVirtualHosts, ",")).
+		Msg("HTTP endpoint opened")
 	fmt.Printf("Started Auth-RPC server at: %v\n", httpAuthEndpoint)
 	return nil
 }
@@ -259,9 +260,9 @@ func startWS(apis []rpc.API, rmf *rpc.RpcMethodFilter) (err error) {
 		return err
 	}
 
-	// tempDelete utils.Logger().Info().
-	// tempDelete 	Str("url", fmt.Sprintf("ws://%s", wsListener.Addr())).
-	// tempDelete 	Msg("WebSocket WS endpoint opened")
+	utils.Logger().Info().
+		Str("url", fmt.Sprintf("ws://%s", wsListener.Addr())).
+		Msg("WebSocket WS endpoint opened")
 	fmt.Printf("Started WS server at: %v\n", wsEndpoint)
 	return nil
 }
@@ -272,9 +273,9 @@ func startAuthWS(apis []rpc.API, rmf *rpc.RpcMethodFilter) (err error) {
 		return err
 	}
 
-	// tempDelete utils.Logger().Info().
-	// tempDelete 	Str("url", fmt.Sprintf("ws://%s", wsListener.Addr())).
-	// tempDelete 	Msg("WebSocket Auth-WS endpoint opened")
+	utils.Logger().Info().
+		Str("url", fmt.Sprintf("ws://%s", wsListener.Addr())).
+		Msg("WebSocket Auth-WS endpoint opened")
 	fmt.Printf("Started Auth-WS server at: %v\n", wsAuthEndpoint)
 	return nil
 }

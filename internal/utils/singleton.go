@@ -118,7 +118,7 @@ func setZeroLoggerFileOutput(filepath string, maxSize int, rotateCount int, rota
 		MaxSize:    maxSize,
 		MaxBackups: rotateCount,
 		MaxAge:     rotateMaxAge,
-		Compress:   true,
+		Compress:   false,
 	})
 
 	childLogger := Logger().Output(w)
@@ -128,7 +128,7 @@ func setZeroLoggerFileOutput(filepath string, maxSize int, rotateCount int, rota
 }
 
 func setSSCLoggerFileOutput(filepath string, maxSize int, rotateCount int, rotateMaxAge int) error {
-	w := io.MultiWriter(os.Stdout, &lumberjack.Logger{
+	w := io.MultiWriter(&lumberjack.Logger{
 		Filename:   filepath,
 		MaxSize:    maxSize,
 		MaxBackups: rotateCount,

@@ -231,11 +231,11 @@ func (sc *SyncConfig) RemovePeer(peer *SyncPeerConfig, reason string) {
 			break
 		}
 	}
-	// tempDelete utils.Logger().Info().
-	// tempDelete 	Str("peerIP", peer.ip).
-	// tempDelete 	Str("peerPortMsg", peer.port).
-	// tempDelete 	Str("reason", reason).
-	// tempDelete 	Msg("[STAGED_SYNC] remove GRPC peer")
+	utils.Logger().Info().
+		Str("peerIP", peer.ip).
+		Str("peerPortMsg", peer.port).
+		Str("reason", reason).
+		Msg("[STAGED_SYNC] remove GRPC peer")
 }
 
 // ReplacePeerWithReserved tries to replace a peer from reserved peer list

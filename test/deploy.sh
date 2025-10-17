@@ -1,5 +1,4 @@
 #!/bin/bash
-set -eo pipefail
 
 unset -v progdir
 case "${0}" in
@@ -12,6 +11,9 @@ USER=$(whoami)
 OS=$(uname -s)
 
 . "${ROOT}/scripts/setup_bls_build_flags.sh"
+
+declare -A harmony_pids
+declare -A harmony_exit_codes
 
 function cleanup() {
   "${progdir}/kill_node.sh"
@@ -157,8 +159,94 @@ function simple_launch_shard() {
         echo "begin to work: dryrun: ${DRYRUN}" "bin: ${ROOT}/bin/harmony" "${args[@]}" "${extra_args[@]}"
 
         # Start the node
-        ${DRYRUN} "${ROOT}/bin/harmony" "${args[@]}" "${extra_args[@]}" 2>&1 | tee -a "${LOG_FILE}" &
+        ${DRYRUN} "${ROOT}/bin/harmony" "${args[@]}" "${extra_args[@]}" >> "${log_folder}/log-${port}.log" 2>&1 &
+
+        local pid=$!
+        harmony_pids["$pid"]="node_$port"
+        harmony_exit_codes["$pid"]="running"
+        echo "实例 node_$port 已启动，PID: $pid"
+
     done <<< "$(cat "${config}")"
+}
+
+# 使用wait并行监控
+monitor_with_wait() {
+    echo "开始监控 ${#harmony_pids[@]} 个Harmony进程..."
+    local total_count=${#harmony_pids[@]}
+    local i=0
+
+    echo "初始监控列表: ${!harmony_pids[@]}, iteration=$i"
+    while [ ${#harmony_pids[@]} -gt 0 ]; do
+        i=$((i+1))
+        # 创建临时数组用于安全删除
+        local pids_to_remove=()
+
+        for pid in "${!harmony_pids[@]}"; do
+
+            # 检查进程是否仍在运行
+            if ! kill -0 "$pid" 2>/dev/null; then
+                echo "进程 $pid 已结束，尝试获取退出码..."
+
+                wait $pid
+                exit_code=$?
+
+                instance_name="${harmony_pids[$pid]}"
+                harmony_exit_codes["$pid"]="$exit_code"
+
+                echo "$(date): ${instance_name} (PID: $pid) 已停止，退出码: $exit_code"
+
+                # 标记要删除的PID
+                pids_to_remove+=("$pid")
+            fi
+        done
+
+        # 安全删除已结束的进程
+        for pid in "${pids_to_remove[@]}"; do
+            unset harmony_pids["$pid"]
+            echo "从监控列表中移除 PID: $pid"
+        done
+
+        # 显示仍在运行的进程数量
+        local running_count=${#harmony_pids[@]}
+        if [ $running_count -gt 0 ]; then
+            echo "=== 第 ${i} 次检查 === $(date): 仍有 $running_count/$total_count 个进程运行中"
+            sleep 10
+        else
+            echo "所有进程都已停止监控"
+        fi
+    done
+
+    echo "=== 所有Harmony进程都已停止 ==="
+    echo "总共监控了 $total_count 个进程"
+}
+
+generate_exit_report() {
+    echo "=== Harmony进程退出报告 ==="
+    echo "启动时间: $(date)"
+    echo "总进程数: ${#harmony_exit_codes[@]}"
+    echo ""
+
+    local success_count=0
+    local error_count=0
+
+    for pid in "${!harmony_exit_codes[@]}"; do
+        instance_name="${harmony_pids[$pid]}"
+        exit_code="${harmony_exit_codes[$pid]}"
+
+        if [ "$exit_code" = "0" ]; then
+            status="成功"
+            ((success_count++))
+        else
+            status="失败(代码:$exit_code)"
+            ((error_count++))
+        fi
+
+        echo "实例: ${instance_name}, PID: $pid, 状态: $status"
+    done
+
+    echo ""
+    echo "总结: 成功 $success_count, 失败 $error_count"
+    echo "报告生成时间: $(date)"
 }
 
 trap cleanup SIGINT SIGTERM
@@ -222,5 +310,7 @@ extra_args=("$@")
 
 setup
 simple_launch_shard 4 5 local
-sleep "${DURATION}"
+monitor_with_wait
+generate_exit_report
+
 cleanup || true

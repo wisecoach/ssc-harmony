@@ -29,12 +29,12 @@ func (consensus *Consensus) onAnnounce(msg *msg_pb.Message) {
 	// NOTE let it handle its own logs
 	if !consensus.onAnnounceSanityChecks(recvMsg) {
 		if consensus.isViewChangingMode() && recvMsg.BlockNum > consensus.BlockNum() {
-			// tempDelete consensus.getLogger().Info().
-			// tempDelete 	Uint64("myBlockNum", consensus.BlockNum()).
-			// tempDelete 	Uint64("MsgBlockNum", recvMsg.BlockNum).
-			// tempDelete 	Hex("myBlockHash", consensus.blockHash[:]).
-			// tempDelete 	Hex("MsgBlockHash", recvMsg.BlockHash[:]).
-			// tempDelete 	Msg("[OnCommitted] low consensus block number. Spin up state sync")
+			consensus.getLogger().Info().
+				Uint64("myBlockNum", consensus.BlockNum()).
+				Uint64("MsgBlockNum", recvMsg.BlockNum).
+				Hex("myBlockHash", consensus.blockHash[:]).
+				Hex("MsgBlockHash", recvMsg.BlockHash[:]).
+				Msg("[OnCommitted] low consensus block number. Spin up state sync")
 			consensus.spinUpStateSync()
 		}
 		return
@@ -104,8 +104,8 @@ func (consensus *Consensus) validateNewBlock(recvMsg *FBFTMessage) (*types.Block
 			}
 			blockObj = &blockObj2
 		}
-		// tempDelete consensus.getLogger().Info().
-		// tempDelete 	Msg("[validateNewBlock] Block Already verified")
+		consensus.getLogger().Info().
+			Msg("[validateNewBlock] Block Already verified")
 		return blockObj, nil
 	}
 	// check validity of block if any
@@ -187,24 +187,24 @@ func (consensus *Consensus) sendCommitMessages(blockObj *types.Block) {
 	if err := consensus.broadcastConsensusP2pMessages(p2pMsgs); err != nil {
 		consensus.getLogger().Warn().Err(err).Msg("[sendCommitMessages] Cannot send commit message!!")
 	} else {
-		// tempDelete consensus.getLogger().Info().
-		// tempDelete 	Uint64("blockNum", consensus.BlockNum()).
-		// tempDelete 	Hex("blockHash", consensus.blockHash[:]).
-		// tempDelete 	Msg("[sendCommitMessages] Sent Commit Message!!")
+		consensus.getLogger().Info().
+			Uint64("blockNum", consensus.BlockNum()).
+			Hex("blockHash", consensus.blockHash[:]).
+			Msg("[sendCommitMessages] Sent Commit Message!!")
 	}
 }
 
 // if onPrepared accepts the prepared message from the leader, then
 // it will send a COMMIT message for the leader to receive on the network.
 func (consensus *Consensus) onPrepared(recvMsg *FBFTMessage) {
-	// tempDelete consensus.getLogger().Info().
-	// tempDelete 	Uint64("MsgBlockNum", recvMsg.BlockNum).
-	// tempDelete 	Uint64("MsgViewID", recvMsg.ViewID).
-	// tempDelete 	Msg("[OnPrepared] Received prepared message")
+	consensus.getLogger().Info().
+		Uint64("MsgBlockNum", recvMsg.BlockNum).
+		Uint64("MsgViewID", recvMsg.ViewID).
+		Msg("[OnPrepared] Received prepared message")
 
 	if recvMsg.BlockNum < consensus.BlockNum() {
-		// tempDelete consensus.getLogger().Info().Uint64("MsgBlockNum", recvMsg.BlockNum).
-		// tempDelete 	Msg("Wrong BlockNum Received, ignoring!")
+		consensus.getLogger().Info().Uint64("MsgBlockNum", recvMsg.BlockNum).
+			Msg("Wrong BlockNum Received, ignoring!")
 		return
 	}
 	if recvMsg.BlockNum > consensus.BlockNum() {
@@ -256,10 +256,10 @@ func (consensus *Consensus) onPrepared(recvMsg *FBFTMessage) {
 		return
 	}
 	if recvMsg.BlockNum > consensus.BlockNum() {
-		// tempDelete consensus.getLogger().Info().
-		// tempDelete 	Uint64("MsgBlockNum", recvMsg.BlockNum).
-		// tempDelete 	Uint64("blockNum", consensus.BlockNum()).
-		// tempDelete 	Msg("[OnPrepared] Future Block Received, ignoring!!")
+		consensus.getLogger().Info().
+			Uint64("MsgBlockNum", recvMsg.BlockNum).
+			Uint64("blockNum", consensus.BlockNum()).
+			Msg("[OnPrepared] Future Block Received, ignoring!!")
 		return
 	}
 
@@ -276,7 +276,7 @@ func (consensus *Consensus) onPrepared(recvMsg *FBFTMessage) {
 		consensus.switchPhase("onPrepared", FBFTCommit)
 	} else {
 		// don't sign the block that is not verified
-		// tempDelete consensus.getLogger().Info().Msg("[OnPrepared] Not in normal mode, Exiting!!")
+		consensus.getLogger().Info().Msg("[OnPrepared] Not in normal mode, Exiting!!")
 	}
 
 	go func() {
@@ -292,7 +292,7 @@ func (consensus *Consensus) onPrepared(recvMsg *FBFTMessage) {
 				consensus.onCommitted(committedMsg)
 			}
 			if curBlockNum < consensus.getBlockNum() {
-				// tempDelete consensus.getLogger().Info().Msg("[OnPrepared] Successfully caught up with committed message")
+				consensus.getLogger().Info().Msg("[OnPrepared] Successfully caught up with committed message")
 				break
 			}
 		}
@@ -300,26 +300,26 @@ func (consensus *Consensus) onPrepared(recvMsg *FBFTMessage) {
 }
 
 func (consensus *Consensus) onCommitted(recvMsg *FBFTMessage) {
-	// tempDelete consensus.getLogger().Info().
-	// tempDelete 	Uint64("MsgBlockNum", recvMsg.BlockNum).
-	// tempDelete 	Uint64("MsgViewID", recvMsg.ViewID).
-	// tempDelete 	Msg("[OnCommitted] Received committed message")
+	consensus.getLogger().Info().
+		Uint64("MsgBlockNum", recvMsg.BlockNum).
+		Uint64("MsgViewID", recvMsg.ViewID).
+		Msg("[OnCommitted] Received committed message")
 
 	// Ok to receive committed from last block since it could have more signatures
 	if recvMsg.BlockNum < consensus.BlockNum()-1 {
-		// tempDelete consensus.getLogger().Info().
-		// tempDelete 	Uint64("MsgBlockNum", recvMsg.BlockNum).
-		// tempDelete 	Msg("Wrong BlockNum Received, ignoring!")
+		consensus.getLogger().Info().
+			Uint64("MsgBlockNum", recvMsg.BlockNum).
+			Msg("Wrong BlockNum Received, ignoring!")
 		return
 	}
 
 	if recvMsg.BlockNum > consensus.BlockNum() {
-		// tempDelete consensus.getLogger().Info().
-		// tempDelete 	Uint64("myBlockNum", consensus.BlockNum()).
-		// tempDelete 	Uint64("MsgBlockNum", recvMsg.BlockNum).
-		// tempDelete 	Hex("myBlockHash", consensus.blockHash[:]).
-		// tempDelete 	Hex("MsgBlockHash", recvMsg.BlockHash[:]).
-		// tempDelete 	Msg("[OnCommitted] low consensus block number. Spin up state sync")
+		consensus.getLogger().Info().
+			Uint64("myBlockNum", consensus.BlockNum()).
+			Uint64("MsgBlockNum", recvMsg.BlockNum).
+			Hex("myBlockHash", consensus.blockHash[:]).
+			Hex("MsgBlockHash", recvMsg.BlockHash[:]).
+			Msg("[OnCommitted] low consensus block number. Spin up state sync")
 		consensus.spinUpStateSync()
 	}
 
@@ -329,13 +329,17 @@ func (consensus *Consensus) onCommitted(recvMsg *FBFTMessage) {
 	// Must have the corresponding block to verify committed message.
 	blockObj := consensus.fBFTLog.GetBlockByHash(recvMsg.BlockHash)
 	if blockObj == nil {
-		// tempDelete consensus.getLogger().Info().
-		// tempDelete 	Uint64("blockNum", recvMsg.BlockNum).
-		// tempDelete 	Uint64("viewID", recvMsg.ViewID).
-		// tempDelete 	Str("blockHash", recvMsg.BlockHash.Hex()).
-		// tempDelete 	Msg("[OnCommitted] Failed finding a matching block for committed message")
+		consensus.getLogger().Info().
+			Uint64("blockNum", recvMsg.BlockNum).
+			Uint64("viewID", recvMsg.ViewID).
+			Str("blockHash", recvMsg.BlockHash.Hex()).
+			Msg("[OnCommitted] Failed finding a matching block for committed message")
 		return
 	}
+	consensus.getLogger().Info().
+		Uint64("MsgBlockNum", recvMsg.BlockNum).
+		Uint64("MsgViewID", recvMsg.ViewID).
+		Msg("[OnCommitted] Received committed message: try to parse commit sig and bitmap")
 	sigBytes, bitmap, err := chain.ParseCommitSigAndBitmap(recvMsg.Payload)
 	if err != nil {
 		consensus.getLogger().Error().Err(err).
@@ -345,6 +349,10 @@ func (consensus *Consensus) onCommitted(recvMsg *FBFTMessage) {
 			Msg("[OnCommitted] Failed to parse commit sigBytes and bitmap")
 		return
 	}
+	consensus.getLogger().Info().
+		Uint64("MsgBlockNum", recvMsg.BlockNum).
+		Uint64("MsgViewID", recvMsg.ViewID).
+		Msg("[OnCommitted] Received committed message: try to verify header signature")
 	if err := consensus.Blockchain().Engine().VerifyHeaderSignature(consensus.Blockchain(), blockObj.Header(),
 		sigBytes, bitmap); err != nil {
 		consensus.getLogger().Error().
@@ -355,6 +363,10 @@ func (consensus *Consensus) onCommitted(recvMsg *FBFTMessage) {
 		return
 	}
 
+	consensus.getLogger().Info().
+		Uint64("MsgBlockNum", recvMsg.BlockNum).
+		Uint64("MsgViewID", recvMsg.ViewID).
+		Msg("[OnCommitted] Received committed message: try to decode sig bitmap")
 	aggSig, mask, err := chain.DecodeSigBitmap(sigBytes, bitmap, consensus.decider.Participants())
 	if err != nil {
 		consensus.getLogger().Error().Err(err).Msg("[OnCommitted] readSignatureBitmapPayload failed")
@@ -372,11 +384,15 @@ func (consensus *Consensus) onCommitted(recvMsg *FBFTMessage) {
 	// with the same number that's committed and overriding its commit sigBytes is wrong.
 	blk := consensus.Blockchain().GetBlockByHash(blockObj.Hash())
 	if err == nil && len(commitSigBitmap) == len(recvMsg.Payload) && blk != nil {
+		consensus.getLogger().Info().
+			Uint64("MsgBlockNum", recvMsg.BlockNum).
+			Uint64("MsgViewID", recvMsg.ViewID).
+			Msg("[OnCommitted] Received committed message: get block and write commit sig")
 		new := mask.CountEnabled()
 		mask.SetMask(commitSigBitmap[bls.BLSSignatureSizeInBytes:])
 		cur := mask.CountEnabled()
 		if new > cur {
-			// tempDelete consensus.getLogger().Info().Hex("old", commitSigBitmap).Hex("new", recvMsg.Payload).Msg("[OnCommitted] Overriding commit signatures!!")
+			consensus.getLogger().Info().Hex("old", commitSigBitmap).Hex("new", recvMsg.Payload).Msg("[OnCommitted] Overriding commit signatures!!")
 			consensus.Blockchain().WriteCommitSig(blockObj.NumberU64(), recvMsg.Payload)
 		}
 	}
@@ -385,17 +401,17 @@ func (consensus *Consensus) onCommitted(recvMsg *FBFTMessage) {
 	consensus.tryCatchup()
 
 	if recvMsg.BlockNum > consensus.BlockNum() {
-		// tempDelete consensus.getLogger().Info().
-		// tempDelete 	Uint64("myBlockNum", consensus.BlockNum()).
-		// tempDelete 	Uint64("MsgBlockNum", recvMsg.BlockNum).
-		// tempDelete 	Hex("myBlockHash", consensus.blockHash[:]).
-		// tempDelete 	Hex("MsgBlockHash", recvMsg.BlockHash[:]).
-		// tempDelete 	Msg("[OnCommitted] OUT OF SYNC")
+		consensus.getLogger().Info().
+			Uint64("myBlockNum", consensus.BlockNum()).
+			Uint64("MsgBlockNum", recvMsg.BlockNum).
+			Hex("myBlockHash", consensus.blockHash[:]).
+			Hex("MsgBlockHash", recvMsg.BlockHash[:]).
+			Msg("[OnCommitted] OUT OF SYNC")
 		return
 	}
 
 	if consensus.isViewChangingMode() {
-		// tempDelete consensus.getLogger().Info().Msg("[OnCommitted] Still in ViewChanging mode, Exiting!!")
+		consensus.getLogger().Info().Msg("[OnCommitted] Still in ViewChanging mode, Exiting!!")
 		return
 	}
 
@@ -405,7 +421,7 @@ func (consensus *Consensus) onCommitted(recvMsg *FBFTMessage) {
 	}
 
 	if initBn < consensus.BlockNum() {
-		// tempDelete consensus.getLogger().Info().Msg("[OnCommitted] Start consensus timer (new block added)")
+		consensus.getLogger().Info().Msg("[OnCommitted] Start consensus timer (new block added)")
 		consensus.consensusTimeout[timeoutConsensus].Start()
 	}
 }
@@ -436,7 +452,7 @@ func (consensus *Consensus) constructP2pMessages(msgType msg_pb.MessageType, pay
 			for _, key := range priKeys {
 				logger.Str("key", key.Pri.SerializeToHexStr())
 			}
-			// tempDelete logger.Msg("could not construct message")
+			logger.Msg("could not construct message")
 		} else {
 			p2pMsgs = append(p2pMsgs, networkMessage)
 		}
@@ -445,10 +461,10 @@ func (consensus *Consensus) constructP2pMessages(msgType msg_pb.MessageType, pay
 		for _, key := range priKeys {
 			networkMessage, err := consensus.construct(msgType, payloadForSign, []*bls.PrivateKeyWrapper{key})
 			if err != nil {
-				// tempDelete consensus.getLogger().Err(err).
-				// tempDelete 	Str("message-type", msgType.ToString()).
-				// tempDelete 	Str("key", key.Pri.SerializeToHexStr()).
-				// tempDelete 	Msg("could not construct message")
+				consensus.getLogger().Err(err).
+					Str("message-type", msgType.String()).
+					Str("key", key.Pri.SerializeToHexStr()).
+					Msg("could not construct message")
 				continue
 			}
 

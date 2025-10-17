@@ -41,8 +41,8 @@ const (
 	exprnetV1Epoch = 1
 
 	exprnetEpochBlock1      = 5
-	exprnetBlocksPerEpoch   = 16
-	exprnetBlocksPerEpochV2 = 16
+	exprnetBlocksPerEpoch   = 5000
+	exprnetBlocksPerEpochV2 = 5000
 
 	exprnetVdfDifficulty = 5000 // This takes about 10s to finish the vdf
 )

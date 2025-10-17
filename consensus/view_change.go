@@ -1,6 +1,7 @@
 package consensus
 
 import (
+	"github.com/harmony-one/harmony/consensus/quorum"
 	"math/big"
 	"time"
 
@@ -123,12 +124,12 @@ func (consensus *Consensus) getNextViewID() (uint64, time.Duration) {
 	diff := uint64((curTimestamp-blockTimestamp)/viewChangeSlot + 1)
 	nextViewID := diff + stuckBlockViewID
 
-	// tempDelete consensus.getLogger().Info().
-	// tempDelete 	Int64("curTimestamp", curTimestamp).
-	// tempDelete 	Int64("blockTimestamp", blockTimestamp).
-	// tempDelete 	Uint64("nextViewID", nextViewID).
-	// tempDelete 	Uint64("stuckBlockViewID", stuckBlockViewID).
-	// tempDelete 	Msg("[getNextViewID]")
+	consensus.getLogger().Info().
+		Int64("curTimestamp", curTimestamp).
+		Int64("blockTimestamp", blockTimestamp).
+		Uint64("nextViewID", nextViewID).
+		Uint64("stuckBlockViewID", stuckBlockViewID).
+		Msg("[getNextViewID]")
 
 	// duration is always the fixed view change duration for synchronous view change
 	return nextViewID, viewChangeDuration
@@ -178,18 +179,18 @@ func (consensus *Consensus) getNextLeaderKey(viewID uint64, committee *shard.Com
 			// so, when validator joined the view change process later in the epoch block
 			// it can still sync with other validators.
 			if curHeader.IsLastBlockInEpoch() {
-				// tempDelete consensus.getLogger().Info().Msg("[getNextLeaderKey] view change in the first block of new epoch")
+				consensus.getLogger().Info().Msg("[getNextLeaderKey] view change in the first block of new epoch")
 				lastLeaderPubKey = consensus.decider.FirstParticipant(shard.Schedule.InstanceForEpoch(epoch))
 			}
 		}
 	}
-	// tempDelete consensus.getLogger().Info().
-	// tempDelete 	Str("lastLeaderPubKey", lastLeaderPubKey.Bytes.Hex()).
-	// tempDelete 	Str("leaderPubKey", consensus.LeaderPubKey.Bytes.Hex()).
-	// tempDelete 	Int("gap", gap).
-	// tempDelete 	Uint64("newViewID", viewID).
-	// tempDelete 	Uint64("myCurBlockViewID", consensus.getCurBlockViewID()).
-	// tempDelete 	Msg("[getNextLeaderKey] got leaderPubKey from coinbase")
+	consensus.getLogger().Info().
+		Str("lastLeaderPubKey", lastLeaderPubKey.Bytes.Hex()).
+		Str("leaderPubKey", consensus.LeaderPubKey.Bytes.Hex()).
+		Int("gap", gap).
+		Uint64("newViewID", viewID).
+		Uint64("myCurBlockViewID", consensus.getCurBlockViewID()).
+		Msg("[getNextLeaderKey] got leaderPubKey from coinbase")
 	// wasFound, next := consensus.Decider.NthNext(lastLeaderPubKey, gap)
 	// FIXME: rotate leader on harmony nodes only before fully externalization
 	var wasFound bool
@@ -217,9 +218,9 @@ func (consensus *Consensus) getNextLeaderKey(viewID uint64, committee *shard.Com
 			Str("key", consensus.LeaderPubKey.Bytes.Hex()).
 			Msg("[getNextLeaderKey] currentLeaderKey not found")
 	}
-	// tempDelete consensus.getLogger().Info().
-	// tempDelete 	Str("nextLeader", next.Bytes.Hex()).
-	// tempDelete 	Msg("[getNextLeaderKey] next Leader")
+	consensus.getLogger().Info().
+		Str("nextLeader", next.Bytes.Hex()).
+		Msg("[getNextLeaderKey] next Leader")
 	return next
 }
 
@@ -330,10 +331,10 @@ func (consensus *Consensus) startNewView(viewID uint64, newLeaderPriKey *bls.Pri
 	); err != nil {
 		return errors.New("failed to send out the NewView message")
 	}
-	// tempDelete consensus.getLogger().Info().
-	// tempDelete 	Str("myKey", newLeaderPriKey.Pub.Bytes.Hex()).
-	// tempDelete 	Hex("M1Payload", consensus.vc.GetM1Payload()).
-	// tempDelete 	Msg("[startNewView] Sent NewView Messge")
+	consensus.getLogger().Info().
+		Str("myKey", newLeaderPriKey.Pub.Bytes.Hex()).
+		Hex("M1Payload", consensus.vc.GetM1Payload()).
+		Msg("[startNewView] Sent NewView Messge")
 
 	consensus.msgSender.StopRetry(msg_pb.MessageType_VIEWCHANGE)
 
@@ -343,10 +344,10 @@ func (consensus *Consensus) startNewView(viewID uint64, newLeaderPriKey *bls.Pri
 	consensus.resetViewChangeState()
 	consensus.consensusTimeout[timeoutConsensus].Start()
 
-	// tempDelete consensus.getLogger().Info().
-	// tempDelete 	Uint64("viewID", viewID).
-	// tempDelete 	Str("myKey", newLeaderPriKey.Pub.Bytes.Hex()).
-	// tempDelete 	Msg("[startNewView] viewChange stopped. I am the New Leader")
+	consensus.getLogger().Info().
+		Uint64("viewID", viewID).
+		Str("myKey", newLeaderPriKey.Pub.Bytes.Hex()).
+		Msg("[startNewView] viewChange stopped. I am the New Leader")
 
 	// TODO: consider make ResetState unified and only called in one place like finalizeCommit()
 	if reset {
@@ -379,12 +380,12 @@ func (consensus *Consensus) onViewChange(recvMsg *FBFTMessage) {
 	}
 
 	if consensus.decider.IsQuorumAchievedByMask(consensus.vc.GetViewIDBitmap(recvMsg.ViewID)) {
-		// tempDelete consensus.getLogger().Info().
-		// tempDelete 	Int64("have", consensus.decider.SignersCount(quorum.ViewChange)).
-		// tempDelete 	Int64("need", consensus.decider.TwoThirdsSignersCount()).
-		// tempDelete 	Interface("SenderPubkeys", recvMsg.SenderPubkeys).
-		// tempDelete 	Str("newLeaderKey", newLeaderKey.Bytes.Hex()).
-		// tempDelete 	Msg("[onViewChange] Received Enough View Change Messages")
+		consensus.getLogger().Info().
+			Int64("have", consensus.decider.SignersCount(quorum.ViewChange)).
+			Int64("need", consensus.decider.TwoThirdsSignersCount()).
+			Interface("SenderPubkeys", recvMsg.SenderPubkeys).
+			Str("newLeaderKey", newLeaderKey.Bytes.Hex()).
+			Msg("[onViewChange] Received Enough View Change Messages")
 		return
 	}
 
@@ -455,11 +456,11 @@ func (consensus *Consensus) onViewChange(recvMsg *FBFTMessage) {
 // Or the validator will enter announce phase to wait for the new block proposed
 // from the new leader
 func (consensus *Consensus) onNewView(recvMsg *FBFTMessage) {
-	// tempDelete consensus.getLogger().Info().
-	// tempDelete 	Uint64("viewID", recvMsg.ViewID).
-	// tempDelete 	Uint64("blockNum", recvMsg.BlockNum).
-	// tempDelete 	Interface("SenderPubkeys", recvMsg.SenderPubkeys).
-	// tempDelete 	Msg("[onNewView] Received NewView Message")
+	consensus.getLogger().Info().
+		Uint64("viewID", recvMsg.ViewID).
+		Uint64("blockNum", recvMsg.BlockNum).
+		Interface("SenderPubkeys", recvMsg.SenderPubkeys).
+		Msg("[onNewView] Received NewView Message")
 
 	// change view and leaderKey to keep in sync with network
 	if consensus.getBlockNum() != recvMsg.BlockNum {
@@ -534,7 +535,7 @@ func (consensus *Consensus) onNewView(recvMsg *FBFTMessage) {
 	}
 
 	if !consensus.isViewChangingMode() {
-		// tempDelete consensus.getLogger().Info().Msg("Not in ViewChanging Mode.")
+		consensus.getLogger().Info().Msg("Not in ViewChanging Mode.")
 		return
 	}
 
@@ -553,11 +554,11 @@ func (consensus *Consensus) onNewView(recvMsg *FBFTMessage) {
 		consensus.switchPhase("onNewView", FBFTCommit)
 	} else {
 		consensus.resetState()
-		// tempDelete consensus.getLogger().Info().Msg("onNewView === announce")
+		consensus.getLogger().Info().Msg("onNewView === announce")
 	}
-	// tempDelete consensus.getLogger().Info().
-	// tempDelete 	Str("newLeaderKey", consensus.LeaderPubKey.Bytes.Hex()).
-	// tempDelete 	Msg("new leader changed")
+	consensus.getLogger().Info().
+		Str("newLeaderKey", consensus.LeaderPubKey.Bytes.Hex()).
+		Msg("new leader changed")
 	consensus.consensusTimeout[timeoutConsensus].Start()
 	consensusVCCounterVec.With(prometheus.Labels{"viewchange": "finished"}).Inc()
 }
@@ -571,9 +572,9 @@ func (consensus *Consensus) ResetViewChangeState() {
 
 // ResetViewChangeState resets the view change structure
 func (consensus *Consensus) resetViewChangeState() {
-	// tempDelete consensus.getLogger().Info().
-	// tempDelete 	Str("Phase", consensus.phase.ToString()).
-	// tempDelete 	Msg("[ResetViewChangeState] Resetting view change state")
+	consensus.getLogger().Info().
+		Str("Phase", consensus.phase.String()).
+		Msg("[ResetViewChangeState] Resetting view change state")
 	consensus.current.SetMode(Normal)
 	consensus.vc.Reset()
 	consensus.decider.ResetViewChangeVotes()

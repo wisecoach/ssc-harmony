@@ -250,7 +250,7 @@ func (node *Node) BroadcastCrosslinkHeartbeatSignalFromBeaconToShards() { // lea
 	for shardID := uint32(1); shardID < instance.NumShards(); shardID++ {
 		lastLink, err := node.Blockchain().ReadShardLastCrossLink(shardID)
 		if err != nil {
-			// tempDelete utils.Logger().Error().Err(err).Msg("[BroadcastCrossLinkSignal] failed to get crosslinks")
+			utils.Logger().Error().Err(err).Msg("[BroadcastCrossLinkSignal] failed to get crosslinks")
 			continue
 		}
 
@@ -264,7 +264,7 @@ func (node *Node) BroadcastCrosslinkHeartbeatSignalFromBeaconToShards() { // lea
 
 		rs, err := rlp.EncodeToBytes(hb)
 		if err != nil {
-			// tempDelete utils.Logger().Error().Err(err).Msg("[BroadcastCrossLinkSignal] failed to encode signal")
+			utils.Logger().Error().Err(err).Msg("[BroadcastCrossLinkSignal] failed to encode signal")
 			continue
 		}
 		hb.Signature = privToSing.Pri.SignHash(rs).Serialize()
@@ -338,16 +338,16 @@ func (node *Node) PostConsensusProcessing(newBlock *types.Block) error {
 	} else {
 		if mode := node.Consensus.Mode(); mode != consensus.Listening {
 			numSignatures := node.Consensus.NumSignaturesIncludedInBlock(newBlock)
-			// tempDelete utils.Logger().Info().
-			// tempDelete 	Uint64("blockNum", newBlock.NumberU64()).
-			// tempDelete 	Uint64("epochNum", newBlock.Epoch().Uint64()).
-			// tempDelete 	Uint64("ViewId", newBlock.Header().ViewID().Uint64()).
-			// tempDelete 	Str("blockHash", newBlock.Hash().ToString()).
-			// tempDelete 	Int("numTxns", len(newBlock.Transactions())).
-			// tempDelete 	Int("numStakingTxns", len(newBlock.StakingTransactions())).
-			// tempDelete 	Uint32("numSignatures", numSignatures).
-			// tempDelete 	Str("mode", mode.ToString()).
-			// tempDelete 	Msg("BINGO !!! Reached Consensus")
+			utils.Logger().Info().
+				Uint64("blockNum", newBlock.NumberU64()).
+				Uint64("epochNum", newBlock.Epoch().Uint64()).
+				Uint64("ViewId", newBlock.Header().ViewID().Uint64()).
+				Str("blockHash", newBlock.Hash().String()).
+				Int("numTxns", len(newBlock.Transactions())).
+				Int("numStakingTxns", len(newBlock.StakingTransactions())).
+				Uint32("numSignatures", numSignatures).
+				Str("mode", mode.String()).
+				Msg("BINGO !!! Reached Consensus")
 			if node.Consensus.Mode() == consensus.Syncing {
 				mode = node.Consensus.UpdateConsensusInformation()
 				utils.Logger().Info().Msgf("Switching to mode %s", mode)

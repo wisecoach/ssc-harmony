@@ -19,6 +19,7 @@ package core
 import (
 	"bytes"
 	"fmt"
+	"github.com/harmony-one/harmony/core/genesis"
 	"math"
 	"math/big"
 	"sort"
@@ -998,7 +999,7 @@ func (pool *TxPool) add(tx types.PoolTransaction, local bool) (replaced bool, er
 	if tx.CrossShard() {
 		utils.SSCLogger().Info().Str("txHash", tx.Hash().Hex()).
 			Bool("isPreCompiled", vm.SSCAddrsApplyOnChain[*tx.To()] != nil).
-			Msg("add a cross shard Tx")
+			Msgf("add a cross shard Tx, preCompiled: %v, nonce=%d, simulation: %v", vm.SSCAddrsApplyOnChain[*tx.To()] != nil, tx.Nonce(), tx.To().Hex() == vm.SimulationCommitAddr.Hex())
 	}
 
 	logger := utils.Logger().With().Stack().Logger()
@@ -1389,6 +1390,8 @@ func (pool *TxPool) promoteExecutables(accounts []common.Address) {
 	}
 	// Iterate over all accounts and promote any executable transactions
 	for _, addr := range accounts {
+		promotedForAccount := make([]types.PoolTransaction, 0)
+
 		list := pool.queue[addr]
 		if list == nil {
 			continue // Just in case someone calls with a non existing account
@@ -1419,8 +1422,14 @@ func (pool *TxPool) promoteExecutables(accounts []common.Address) {
 			if pool.promoteTx(addr, tx) {
 				logger.Info().Str("hash", hash.Hex()).Msgf("Promoting queued transaction, from=%s, nonce=%d, pendingTxs=%v", addr.Hex(), tx.Nonce(), pool.pending[addr].Len())
 				promoted = append(promoted, tx)
+				promotedForAccount = append(promotedForAccount, tx)
 			}
 		}
+
+		if bytes.Compare(genesis.SSCSubmitterAddr.Bytes(), addr.Bytes()) == 0 {
+			utils.SSCLogger().Info().Msgf("promote executable for onchain account, nonce=%d, promoted=%d", pool.pendingState.GetNonce(addr), len(promotedForAccount))
+		}
+
 		// Drop all transactions over the allowed limit
 		if !pool.locals.contains(addr) {
 			for _, tx := range list.Cap(int(pool.config.AccountQueue)) {

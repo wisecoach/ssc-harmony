@@ -35,7 +35,7 @@ func (s *simulationCommit) RequiredGas(vm *SSCVM, contract *Contract, input []by
 }
 
 func (s *simulationCommit) RunWriteCapable(vm *SSCVM, contract *Contract, input []byte) ([]byte, error) {
-	vm.SSCService.VerifySimulation(input, vm.StateDB)
+	vm.SSCService.VerifySimulation(input, vm.StateDB, vm.Context.Header)
 	return nil, nil
 }
 

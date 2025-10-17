@@ -13,8 +13,8 @@ import (
 )
 
 func (consensus *Consensus) didReachPrepareQuorum() error {
-	// tempDelete logger := utils.Logger()
-	// tempDelete logger.Info().Msg("[OnPrepare] Received Enough Prepare Signatures")
+	logger := utils.Logger()
+	logger.Info().Msg("[OnPrepare] Received Enough Prepare Signatures")
 	leaderPriKey, err := consensus.getConsensusLeaderPrivateKey()
 	if err != nil {
 		utils.Logger().Warn().Err(err).Msg("[OnPrepare] leader not found")
@@ -77,10 +77,10 @@ func (consensus *Consensus) didReachPrepareQuorum() error {
 	); err != nil {
 		consensus.getLogger().Warn().Msg("[OnPrepare] Cannot send prepared message")
 	} else {
-		// tempDelete consensus.getLogger().Info().
-		// tempDelete 	Hex("blockHash", consensus.blockHash[:]).
-		// tempDelete 	Uint64("blockNum", consensus.BlockNum()).
-		// tempDelete 	Msg("[OnPrepare] Sent Prepared Message!!")
+		consensus.getLogger().Info().
+			Hex("blockHash", consensus.blockHash[:]).
+			Uint64("blockNum", consensus.BlockNum()).
+			Msg("[OnPrepare] Sent Prepared Message!!")
 	}
 	consensus.msgSender.StopRetry(msg_pb.MessageType_ANNOUNCE)
 	// Stop retry committed msg of last consensus

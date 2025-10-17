@@ -113,7 +113,7 @@ func (p *StateProcessor) Process(
 			// Return the cached result to avoid process the same block again.
 			// Only the successful results are cached in case for retry.
 			result := cached.(*ProcessorResult)
-			// tempDelete utils.Logger().Info().Str("block num", block.Number().ToString()).Msg("result cache hit.")
+			utils.Logger().Info().Str("block num", block.Number().String()).Msg("result cache hit.")
 			return result.Receipts, result.CxReceipts, result.StakeMsgs, result.Logs, result.UsedGas, result.Reward, result.State, nil
 		}
 	}
@@ -479,15 +479,25 @@ func SimulateCXTransaction(service api.Service, bc ChainContext, author *common.
 		receipt.GasUsed = result.UsedGas
 		return receipt, nil, nil, result.UsedGas, nil
 	} else {
-		result, err := service.SimulationResult(tx.Hash())
-		if err != nil {
-			utils.SSCLogger().Error().Err(err).Msg("SimulateCXTransaction: cannot get simulation result")
-			return nil, nil, nil, 0, err
-		}
-		if len(result.Err) > 0 {
-			utils.Logger().Error().Str("err", result.Err).Msg("SimulateCXTransaction: simulation failed")
-			return nil, nil, nil, 0, errors.New(result.Err)
-		}
+		// resultCh := make(chan struct{})
+		// go func() {
+		// 	select {
+		// 	case <-time.After(5 * time.Second):
+		// 		utils.Logger().Error().Msgf("get simulation result timeout")
+		// 	case <-resultCh:
+		// 		utils.Logger().Info().Msgf("get simulation result successfully")
+		// 	}
+		// }()
+		// result, err := service.SimulationResult(tx.Hash())
+		// resultCh <- struct{}{}
+		// if err != nil {
+		// 	utils.SSCLogger().Error().Err(err).Msg("SimulateCXTransaction: cannot get simulation result")
+		// 	return nil, nil, nil, 0, err
+		// }
+		// if len(result.Err) > 0 {
+		// 	utils.Logger().Error().Str("err", result.Err).Msg("SimulateCXTransaction: simulation failed")
+		// 	return nil, nil, nil, 0, errors.New(result.Err)
+		// }
 		// return the empty receipt, since the cx transaction is not executed on chain, shouldn't update the state
 		statedb.SetNonce(msg.From(), statedb.GetNonce(msg.From())+1)
 		root := statedb.IntermediateRoot(bc.Config().IsS3(header.Epoch()))
@@ -496,7 +506,7 @@ func SimulateCXTransaction(service api.Service, bc ChainContext, author *common.
 		receipt.Bloom = types.CreateBloom(types.Receipts{receipt})
 		receipt.TxHash = tx.Hash()
 		receipt.GasUsed = 0
-		return receipt, nil, make([]staking.StakeMsg, 0), result.UsedGas, nil
+		return receipt, nil, make([]staking.StakeMsg, 0), 0, nil
 	}
 }
 
@@ -541,7 +551,7 @@ func ApplyStakingTransaction(
 
 	if config.IsReceiptLog(header.Epoch()) {
 		receipt.Logs = statedb.GetLogs(tx.Hash(), header.Number().Uint64(), header.Hash())
-		// tempDelete utils.Logger().Info().Interface("CollectReward", receipt.Logs)
+		utils.Logger().Info().Interface("CollectReward", receipt.Logs)
 	}
 
 	return receipt, gas, nil
@@ -562,8 +572,8 @@ func ApplyIncomingReceipt(
 				"ApplyIncomingReceipts: Invalid incomingReceipt! %v", cx,
 			)
 		}
-		// tempDelete utils.Logger().Info().Interface("receipt", cx).
-		// tempDelete 	Msgf("ApplyIncomingReceipts: ADDING BALANCE %d", cx.Amount)
+		utils.Logger().Info().Interface("receipt", cx).
+			Msgf("ApplyIncomingReceipts: ADDING BALANCE %d", cx.Amount)
 
 		if !db.Exist(*cx.To) {
 			db.CreateAccount(*cx.To)

@@ -71,7 +71,7 @@ TPBroadcastInvalidTxn = false
 Console = false
 RotateCount = 0
 RotateMaxAge = 0
-RotateSize = 100
+RotateSize = 1000000
 Verbosity = 3
 
 [Log.VerbosePrints]

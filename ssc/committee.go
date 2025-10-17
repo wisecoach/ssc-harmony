@@ -13,11 +13,12 @@ import (
 )
 
 type CommitteeMechanism struct {
+	Config       *api.ShardSimulateCommitteeConfig
 	SelfAddr     common.Address
 	SelfShard    uint32
 	shardNum     uint32
 	CurrentEpoch api.Epoch
-	lock         lm.RWMutex
+	cmLock       lm.RWMutex
 	Committees   map[uint32]*api.ShardSimulateCommittee
 	Candidates   map[common.Address]*api.Candidate
 	Validators   map[uint32]map[common.Address]*api.Validator
@@ -25,26 +26,26 @@ type CommitteeMechanism struct {
 	bc           core.BlockChain
 }
 
-func NewCommitteeMechanism(selfAddr common.Address, selfShard uint32, bc core.BlockChain) *CommitteeMechanism {
+func NewCommitteeMechanism(selfAddr common.Address, selfShard uint32, config *api.ShardSimulateCommitteeConfig) *CommitteeMechanism {
 	cm := &CommitteeMechanism{
+		Config:       config,
 		SelfAddr:     selfAddr,
 		SelfShard:    selfShard,
 		CurrentEpoch: 0,
 		Committees:   make(map[uint32]*api.ShardSimulateCommittee),
 		Candidates:   make(map[common.Address]*api.Candidate),
 		Validators:   make(map[uint32]map[common.Address]*api.Validator),
-		bc:           bc,
-		lock:         lm.NewRWMutex(),
+		cmLock:       lm.NewRWMutex(),
 	}
-	cm.loadFromState()
+	cm.loadFromConfig(config)
 	utils.SSCLogger().Info().Msgf("CommitteeMechanism initialized: SelfAddr: %s, SelfShard: %d, CurrentEpoch: %d, ShardNum: %d",
 		cm.SelfAddr.Hex(), cm.SelfShard, cm.CurrentEpoch, cm.ShardNum())
 	return cm
 }
 
 func (cm *CommitteeMechanism) GetShardID(address common.Address) uint32 {
-	cm.lock.RLock()
-	defer cm.lock.RUnlock()
+	cm.cmLock.RLock()
+	defer cm.cmLock.RUnlock()
 
 	shardNum := cm.shardNum
 	shardBits := int(math.Ceil(math.Log2(float64(shardNum))))
@@ -54,8 +55,8 @@ func (cm *CommitteeMechanism) GetShardID(address common.Address) uint32 {
 }
 
 func (cm *CommitteeMechanism) ShardNum() uint32 {
-	cm.lock.RLock()
-	defer cm.lock.RUnlock()
+	cm.cmLock.RLock()
+	defer cm.cmLock.RUnlock()
 
 	if cm.shardNum == 0 {
 		return uint32(len(cm.Committees))
@@ -63,17 +64,7 @@ func (cm *CommitteeMechanism) ShardNum() uint32 {
 	return cm.shardNum
 }
 
-func (cm *CommitteeMechanism) loadFromState() {
-	db, err := cm.bc.State()
-	if err != nil {
-		utils.SSCLogger().Err(err).Msg("load committees from state db failed")
-		return
-	}
-	config := db.GetSSCConfig()
-	if config == nil {
-		utils.SSCLogger().Error().Msg("SSCConfig is nil")
-		return
-	}
+func (cm *CommitteeMechanism) loadFromConfig(config *api.ShardSimulateCommitteeConfig) {
 	for _, committee := range config.Committees {
 		cm.Committees[committee.ShardID] = committee
 	}
@@ -94,8 +85,8 @@ func (cm *CommitteeMechanism) loadFromState() {
 }
 
 func (cm *CommitteeMechanism) GetLeader(shardId uint32, txhash common.Hash) *api.Member {
-	cm.lock.RLock()
-	defer cm.lock.RUnlock()
+	cm.cmLock.RLock()
+	defer cm.cmLock.RUnlock()
 
 	if committee, ok := cm.Committees[shardId]; ok {
 		index := int(binary.BigEndian.Uint32(txhash[:4])) % committee.Number
@@ -108,8 +99,8 @@ func (cm *CommitteeMechanism) GetLeader(shardId uint32, txhash common.Hash) *api
 }
 
 func (cm *CommitteeMechanism) IsLeader(txhash common.Hash) bool {
-	cm.lock.RLock()
-	defer cm.lock.RUnlock()
+	cm.cmLock.RLock()
+	defer cm.cmLock.RUnlock()
 
 	if committee, ok := cm.Committees[cm.SelfShard]; ok {
 		index := int(binary.BigEndian.Uint32(txhash[:4])) % committee.Number
@@ -124,22 +115,22 @@ func (cm *CommitteeMechanism) IsLeader(txhash common.Hash) bool {
 }
 
 func (cm *CommitteeMechanism) IsMember() bool {
-	cm.lock.RLock()
-	defer cm.lock.RUnlock()
+	cm.cmLock.RLock()
+	defer cm.cmLock.RUnlock()
 
 	return cm.isMember
 }
 
 func (cm *CommitteeMechanism) GetCommittee(shardID uint32) *api.ShardSimulateCommittee {
-	cm.lock.RLock()
-	defer cm.lock.RUnlock()
+	cm.cmLock.RLock()
+	defer cm.cmLock.RUnlock()
 
 	return cm.Committees[shardID]
 }
 
 func (cm *CommitteeMechanism) UpdateCommittee(shardID uint32, committee *api.ShardSimulateCommittee) {
-	cm.lock.Lock()
-	defer cm.lock.Unlock()
+	cm.cmLock.Lock()
+	defer cm.cmLock.Unlock()
 
 	cm.Committees[shardID] = committee
 	cm.shardNum = uint32(len(cm.Committees))
@@ -155,23 +146,23 @@ func (cm *CommitteeMechanism) UpdateCommittee(shardID uint32, committee *api.Sha
 }
 
 func (cm *CommitteeMechanism) GetValidators(shardId uint32) map[common.Address]*api.Validator {
-	cm.lock.RLock()
-	defer cm.lock.RUnlock()
+	cm.cmLock.RLock()
+	defer cm.cmLock.RUnlock()
 
 	return cm.Validators[shardId]
 }
 
 func (cm *CommitteeMechanism) UpdateValidators(shardId uint32, validators map[common.Address]*api.Validator) {
-	cm.lock.Lock()
-	defer cm.lock.Unlock()
+	cm.cmLock.Lock()
+	defer cm.cmLock.Unlock()
 
 	cm.Validators[shardId] = validators
 	cm.shardNum = uint32(len(cm.Committees))
 }
 
 func (cm *CommitteeMechanism) Stake(address common.Address, stake *big.Int) {
-	cm.lock.Lock()
-	defer cm.lock.Unlock()
+	cm.cmLock.Lock()
+	defer cm.cmLock.Unlock()
 
 	if candidate, ok := cm.Candidates[address]; ok {
 		candidate.Stake.Add(candidate.Stake, stake)

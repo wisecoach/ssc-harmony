@@ -10,7 +10,7 @@ import (
 	"github.com/ethereum/go-ethereum/event"
 	"github.com/harmony-one/harmony/block"
 	"github.com/harmony-one/harmony/core"
-	core_state "github.com/harmony-one/harmony/core/state"
+	corestate "github.com/harmony-one/harmony/core/state"
 	"github.com/harmony-one/harmony/core/types"
 	"github.com/harmony-one/harmony/core/vm"
 	"github.com/harmony-one/harmony/hmy"
@@ -30,27 +30,28 @@ type sscService struct {
 	txSigner     api.TxSigner
 	txSubmitter  api.TxSubmitter
 	lockStateMgr api.StateLockManager
+	timerMgr     *CXTTimerManager
 
 	Config *api.Config
 	bc     core.BlockChain
 
-	stateLock       lm.RWMutex // lock for simulationState
+	stateLock       lm.RWMutex // cmLock for simulationState
 	simulationState map[common.Hash]*api.CXTSimulationState
 
-	commitLock   lm.RWMutex // lock for commitStates, finishedTxs
+	commitLock   lm.RWMutex // cmLock for commitStates, finishedTxs
 	commitStates map[common.Hash]*api.CommitState
 	finishedTxs  map[common.Hash]bool
 
 	executionVerifyContexts map[common.Hash]*api.ExecutionVerifyContext // TxHash -> ExecutionVerifyContext
 
-	syncLock            lm.Mutex // lock for callStatesInWaiting
+	syncLock            lm.Mutex // cmLock for callStatesInWaiting
 	callStatesInWaiting map[common.Hash][]*api.SimulationCallState
 
-	simuLock       lm.Mutex // lock for simuWaitingChs, simuResultCh
+	simuLock       lm.Mutex // cmLock for simuWaitingChs, simuResultCh
 	simuWaitingChs map[common.Hash][]chan *api.CXTSimulationSSCResult
 	simuResultCh   map[common.Hash]chan *api.CXTSimulationSSCResult // used to notify simulation finished
 
-	preSimuLock    lm.Mutex                                         // lock for cachedResultCh
+	preSimuLock    lm.Mutex                                         // cmLock for cachedResultCh
 	cachedResultCh map[common.Hash]chan *api.CXTSimulationSSCResult // cached for consensus leader
 
 	ctx          context.Context
@@ -62,7 +63,7 @@ func (s *sscService) GetShardID(address common.Address) uint32 {
 	return s.CommitteeMechanism.GetShardID(address)
 }
 
-func NewService(ctx context.Context, config *api.Config, cm *CommitteeMechanism,
+func NewService(ctx context.Context, config *api.Config, cm *CommitteeMechanism, sscConfig *api.ShardSimulateCommitteeConfig,
 	signer api.BLSSigner, nodeAPI hmy.NodeAPI, bc core.BlockChain, txSigner api.TxSigner) api.Service {
 	state, _ := bc.State()
 	txSub := &txSubmitter{
@@ -99,11 +100,16 @@ func NewService(ctx context.Context, config *api.Config, cm *CommitteeMechanism,
 		chainHeadSub:            nil,
 	}
 	service.lockStateMgr = newStateLockManager(service)
+	service.timerMgr = NewTimerManager(sscConfig.Timeout, service)
 	subscription := bc.SubscribeChainHeadEvent(service.chainHeadCh)
 	service.chainHeadSub = subscription
 	utils.SSCLogger().Info().Msg("ssc service start...")
 	go service.loop()
 	return service
+}
+
+func (s *sscService) BlockCommitted(blockNum uint64) {
+	s.timerMgr.BlockCommitted(blockNum)
 }
 
 func (s *sscService) loop() {
@@ -161,21 +167,26 @@ func (s *sscService) startSimulation(req *api.CXTSimulationRequest) (*api.Simula
 	}
 	callState.DB = db
 
-	s.lock.Lock()
+	s.stateLock.Lock()
 	state := s.simulationState[txHash]
 	state.CurrentCallFrame = &api.CallFrame{
 		CallIndex: api.CallIndex{},
 		PC:        0,
 	}
 	state.SimulationCallStates[req.SimulationNum] = state.SimulationCallStates[req.SimulationNum].Add(callState)
+	s.stateLock.Unlock()
+
+	s.commitLock.Lock()
 	commitState := s.commitStates[txHash]
 	if commitState == nil {
 		s.commitStates[txHash] = &api.CommitState{
-			CommitVotes:    make(map[int]map[uint32][]*api.CXTCommitVote),
-			CommitSSCVotes: make(map[int]map[uint32]*api.CXTCommitSSCVote),
+			CommitVotes:     make(map[int]map[uint32][]*api.CXTCommitVote),
+			CommitSSCVotes:  make(map[int]map[uint32]*api.CXTCommitSSCVote),
+			RollbackVotes:   make(map[uint32][]*api.CXTCommitVote),
+			RollbackSSCVote: nil,
 		}
 	}
-	s.lock.Unlock()
+	s.commitLock.Unlock()
 
 	return callState, nil
 }
@@ -189,7 +200,7 @@ func (s *sscService) startCXT(txHash common.Hash, simulationNum int, originShard
 
 	// don't start if the simulationNum is not larger than current one
 	if state != nil && state.SimulationNum >= simulationNum {
-		utils.SSCLogger().Info().Str("txHash", txHash.Hex()).
+		utils.SSCLogger().Debug().Str("txHash", txHash.Hex()).
 			Msgf("the context has been started, current simulationNum %d, new simulationNum %d", state.SimulationNum, simulationNum)
 		return false, nil
 	}
@@ -205,7 +216,10 @@ func (s *sscService) startCXT(txHash common.Hash, simulationNum int, originShard
 	}()
 
 	newState := &api.CXTSimulationState{
-		CurrentCallFrame:     nil,
+		CurrentCallFrame: &api.CallFrame{
+			CallIndex: api.CallIndex{},
+			PC:        0,
+		},
 		CallStack:            api.NewCallStack(),
 		SimulationRequest:    topRequest,
 		SimulationResult:     nil,
@@ -222,13 +236,11 @@ func (s *sscService) startCXT(txHash common.Hash, simulationNum int, originShard
 	// start a new resimulation state
 	if simulationNum > 0 {
 		if state == nil {
-			utils.SSCLogger().Error().Str("txHash", txHash.Hex()).
-				Msgf("no origin state found for resimulation, simulationNum %d", simulationNum)
-			return false, api.ErrTxHasBeenClosed
+			state = newState
 		}
 		// extend from originRequest
 		if topRequest != nil {
-			utils.SSCLogger().Info().Str("txHash", txHash.Hex()).
+			utils.SSCLogger().Debug().Str("txHash", txHash.Hex()).
 				Interface("originRequest", s.simulationState[txHash].SimulationRequest).
 				Msgf("extend from origin request, simulationNum %d", topRequest.SimulationNum)
 			originReq := s.simulationState[txHash].SimulationRequest
@@ -253,11 +265,30 @@ func (s *sscService) startCXT(txHash common.Hash, simulationNum int, originShard
 	newState.SimulationCallStates[simulationNum] = make(api.SimulationCallStates, 0)
 	s.simulationState[txHash] = newState
 
-	utils.SSCLogger().Info().Str("txHash", txHash.Hex()).
+	utils.SSCLogger().Debug().Str("txHash", txHash.Hex()).
 		Msgf("startCXT for tx %s, simulationNum %d, OriginShardId %d, relatedShards %v, oldRelatedShards %v",
 			txHash.Hex(), simulationNum, originShardId, newState.RelatedShards, relatedShards)
 
 	return true, nil
+}
+
+func (s *sscService) handleTxSp1Timeout(txHash common.Hash) {
+	utils.SSCLogger().Debug().Str("txHash", txHash.Hex()).Msgf("cxt has timeout for sp1, send rollback vote to ssc leader")
+	payload := &api.CXTInvalidSimulationPayload{
+		Type: api.CXTTimeout,
+	}
+	// TODO timeout 需要专门被处理，而不是默认simulationNUm=0,而导致被拒绝处理
+	payloadBytes, _ := json.Marshal(payload)
+	vote := &api.CXTCommitVote{
+		BaseSSCMessage: &api.BaseSSCMessage{},
+		TxHash:         txHash.Bytes(),
+		ShardId:        s.SelfShard,
+		OriginShardId:  s.SelfShard,
+		Type:           api.Rollback,
+		Reason:         api.ReasonCxtTimeoutForSp1,
+		Payload:        payloadBytes,
+	}
+	s.sendCXTCommitVote(s.SelfShard, vote)
 }
 
 func newStateSet() *api.StateSet {
@@ -280,7 +311,7 @@ func (s *sscService) SimulationResult(txHash common.Hash) (*api.CXTSimulationSSC
 	ch := s.cachedResultCh[txHash]
 	s.preSimuLock.Unlock()
 	if ch != nil {
-		utils.SSCLogger().Info().Str("txHash", txHash.Hex()).Msg("get simulation result from channel")
+		utils.SSCLogger().Debug().Str("txHash", txHash.Hex()).Msg("get simulation result from channel")
 		return <-ch, nil
 	}
 	// try to get result from ssc leader
@@ -336,7 +367,7 @@ func (s *sscService) RequestSimulationResult(req *api.SimulationResultRequest) (
 }
 
 func (s *sscService) SimulateCXTransaction(req *api.CXTSimulationRequest) {
-	utils.SSCLogger().Info().Str("txHash", req.Tx.Hash().String()).Msg("simulate cx transaction, start")
+	utils.SSCLogger().Debug().Str("txHash", req.Tx.Hash().String()).Msg("simulate cx transaction, start")
 	leader := s.GetLeader(s.SelfShard, req.Tx.Hash())
 
 	ctx, cancel := context.WithTimeout(s.ctx, s.Config.CallTimeout)
@@ -354,7 +385,7 @@ func (s *sscService) SimulateCXTransaction(req *api.CXTSimulationRequest) {
 			ret = &api.CXTSimulationSSCResult{Err: err.Error()}
 		}
 		ch <- ret
-		utils.SSCLogger().Info().Str("txHash", req.Tx.Hash().String()).Msg("simulate cx transaction, end")
+		utils.SSCLogger().Debug().Str("txHash", req.Tx.Hash().String()).Msg("simulate cx transaction, end")
 	}()
 }
 
@@ -380,7 +411,7 @@ func (s *sscService) CallCXTContract(req *api.CXTCallRequest) *api.CXTCallSSCRes
 
 	// if it's recall and callState is locked
 	if cxtState.SimulationNum > 0 && req.CallIndex.Compare(cxtState.LockedCallIndex) <= 0 {
-		utils.SSCLogger().Info().Str("txHash", txHash.String()).
+		utils.SSCLogger().Debug().Str("txHash", txHash.String()).
 			Str("callIndex", req.CallIndex.ToString()).
 			Msg("recall contract has been locked, reuse it")
 		callStates := cxtState.SimulationCallStates[req.SimulationNum]
@@ -389,7 +420,7 @@ func (s *sscService) CallCXTContract(req *api.CXTCallRequest) *api.CXTCallSSCRes
 		dependentCall := lockedCallStates.Get(req.CallIndex).DependentCXTCalls[req.CallIndex.ToString()]
 		callerState.DependentCXTCalls[req.CallIndex.ToString()] = dependentCall
 		ret := callerState.DependentCXTCalls[req.CallIndex.ToString()].SSCResult
-		s.simuLock.Unlock()
+		s.stateLock.Unlock()
 		return ret
 	}
 
@@ -420,7 +451,7 @@ func (s *sscService) CallCXTContract(req *api.CXTCallRequest) *api.CXTCallSSCRes
 	s.stateLock.Unlock()
 
 	leader := s.GetLeader(s.SelfShard, txHash)
-	utils.SSCLogger().Info().
+	utils.SSCLogger().Debug().
 		Str("txHash", txHash.String()).
 		Str("cxtStateCallIndex", cxtState.CurrentCallFrame.CallIndex.ToString()).
 		Str("reqCallIndex", req.CallIndex.ToString()).
@@ -442,14 +473,14 @@ func (s *sscService) CallCXTContract(req *api.CXTCallRequest) *api.CXTCallSSCRes
 	}
 	if ret.Err != "" {
 		utils.SSCLogger().Error().Str("txHash", txHash.String()).
-			Str("callIndex", req.CallIndex.ToString()).Err(errors.New(ret.Err)).Msg("failed to call cxt contract")
+			Str("callIndex", req.CallIndex.ToString()).Err(errors.New(ret.Err)).Msgf("failed to call cxt contract, targetShardId: %d", req.TargetShardId)
 	}
 	s.stateLock.Lock()
 	dependentCall.SSCResult = ret
 	dependentCall.Executed = true
 	dependentCall.WaitingChs = nil
 	cxtState.RelatedShards = ret.RelatedShards
-	utils.SSCLogger().Info().Str("txHash", txHash.String()).
+	utils.SSCLogger().Debug().Str("txHash", txHash.String()).
 		Str("callIndex", req.CallIndex.ToString()).
 		Uint32("targetShard", targetShardId).
 		Str("relatedShards", fmt.Sprintf("%v", cxtState.RelatedShards)).
@@ -458,24 +489,25 @@ func (s *sscService) CallCXTContract(req *api.CXTCallRequest) *api.CXTCallSSCRes
 	return ret
 }
 
-func (s *sscService) VerifySimulation(simulationBytes []byte, stateDB api.StateDB) {
+func (s *sscService) VerifySimulation(simulationBytes []byte, stateDB api.StateDB, header *block.Header) {
 	// 1
 	simulation := &api.CXTSimulation{}
 	err := json.Unmarshal(simulationBytes, simulation)
 	// 1 [x]
 	if err != nil {
-		utils.SSCLogger().Error().Err(err).Str("txHash", common.BytesToHash(simulation.TxHash).Hex()).
+		txHash := common.BytesToHash(simulation.TxHash)
+		utils.SSCLogger().Error().Err(err).Str("txHash", txHash.Hex()).
 			Msgf("failed to unmarshal simulation, size: %d", len(simulationBytes))
 		payload := &api.CXTInvalidSimulationPayload{
 			Type: api.InvalidSerialization,
 		}
 		payloadBytes, _ := json.Marshal(payload)
 		vote := &api.CXTCommitVote{
-			TxHash:        simulation.TxHash,
+			TxHash:        txHash.Bytes(),
 			Type:          api.Rollback,
 			ShardId:       s.SelfShard,
 			OriginShardId: simulation.OriginShardId,
-			Reason:        api.Reason_InvalidSimulation,
+			Reason:        api.ReasonInvalidSimulation,
 			Payload:       payloadBytes,
 		}
 		s.sendCXTCommitVote(simulation.OriginShardId, vote)
@@ -503,7 +535,7 @@ CallStates:
 				lockKey := api.FormKey(address, key)
 				_, err := stateDB.GetState(address, key)
 				if err != nil && errors.Is(err, api.ErrLockedByOtherTx) {
-					utils.SSCLogger().Info().Str("txHash", common.BytesToHash(simulation.TxHash).Hex()).
+					utils.SSCLogger().Debug().Str("txHash", txHash.Hex()).
 						Msgf("lock conflict for key: %s", lockKey)
 					conflictLockKeys = append(conflictLockKeys, lockKey)
 					conflictLockCallIndexes = append(conflictLockCallIndexes, callState.CallIndex)
@@ -516,7 +548,7 @@ CallStates:
 				lockKey := api.FormKey(address, key)
 				onChainValue, err := stateDB.GetState(address, key)
 				if err != nil && errors.Is(err, api.ErrLockedByOtherTx) {
-					utils.SSCLogger().Info().Str("txHash", common.BytesToHash(simulation.TxHash).Hex()).
+					utils.SSCLogger().Debug().Str("txHash", txHash.Hex()).
 						Msgf("lock conflict for key: %s", lockKey)
 					conflictLockKeys = append(conflictLockKeys, lockKey)
 					conflictLockCallIndexes = append(conflictLockCallIndexes, callState.CallIndex)
@@ -529,32 +561,25 @@ CallStates:
 		}
 
 		// execute the contract and check if the write set is consistent with the simulation's write set
-		execErr = s.verifyExecuteForCallState(simulation, txHash, callState, stateDB.(*core_state.DB))
+		execErr = s.verifyExecuteForCallState(simulation, txHash, callState, stateDB.(*corestate.DB))
 		if execErr != nil {
 			break CallStates
 		}
-
-		utils.SSCLogger().Info().Str("txHash", common.BytesToHash(simulation.TxHash).Hex()).
-			Str("callIndex", callState.CallIndex.ToString()).
-			Uint32("OriginShardId", simulation.OriginShardId).
-			Interface("rwset", callState.RWSet.WriteState.State).
-			Msgf("callState is not conflict, try to lock state with rwset")
-		s.lockStateWithRWSet(txHash, callState, stateDB)
 	}
 
 	if execErr != nil {
-		utils.SSCLogger().Error().Str("txHash", common.BytesToHash(simulation.TxHash).Hex()).
+		utils.SSCLogger().Error().Str("txHash", txHash.Hex()).
 			Err(execErr).Msg("failed to verify execution for call state")
 		payload := &api.CXTInvalidSimulationPayload{
 			Type: api.InvalidExecution,
 		}
 		payloadBytes, _ := json.Marshal(payload)
 		vote := &api.CXTCommitVote{
-			TxHash:        simulation.TxHash,
+			TxHash:        txHash.Bytes(),
 			Type:          api.Rollback,
 			ShardId:       s.SelfShard,
 			OriginShardId: simulation.OriginShardId,
-			Reason:        api.Reason_InvalidSimulation,
+			Reason:        api.ReasonInvalidSimulation,
 			Payload:       payloadBytes,
 		}
 		s.sendCXTCommitVote(simulation.OriginShardId, vote)
@@ -563,31 +588,47 @@ CallStates:
 
 	if conflictCallStateIndex >= 0 {
 		snapshot := stateDB.Snapshot()
-		err := s.lockStateWithExecution(simulation.CallStates[conflictCallStateIndex], stateDB.(*core_state.DB))
+		utils.SSCLogger().Debug().Str("txHash", txHash.Hex()).
+			Str("callIndex", simulation.CallStates[conflictCallStateIndex].CallIndex.ToString()).
+			Msgf("try to lock state with execution")
+		err := s.lockStateWithExecution(simulation.CallStates[conflictCallStateIndex], stateDB.(*corestate.DB))
 		if err != nil {
 			stateDB.RevertToSnapshot(snapshot)
-			utils.SSCLogger().Error().Str("txHash", common.BytesToHash(simulation.TxHash).Hex()).
+			utils.SSCLogger().Error().Str("txHash", txHash.Hex()).
 				Err(err).Msg("failed to lock state with execution")
 			payload := &api.CXTInvalidSimulationPayload{
 				Type: api.InvalidExecution,
 			}
 			payloadBytes, _ := json.Marshal(payload)
 			vote := &api.CXTCommitVote{
-				TxHash:        simulation.TxHash,
+				TxHash:        txHash.Bytes(),
 				Type:          api.Rollback,
 				ShardId:       s.SelfShard,
 				OriginShardId: simulation.OriginShardId,
-				Reason:        api.Reason_ConflictRWSet_FailedLock,
+				Reason:        api.ReasonConflictRWSetFailedLock,
 				Payload:       payloadBytes,
 			}
 			s.sendCXTCommitVote(simulation.OriginShardId, vote)
 			return
 		}
+		payload := &api.CXTConflictRWSetPayload{
+			ConflictCallIndex: simulation.CallStates[conflictCallStateIndex].CallIndex,
+		}
+		payloadBytes, _ := json.Marshal(payload)
+		vote := &api.CXTCommitVote{
+			TxHash:        txHash.Bytes(),
+			ShardId:       s.SelfShard,
+			Type:          api.Recall,
+			OriginShardId: simulation.OriginShardId,
+			Reason:        api.ReasonConflictRWSetRecall,
+			Payload:       payloadBytes,
+		}
+		s.sendCXTCommitVote(s.SelfShard, vote)
 		return
 	}
 
 	if len(conflictLockKeys) > 0 {
-		// save conflict lock keys to re-simulation later, and the commit simulation tx won't be packaged into the block
+		// save conflict cmLock keys to re-simulation later, and the commit simulation tx won't be packaged into the block
 		lockedStates := make(map[api.LockKey]interface{})
 		for _, callState := range simulation.CallStates {
 			for addr, account := range callState.RWSet.ReadState.State {
@@ -602,7 +643,7 @@ CallStates:
 			}
 		}
 
-		utils.SSCLogger().Info().Str("txHash", common.BytesToHash(simulation.TxHash).Hex()).
+		utils.SSCLogger().Debug().Str("txHash", txHash.Hex()).
 			Int("lockedStates", len(lockedStates)).
 			Msg("subscribe lock States for re-simulation")
 
@@ -614,37 +655,43 @@ CallStates:
 			}
 			payloadBytes, _ := json.Marshal(payload)
 			s.sendCXTCommitVote(simulation.OriginShardId, &api.CXTCommitVote{
-				TxHash:        simulation.TxHash,
+				TxHash:        txHash.Bytes(),
 				SimulationNum: simulation.SimulationNum,
 				ShardId:       simulation.ShardId,
 				OriginShardId: simulation.OriginShardId,
 				Type:          api.Rollback,
-				Reason:        api.Reason_ConflictRWSet_FailedLock,
+				Reason:        api.ReasonConflictRWSetFailedLock,
 				Payload:       payloadBytes,
 			})
 		}
 	} else {
-		utils.SSCLogger().Info().Str("txHash", common.BytesToHash(simulation.TxHash).Hex()).
+		utils.SSCLogger().Debug().Str("txHash", txHash.Hex()).
 			Uint32("OriginShardId", simulation.OriginShardId).
 			Int("size", len(simulationBytes)).
-			Msgf("simulation is valid")
+			Msgf("simulation is valid, lock the rwset and send commit vote")
+		for _, callState := range simulation.CallStates {
+			s.lockStateWithRWSet(txHash, callState, stateDB)
+		}
 		vote := &api.CXTCommitVote{
-			TxHash:        simulation.TxHash,
+			TxHash:        txHash.Bytes(),
 			ShardId:       s.SelfShard,
 			OriginShardId: simulation.OriginShardId,
 			Type:          api.Commit,
-			Reason:        api.Reason_SUCCESS,
+			Reason:        api.ReasonSuccess,
 			Payload:       nil,
 		}
-		utils.SSCLogger().Info().Str("txHash", common.BytesToHash(simulation.TxHash).Hex()).
+		utils.SSCLogger().Debug().Str("txHash", txHash.Hex()).
 			Uint32("OriginShardId", simulation.OriginShardId).
 			Int("size", len(simulationBytes)).
 			Msgf("send cxt commit vote")
 		s.sendCXTCommitVote(s.SelfShard, vote)
+		if s.SelfShard == simulation.OriginShardId {
+			s.timerMgr.StartTimer(txHash, header.NumberU64(), s.SelfShard)
+		}
 	}
 }
 
-func (s *sscService) verifyExecuteForCallState(simulation *api.CXTSimulation, txHash common.Hash, callState *api.CXTCallState, stateDB *core_state.DB) error {
+func (s *sscService) verifyExecuteForCallState(simulation *api.CXTSimulation, txHash common.Hash, callState *api.CXTCallState, stateDB *corestate.DB) error {
 	chainConfig := s.bc.Config()
 	vmConfig := s.bc.GetVMConfig()
 	verifyContext := s.executionVerifyContexts[txHash]
@@ -661,34 +708,20 @@ func (s *sscService) verifyExecuteForCallState(simulation *api.CXTSimulation, tx
 		simuRet   []byte
 	)
 
-	if callState.TopRequest != nil {
+	if callState.CallIndex.Top() {
 		req := callState.TopRequest
 		header = s.bc.GetHeaderByHash(common.BytesToHash(req.BlockHash))
-		tx := req.Tx
-		var signer types.Signer
-		if tx == nil {
-			utils.SSCLogger().Error().Str("txHash", common.BytesToHash(simulation.TxHash).Hex()).
-				Interface("simuState", s.simulationState[txHash]).
-				Interface("simulation", simulation).
-				Interface("topReq", req).
-				Msgf("top request tx is nil")
-		}
-		if tx.IsEthCompatible() {
-			if !chainConfig.IsEthCompatible(header.Epoch()) {
-				return errors.New("tx is eth compatible but chain is not")
-			}
-			signer = types.NewEIP155Signer(chainConfig.EthCompatibleChainID)
-		} else {
-			signer = types.MakeSigner(chainConfig, header.Epoch())
-		}
-		msg, _ := tx.AsMessage(signer)
-		origin = msg.From()
+		origin = req.From
 		callIndex = api.CallIndex{}
 		gasPrice = req.Tx.GasPrice()
 		addr = *req.Tx.To()
 		input = req.Tx.Data()
 		gas = req.Tx.GasLimit()
 		value = req.Tx.Value()
+		if callState.TopResult == nil {
+			marshal, _ := json.Marshal(callState)
+			return errors.New(fmt.Sprintf("top result is nil, callState: %s", string(marshal)))
+		}
 		simuRet = callState.TopResult.Result
 	} else {
 		req := callState.CallRequest
@@ -701,6 +734,10 @@ func (s *sscService) verifyExecuteForCallState(simulation *api.CXTSimulation, tx
 		input = req.Input
 		gas = req.Gas
 		value = req.Value
+		if callState.CallResult == nil {
+			marshal, _ := json.Marshal(callState)
+			return errors.New(fmt.Sprintf("top result is nil, callState: %s", string(marshal)))
+		}
 		simuRet = callState.CallResult.Result
 	}
 
@@ -711,7 +748,7 @@ func (s *sscService) verifyExecuteForCallState(simulation *api.CXTSimulation, tx
 		PC:        0,
 	}
 
-	utils.SSCLogger().Info().Hex("txHash", simulation.TxHash).
+	utils.SSCLogger().Debug().Str("txHash", txHash.Hex()).
 		Str("callIndex", callIndex.ToString()).
 		Int("results_num", len(verifyContext.DependentResults)).
 		Str("simulation", simulation.String()).
@@ -740,146 +777,13 @@ func (s *sscService) verifyExecuteForCallState(simulation *api.CXTSimulation, tx
 	return nil
 }
 
-// VerifySimulation
-//  0. unmarshal simulation and verify the signature of the simulation
-//     0 [x] return: it means ssc is malicious, all nodes should send a rollback vote to origin-shard's ssc leader directly
-//  1. check if there is any lock conflict with current state
-//  2. execute the called contract with VerifyExecution and check if the write set is consistent with the simulation's write set
-//     2 [x] return: it means ssc is malicious, it make a invalid simulation, all nodes should send a rollback vote to origin-shard's ssc leader directly
-//  3. check each cross-call if the state is consistent with the simulation's read set
-//     3 [y] if all cross-call is consistent, return send a commit vote to self-shard's ssc leader
-//     3 [y|1x] if execution is valid, but lock conflict, try to re-simulate
-//     3 [y|1y] if execution is valid and no lock conflict, send a commit vote to self-shard's ssc leader
-//     3 [x] if there is a inconsistent cross-call, re-execute the first inconsistent cross-call and lock the state with LockExecution
-//     3 [x|x] return: if re-execute failed, all nodes should send a rollback vote to ssc leader and then send signed vote to origin-shard's ssc leader
-//     3 [x|y] return: if the first inconsistent cross-call is re-executed and locks state successfully, send a recall vote with conflict callIndex to ssc leader
-//
-// Note: thread unsafe
-func (s *sscService) VerifySimulation2(simulationBytes []byte, stateDB api.StateDB) {
-	// 1
-	simulation := &api.CXTSimulation{}
-	err := json.Unmarshal(simulationBytes, simulation)
-	// 1 [x]
-	if err != nil {
-		utils.SSCLogger().Error().Err(err).Str("txHash", common.BytesToHash(simulation.TxHash).Hex()).
-			Msgf("failed to unmarshal simulation, size: %d", len(simulationBytes))
-		payload := &api.CXTInvalidSimulationPayload{
-			Type: api.InvalidSerialization,
-		}
-		payloadBytes, _ := json.Marshal(payload)
-		vote := &api.CXTCommitVote{
-			TxHash:        simulation.TxHash,
-			Type:          api.Rollback,
-			ShardId:       s.SelfShard,
-			OriginShardId: simulation.OriginShardId,
-			Reason:        api.Reason_InvalidSimulation,
-			Payload:       payloadBytes,
-		}
-		s.sendCXTCommitVote(simulation.OriginShardId, vote)
-		return
-	}
-	// 1 TODO verify the signature
-	if err != nil {
-		payload := &api.CXTInvalidSimulationPayload{
-			Type: api.InvalidSignature,
-		}
-		payloadBytes, _ := json.Marshal(payload)
-		vote := &api.CXTCommitVote{
-			TxHash:        simulation.TxHash,
-			Type:          api.Rollback,
-			OriginShardId: simulation.OriginShardId,
-			Reason:        api.Reason_InvalidSimulation,
-			Payload:       payloadBytes,
-		}
-		s.sendCXTCommitVote(simulation.OriginShardId, vote)
-		return
-	}
-
-	txHash := common.BytesToHash(simulation.TxHash)
-
-	utils.SSCLogger().Info().Str("txHash", txHash.Hex()).
-		Uint32("OriginShardId", simulation.OriginShardId).
-		Int("size", len(simulationBytes)).
-		Msgf("begin to verify simulation")
-
-	lockConflict := s.checkLockConflict(simulation, stateDB)
-
-	// 2
-	if !s.verifyExecutionState(simulation, stateDB) {
-		return
-	}
-
-	// 3
-	stateValid := s.checkStateAndReadSet(simulation, stateDB)
-
-	// 3 [y]
-	if stateValid {
-		if lockConflict {
-			// save conflict lock keys to re-simulation later, and the commit simulation tx won't be packaged into the block
-			lockedStates := make(map[api.LockKey]interface{})
-			for _, callState := range simulation.CallStates {
-				for addr, account := range callState.RWSet.ReadState.State {
-					for key, _ := range account {
-						lockedStates[api.FormKey(addr, key)] = struct{}{}
-					}
-				}
-				for addr, account := range callState.RWSet.WriteState.State {
-					for key, _ := range account {
-						lockedStates[api.FormKey(addr, key)] = struct{}{}
-					}
-				}
-			}
-
-			utils.SSCLogger().Info().Str("txHash", common.BytesToHash(simulation.TxHash).Hex()).
-				Int("lockedStates", len(lockedStates)).
-				Msg("subscribe lock States for re-simulation")
-
-			err = s.lockStateMgr.Subscribe(txHash, simulation.Nonce, common.BytesToAddress(simulation.Sender), lockedStates,
-				simulation.OriginShardId, simulation.SimulationNum+1, false)
-			if err != nil {
-				payload := &api.CXTConflictRWSetPayload{
-					ConflictCallIndex: api.CallIndex{},
-				}
-				payloadBytes, _ := json.Marshal(payload)
-				s.sendCXTCommitVote(simulation.OriginShardId, &api.CXTCommitVote{
-					TxHash:        simulation.TxHash,
-					SimulationNum: simulation.SimulationNum,
-					ShardId:       simulation.ShardId,
-					OriginShardId: simulation.OriginShardId,
-					Type:          api.Rollback,
-					Reason:        api.Reason_ConflictRWSet_FailedLock,
-					Payload:       payloadBytes,
-				})
-			}
-		} else {
-			utils.SSCLogger().Info().Str("txHash", common.BytesToHash(simulation.TxHash).Hex()).
-				Uint32("OriginShardId", simulation.OriginShardId).
-				Int("size", len(simulationBytes)).
-				Msgf("simulation is valid")
-			vote := &api.CXTCommitVote{
-				TxHash:        simulation.TxHash,
-				ShardId:       s.SelfShard,
-				OriginShardId: simulation.OriginShardId,
-				Type:          api.Commit,
-				Reason:        api.Reason_SUCCESS,
-				Payload:       nil,
-			}
-			utils.SSCLogger().Info().Str("txHash", common.BytesToHash(simulation.TxHash).Hex()).
-				Uint32("OriginShardId", simulation.OriginShardId).
-				Int("size", len(simulationBytes)).
-				Msgf("send cxt commit vote")
-			s.sendCXTCommitVote(s.SelfShard, vote)
-		}
-	}
-}
-
 func (s *sscService) sendCXTCommitVote(shardId uint32, vote *api.CXTCommitVote) {
 	ctx, cancel := context.WithTimeout(s.ctx, s.Config.CallTimeout)
 	defer cancel()
 
 	targetLeader := s.GetLeader(shardId, common.BytesToHash(vote.TxHash))
 
-	utils.SSCLogger().Info().Msgf("send CXTCommitVote to %s", targetLeader.Endpoint)
+	utils.SSCLogger().Debug().Msgf("send CXTCommitVote to %s", targetLeader.Endpoint)
 	s.Comm.Call(ctx, nil, targetLeader, api.Method_HandleCommitVote, vote)
 }
 
@@ -896,7 +800,7 @@ func (s *sscService) checkLockConflict(simulation *api.CXTSimulation, stateDB ap
 				// TODO 改成只是检查锁状态，不需要获取状态
 				_, err := stateDB.GetState(address, key)
 				if err != nil && errors.Is(err, api.ErrLockedByOtherTx) {
-					utils.SSCLogger().Info().Str("txHash", common.BytesToHash(simulation.TxHash).Hex()).
+					utils.SSCLogger().Debug().Str("txHash", txHash.Hex()).
 						Msgf("lock conflict for key: %s", lockKey)
 					conflictLockKeys = append(conflictLockKeys, lockKey)
 					conflictCallIndexes = append(conflictCallIndexes, callState.CallIndex)
@@ -908,7 +812,7 @@ func (s *sscService) checkLockConflict(simulation *api.CXTSimulation, stateDB ap
 				lockKey := api.FormKey(address, key)
 				_, err := stateDB.GetState(address, key)
 				if err != nil && errors.Is(err, api.ErrLockedByOtherTx) {
-					utils.SSCLogger().Info().Str("txHash", common.BytesToHash(simulation.TxHash).Hex()).
+					utils.SSCLogger().Debug().Str("txHash", txHash.Hex()).
 						Msgf("lock conflict for key: %s", lockKey)
 					conflictLockKeys = append(conflictLockKeys, lockKey)
 					conflictCallIndexes = append(conflictCallIndexes, callState.CallIndex)
@@ -917,7 +821,7 @@ func (s *sscService) checkLockConflict(simulation *api.CXTSimulation, stateDB ap
 		}
 	}
 
-	utils.SSCLogger().Info().Str("txHash", txHash.Hex()).
+	utils.SSCLogger().Debug().Str("txHash", txHash.Hex()).
 		Int("conflictLockKeys", len(conflictLockKeys)).
 		Int("conflictCallIndexes", len(conflictCallIndexes)).
 		Msg("check lock conflict for simulation")
@@ -925,233 +829,7 @@ func (s *sscService) checkLockConflict(simulation *api.CXTSimulation, stateDB ap
 	return len(conflictLockKeys) > 0
 }
 
-func (s *sscService) verifyExecutionState(simulation *api.CXTSimulation, stateDB api.StateDB) bool {
-	valid := true
-	var verifyErr error
-	txHash := common.BytesToHash(simulation.TxHash)
-	callStateMap := make(map[string]*api.CXTCallState)
-	for _, callState := range simulation.CallStates {
-		callStateMap[callState.CallIndex.ToString()] = callState
-	}
-	verifyContext := &api.ExecutionVerifyContext{Simulation: simulation, CallStateMap: callStateMap}
-	s.executionVerifyContexts[txHash] = verifyContext
-	utils.SSCLogger().Info().Str("txHash", txHash.Hex()).
-		Msg("verify execution state")
-
-	stateDB = stateDB.(*core_state.DB)
-	chainConfig := s.bc.Config()
-	vmConfig := s.bc.GetVMConfig()
-	for i, callState := range simulation.CallStates {
-		var (
-			origin    common.Address
-			callIndex api.CallIndex
-			gasPrice  *big.Int
-			addr      common.Address
-			input     []byte
-			gas       uint64
-			value     *big.Int
-			header    *block.Header
-			simuRet   []byte
-		)
-
-		if callState.TopRequest != nil {
-			req := callState.TopRequest
-			header = s.bc.GetHeaderByHash(common.BytesToHash(req.BlockHash))
-			tx := req.Tx
-			var signer types.Signer
-			if tx == nil {
-				utils.SSCLogger().Error().Str("txHash", common.BytesToHash(simulation.TxHash).Hex()).
-					Interface("simuState", s.simulationState[txHash]).
-					Interface("simulation", simulation).
-					Interface("topReq", req).
-					Msgf("top request tx is nil")
-			}
-			if tx.IsEthCompatible() {
-				if !chainConfig.IsEthCompatible(header.Epoch()) {
-					return false
-				}
-				signer = types.NewEIP155Signer(chainConfig.EthCompatibleChainID)
-			} else {
-				signer = types.MakeSigner(chainConfig, header.Epoch())
-			}
-			msg, _ := tx.AsMessage(signer)
-			origin = msg.From()
-			callIndex = api.CallIndex{}
-			gasPrice = req.Tx.GasPrice()
-			addr = *req.Tx.To()
-			input = req.Tx.Data()
-			gas = req.Tx.GasLimit()
-			value = req.Tx.Value()
-			simuRet = callState.TopResult.Result
-		} else {
-			req := callState.CallRequest
-			blockHash := common.BytesToHash(req.BlockHash)
-			header = s.bc.GetHeaderByHash(blockHash)
-			origin = req.Caller
-			callIndex = req.CallIndex
-			gasPrice = req.GasPrice
-			addr = req.Addr
-			input = req.Input
-			gas = req.Gas
-			value = req.Value
-			simuRet = callState.CallResult.Result
-		}
-
-		verifyContext.CurrentState = newStateSet()
-		verifyContext.DependentResults = callState.DependentResults
-		verifyContext.CallFrame = &api.CallFrame{
-			CallIndex: callIndex,
-			PC:        0,
-		}
-
-		utils.SSCLogger().Info().Hex("txHash", simulation.TxHash).
-			Str("callIndex", callIndex.ToString()).
-			Int("results_num", len(verifyContext.DependentResults)).
-			Str("simulation", simulation.String()).
-			Msgf("verify call state %d for shard %d", i, s.SelfShard)
-
-		// prepare execution verify context
-		sender := vm.AccountRef(origin)
-		vmCtx := core.NewSSCVMContext(origin, txHash, callIndex, gasPrice, header, s.bc, nil)
-		sscvm := vm.NewSSCVM(vmCtx, stateDB.(*core_state.DB), chainConfig, *vmConfig, s, vm.ExecutionVerify)
-
-		// execute contract with ExecutionVerify
-		ret, _, err := sscvm.Call(sender, addr, input, gas, value)
-		if err != nil {
-			valid = false
-			verifyErr = err
-			break
-		}
-
-		// compare the result and leftOverGas
-		if bytes.Compare(ret, simuRet) != 0 {
-			valid = false
-			verifyErr = errors.New(fmt.Sprintf("simulation result is not equal to execution result, expected: %v, got: %v", simuRet, ret))
-			break
-		}
-		if !verifyContext.CurrentState.Equal(callState.RWSet.WriteState) {
-			valid = false
-			verifyErr = errors.New(fmt.Sprintf("simulation write set is not equal to execution write set, callFrame=%v, process: [%d/%d], expected: %v, got: %v",
-				verifyContext.CallFrame, verifyContext.CallFrame.PC, len(verifyContext.DependentResults),
-				callState.RWSet.WriteState, verifyContext.CurrentState))
-			break
-		}
-	}
-
-	// 2 [x]
-	if verifyErr != nil {
-		payload := &api.CXTInvalidSimulationPayload{
-			Type: api.InvalidExecution,
-		}
-		payloadBytes, _ := json.Marshal(payload)
-		vote := &api.CXTCommitVote{
-			TxHash:        simulation.TxHash,
-			Type:          api.Rollback,
-			ShardId:       s.SelfShard,
-			OriginShardId: simulation.OriginShardId,
-			Reason:        api.Reason_InvalidSimulation,
-			Payload:       payloadBytes,
-		}
-		s.sendCXTCommitVote(simulation.OriginShardId, vote)
-		utils.SSCLogger().Info().Str("txHash", common.BytesToHash(simulation.TxHash).Hex()).
-			Uint32("OriginShardId", simulation.OriginShardId).Err(verifyErr).
-			Msgf("simulation is invalid, send rollback vote")
-		return valid
-	}
-
-	utils.SSCLogger().Info().Str("txHash", common.BytesToHash(simulation.TxHash).Hex()).
-		Uint32("OriginShardId", simulation.OriginShardId).
-		Msgf("simulation is valid, send commit vote")
-
-	return valid
-}
-
-func (s *sscService) checkStateAndReadSet(simulation *api.CXTSimulation, stateDB api.StateDB) bool {
-	txHash := common.BytesToHash(simulation.TxHash)
-	snapshot := stateDB.Snapshot()
-	conflictCallIndexes := make([]api.CallIndex, 0)
-Outer:
-	for _, callState := range simulation.CallStates {
-		callConflict := false
-		// check if read set is conflict with current state
-		onChainState := make(map[common.Address]map[common.Hash]common.Hash)
-	ReadSetCheck:
-		for address, stateMap := range callState.RWSet.ReadState.State {
-			onChainState[address] = make(map[common.Hash]common.Hash)
-			for key, value := range stateMap {
-				s, _ := stateDB.GetState(address, key)
-				onChainState[address][key] = s
-				if bytes.Compare(value.Bytes(), s.Bytes()) != 0 {
-					callConflict = true
-					utils.SSCLogger().Info().Str("txHash", common.BytesToHash(simulation.TxHash).Hex()).
-						Interface("expectedReadSet", callState.RWSet.ReadState.State).
-						Interface("onChainState", onChainState).
-						Msg("read set is conflict with current state")
-					break ReadSetCheck
-				}
-			}
-		}
-		if callConflict {
-			err := s.lockStateWithExecution(callState, stateDB.(*core_state.DB))
-			// 3 [x|x]
-			if err != nil {
-				utils.SSCLogger().Error().Err(err).Str("txHash", common.BytesToHash(simulation.TxHash).Hex()).
-					Uint32("OriginShardId", simulation.OriginShardId).
-					Str("callIndex", callState.CallIndex.ToString()).
-					Msgf("callStates are conflict, and lock state failed, send rollback vote")
-				stateDB.RevertToSnapshot(snapshot)
-				vote := &api.CXTCommitVote{
-					TxHash:        simulation.TxHash,
-					ShardId:       s.SelfShard,
-					OriginShardId: simulation.OriginShardId,
-					Type:          api.Rollback,
-					Reason:        api.Reason_ConflictRWSet_FailedLock,
-					Payload:       nil,
-				}
-				s.sendCXTCommitVote(s.SelfShard, vote)
-				return false
-			}
-			conflictCallIndexes = append(conflictCallIndexes, callState.CallIndex)
-			break Outer
-		} else {
-			utils.SSCLogger().Info().Str("txHash", common.BytesToHash(simulation.TxHash).Hex()).
-				Str("callIndex", callState.CallIndex.ToString()).
-				Uint32("OriginShardId", simulation.OriginShardId).
-				Interface("rwset", callState.RWSet.WriteState.State).
-				Msgf("callState is not conflict, try to lock state with rwset")
-			s.lockStateWithRWSet(txHash, callState, stateDB)
-		}
-	}
-
-	// 3 [x|y]
-	if len(conflictCallIndexes) > 0 {
-		payload := &api.CXTConflictRWSetPayload{
-			ConflictCallIndex: conflictCallIndexes[0],
-		}
-		payloadBytes, _ := json.Marshal(payload)
-		vote := &api.CXTCommitVote{
-			TxHash:        simulation.TxHash,
-			ShardId:       s.SelfShard,
-			Type:          api.Recall,
-			OriginShardId: simulation.OriginShardId,
-			Reason:        api.Reason_ConflictRWSet_Recall,
-			Payload:       payloadBytes,
-		}
-		s.sendCXTCommitVote(s.SelfShard, vote)
-		utils.SSCLogger().Info().Str("txHash", common.BytesToHash(simulation.TxHash).Hex()).
-			Uint32("OriginShardId", simulation.OriginShardId).
-			Msgf("callStates are conflict, %v", conflictCallIndexes)
-		return false
-	}
-
-	utils.SSCLogger().Info().Str("txHash", common.BytesToHash(simulation.TxHash).Hex()).
-		Uint32("OriginShardId", simulation.OriginShardId).
-		Msgf("all callStates are not conflict")
-	// 3 [y]
-	return true
-}
-
-func (s *sscService) lockStateWithExecution(callState *api.CXTCallState, state *core_state.DB) error {
+func (s *sscService) lockStateWithExecution(callState *api.CXTCallState, state *corestate.DB) error {
 	var (
 		topReq        *api.CXTSimulationRequest
 		callReq       *api.CXTCallSSCRequest
@@ -1192,7 +870,7 @@ func (s *sscService) lockStateWithExecution(callState *api.CXTCallState, state *
 	vmCtx := core.NewSSCVMContext(caller, txHash, callIndex, gasPrice, header, s.bc, nil)
 	sscvm := vm.NewSSCVM(vmCtx, state, s.bc.Config(), *s.bc.GetVMConfig(), s, vm.LockExecution)
 
-	// execute contract with LockExecution to lock state and save recall simulation to handle recall request
+	// execute contract with LockExecution to cmLock state and save recall simulation to handle recall request
 	ret, leftOverGas, err := sscvm.Call(vm.AccountRef(caller), addr, input, gas, value)
 	result := &api.CXTCallResult{
 		CallIndex:      callIndex,
@@ -1208,7 +886,12 @@ func (s *sscService) lockStateWithExecution(callState *api.CXTCallState, state *
 
 	// cache the recall state for the next simulation recall state
 	if s.IsMember() {
-		simulationState := s.getState(txHash)
+		s.stateLock.Lock()
+		defer s.stateLock.Unlock()
+		simulationState, err := s.getState(txHash)
+		if err != nil {
+			return err
+		}
 		if simulationState.SimulationCallStates[simulationState.SimulationNum+1] == nil {
 			simulationState.SimulationCallStates[simulationState.SimulationNum+1] = make(api.SimulationCallStates, 0)
 		}
@@ -1248,14 +931,16 @@ func (s *sscService) CommitOrRollbackWithProof(commitProofBytes []byte, stateDB 
 		utils.SSCLogger().Error().Err(err).Msg("failed to unmarshal commit proof")
 		return err
 	}
-	utils.SSCLogger().Info().Str("txHash", common.BytesToHash(commitProof.TxHash).Hex()).
-		Str("type", commitProof.Type.String()).
-		Msgf("commit or rollback with proof, simulationNum=%d", commitProof.SimulationNum)
 	if err != nil {
 		utils.SSCLogger().Error().Err(err).Msg("failed to get lockable state")
 		return err
 	}
 	txHash := common.BytesToHash(commitProof.TxHash)
+	if _, exists := s.finishedTxs[txHash]; exists {
+		utils.SSCLogger().Debug().Str("txHash", txHash.Hex()).Msg("cxt has committed or rollback")
+		return nil
+	}
+
 	if commitProof.Type == api.Commit {
 		utils.SSCLogger().Info().Str("txHash", txHash.String()).Msgf("commit with proof, origin: [%v,%d]", commitProof.OriginShard == s.SelfShard, commitProof.OriginShard)
 		if commitProof.SimulationNum > 0 {
@@ -1267,8 +952,9 @@ func (s *sscService) CommitOrRollbackWithProof(commitProofBytes []byte, stateDB 
 			utils.SSCLogger().Error().Str("txHash", txHash.String()).Err(err).Msg("failed to commit tx with proof")
 			return err
 		}
+		s.closeTransaction(txHash, true)
 	} else if commitProof.Type == api.Rollback {
-		utils.SSCLogger().Info().Str("txHash", txHash.String()).Msgf("rollback with proof, origin: [%v,%d]", commitProof.OriginShard == s.SelfShard, commitProof.OriginShard)
+		utils.SSCLogger().Info().Str("txHash", txHash.String()).Msgf("rollback with proof, origin: [%v,%d], reason: %s", commitProof.OriginShard == s.SelfShard, commitProof.OriginShard, commitProof.Reason.String())
 		if commitProof.SimulationNum > 0 {
 			utils.SSCLogger().Info().Str("txHash", txHash.Hex()).Msgf("rollback with proof after %d resimulation, origin: [%v,%d]",
 				commitProof.SimulationNum, commitProof.OriginShard == s.SelfShard, commitProof.OriginShard)
@@ -1278,6 +964,7 @@ func (s *sscService) CommitOrRollbackWithProof(commitProofBytes []byte, stateDB 
 			utils.SSCLogger().Error().Str("txHash", txHash.String()).Err(err).Msg("failed to rollback tx with proof")
 			return err
 		}
+		s.closeTransaction(txHash, false)
 	}
 
 	return nil
@@ -1287,8 +974,8 @@ func (s *sscService) StartSimulateCXTransaction(req *api.CXTSimulationRequest) *
 	var waitingCh chan *api.CXTSimulationSSCResult
 	txHash := req.Tx.Hash()
 
-	utils.SSCLogger().Info().Int("simulationNum", req.SimulationNum).Str("txHash", txHash.String()).Msg("start simulate cx transaction, start")
-	defer utils.SSCLogger().Info().Int("simulationNum", req.SimulationNum).Str("txHash", txHash.String()).Msg("start simulate cx transaction, end")
+	utils.SSCLogger().Debug().Int("simulationNum", req.SimulationNum).Str("txHash", txHash.String()).Msg("start simulate cx transaction, start")
+	defer utils.SSCLogger().Debug().Int("simulationNum", req.SimulationNum).Str("txHash", txHash.String()).Msg("start simulate cx transaction, end")
 
 	s.simuLock.Lock()
 	if s.simuWaitingChs[txHash] == nil {
@@ -1348,9 +1035,6 @@ func (s *sscService) StartSimulateCXTransaction(req *api.CXTSimulationRequest) *
 		return sscResult
 	}
 
-	state := s.getState(req.Tx.Hash())
-	state.SimulationCallStates[state.SimulationNum][0].TopSSCResult = sscResult
-
 	simulationCommit := &api.SimulationCommit{
 		SimulationNum:        req.SimulationNum,
 		TxHash:               req.Tx.Hash().Bytes(),
@@ -1362,13 +1046,15 @@ func (s *sscService) StartSimulateCXTransaction(req *api.CXTSimulationRequest) *
 	if len(sscResult.Err) == 0 {
 		simulationCommit.Commit = true
 		simulationCommit.Status = api.OK
-		utils.SSCLogger().Info().Str("txHash", common.BytesToHash(simulationCommit.TxHash).Hex()).
+		utils.SSCLogger().Debug().Str("txHash", common.BytesToHash(simulationCommit.TxHash).Hex()).
 			Msgf("simulation accomplished, send simulation commit, commit type: %v, simulationNum: %d, relatedShards: %v",
 				simulationCommit.Commit, simulationCommit.SimulationNum, simulationCommit.RelatedShards)
 	} else {
 		if api.ErrLockedByOtherTx.Error() == sscResult.Err {
 			simulationCommit.Commit = false
 			simulationCommit.Status = api.LockConflict
+			// don't send commit simulation if state is locked by other tx
+			return sscResult
 		} else {
 			simulationCommit.Commit = false
 			simulationCommit.Status = api.ExecutionFailed
@@ -1377,6 +1063,27 @@ func (s *sscService) StartSimulateCXTransaction(req *api.CXTSimulationRequest) *
 			Err(errors.New(sscResult.Err)).Msgf("simulation accomplished, send simulation commit, commit type: %v, status: %v, simulationNum: %d, relatedShards: %v",
 			simulationCommit.Commit, simulationCommit.Status.String(), simulationCommit.SimulationNum, simulationCommit.RelatedShards)
 	}
+
+	s.stateLock.Lock()
+	state, err := s.getState(req.Tx.Hash())
+	if err != nil {
+		s.stateLock.Unlock()
+		sscResult = &api.CXTSimulationSSCResult{Err: err.Error(), RelatedShards: []uint32{s.SelfShard}}
+		utils.SSCLogger().Error().Str("txHash", txHash.String()).Err(err).Msg("failed to get state")
+		return sscResult
+	}
+	s.stateLock.Unlock()
+
+	s.simuLock.Lock()
+	state.SimulationCallStates[state.SimulationNum][0].TopSSCResult = sscResult
+	state.SimulationResult = sscResult
+	chs := s.simuWaitingChs[txHash]
+	s.simuLock.Unlock()
+
+	for _, ch := range chs {
+		ch <- sscResult
+	}
+
 	s.thresholdSignSimulationCommit(simulationCommit)
 	leaders := make([]*api.Member, 0, len(committee.Members))
 	for _, shardId := range simulationCommit.RelatedShards {
@@ -1384,14 +1091,6 @@ func (s *sscService) StartSimulateCXTransaction(req *api.CXTSimulationRequest) *
 	}
 	s.Comm.Multicast(ctx, leaders, api.Method_CommitSimulation, simulationCommit)
 
-	s.simuLock.Lock()
-	chs := s.simuWaitingChs[txHash]
-	state.SimulationResult = sscResult
-	s.simuLock.Unlock()
-
-	for _, ch := range chs {
-		ch <- sscResult
-	}
 	if s.simuResultCh[txHash] != nil {
 		s.simuResultCh[txHash] <- sscResult
 		close(s.simuResultCh[txHash])
@@ -1464,7 +1163,7 @@ func (s *sscService) aggregateSimulationResults(results []api.SSCMessage) (*api.
 
 func (s *sscService) HandleSimulateRequest(ctx context.Context, req *api.CXTSimulationRequest) *api.CXTSimulationResult {
 	txHash := common.BytesToHash(req.TxHash)
-	utils.SSCLogger().Info().Str("txHash", txHash.Hex()).Msgf("handle simulate request, start, simulationNum=%d", req.SimulationNum)
+	utils.SSCLogger().Info().Str("txHash", txHash.Hex()).Int("simulationNum", req.SimulationNum).Msgf("handle simulate request, start, simulationNum=%d", req.SimulationNum)
 	defer utils.SSCLogger().Info().Str("txHash", txHash.Hex()).Msg("handle simulate request, end")
 	callState, err := s.startSimulation(req)
 	if err != nil {
@@ -1472,6 +1171,15 @@ func (s *sscService) HandleSimulateRequest(ctx context.Context, req *api.CXTSimu
 	}
 	callState.Lock.Lock()
 	defer callState.Lock.Unlock()
+
+	s.stateLock.RLock()
+	simuState, err := s.getState(txHash)
+	if err != nil {
+		s.stateLock.RUnlock()
+		return &api.CXTSimulationResult{Err: err.Error()}
+	}
+	relatedShards := simuState.RelatedShards
+	s.stateLock.RUnlock()
 
 	header := s.bc.GetHeaderByHash(common.BytesToHash(req.BlockHash))
 	state, _ := s.bc.StateAt(header.Root())
@@ -1490,7 +1198,6 @@ func (s *sscService) HandleSimulateRequest(ctx context.Context, req *api.CXTSimu
 		executionType = vm.SimulationCall
 		// init cxt state
 	} else {
-		simuState := s.simulationState[txHash]
 		tx = simuState.SimulationRequest.Tx
 		gp = new(core.GasPool).AddGas(simuState.SimulationRequest.GasPool)
 		executionType = vm.SimulationReCall
@@ -1515,13 +1222,11 @@ func (s *sscService) HandleSimulateRequest(ctx context.Context, req *api.CXTSimu
 	vmCtx.TxType = types.CXTransaction
 	sscvm := vm.NewSSCVM(vmCtx, state, chainConfig, *vmConfig, s, executionType)
 	result, err := core.NewSSCStateTransition(sscvm, msg, gp).TransitionDb()
-	// TODO 处理锁冲突的问题
 	if err != nil {
 		return &api.CXTSimulationResult{Err: err.Error()}
 	}
-	simuState := s.getState(txHash)
 	ret := &api.CXTSimulationResult{
-		RelatedShards: simuState.RelatedShards,
+		RelatedShards: relatedShards,
 		Result:        result.ReturnData,
 		Receipt:       nil,
 		UsedGas:       result.UsedGas,
@@ -1529,6 +1234,25 @@ func (s *sscService) HandleSimulateRequest(ctx context.Context, req *api.CXTSimu
 	}
 	if result.VMErr != nil {
 		ret.Err = result.VMErr.Error()
+	}
+	if callState.LockedByOtherTx != nil {
+		ret.Err = api.ErrLockedByOtherTx.Error()
+		lockedStates := make(map[api.LockKey]interface{})
+		for addr, account := range callState.RWSet.ReadState.State {
+			for key, _ := range account {
+				lockedStates[api.FormKey(addr, key)] = struct{}{}
+			}
+		}
+		for addr, account := range callState.RWSet.ReadState.State {
+			for key, _ := range account {
+				lockedStates[api.FormKey(addr, key)] = struct{}{}
+			}
+		}
+		err := s.lockStateMgr.Subscribe(txHash, req.Tx.Nonce(), req.From, lockedStates,
+			s.SelfShard, req.SimulationNum+1, true)
+		if err != nil {
+			return nil
+		}
 	}
 	return ret
 }
@@ -1543,7 +1267,7 @@ func (s *sscService) RequestCallCXT(req *api.CXTCallRequest) *api.CXTCallSSCResu
 		return &api.CXTCallSSCResult{Err: "no simulation state found"}
 	}
 	callStates := cxtState.SimulationCallStates[req.SimulationNum]
-	utils.SSCLogger().Info().Str("txHash", txHash.Hex()).Str("callIndex", req.CallIndex.ToString()).Msgf("request call cxt, addr: %s, callStates: %s", req.Addr.Hex(), callStates.ToString())
+	utils.SSCLogger().Debug().Str("txHash", txHash.Hex()).Str("callIndex", req.CallIndex.ToString()).Msgf("request call cxt, addr: %s, callStates: %s", req.Addr.Hex(), callStates.ToString())
 	// get caller's call state
 	callerState := callStates.Get(req.CallIndex[:len(req.CallIndex)-1])
 	if callerState == nil {
@@ -1571,7 +1295,7 @@ func (s *sscService) RequestCallCXT(req *api.CXTCallRequest) *api.CXTCallSSCResu
 	}
 	s.stateLock.Unlock()
 
-	utils.SSCLogger().Info().Str("txHash", txHash.String()).Str("callIndex", req.CallIndex.ToString()).Msgf("request call cxt, waiting [%d/%d]", len(dependentCall.Requests), committee.Threshold)
+	utils.SSCLogger().Debug().Str("txHash", txHash.String()).Str("callIndex", req.CallIndex.ToString()).Msgf("request call cxt, waiting [%d/%d]", len(dependentCall.Requests), committee.Threshold)
 
 	if len(dependentCall.Requests) == committee.Threshold {
 		// aggregate signatures
@@ -1580,7 +1304,7 @@ func (s *sscService) RequestCallCXT(req *api.CXTCallRequest) *api.CXTCallSSCResu
 		sscReq := s.aggregateSSCCallRequest(dependentCall.Requests)
 		dependentCall.SignedRequest = sscReq
 
-		utils.SSCLogger().Info().
+		utils.SSCLogger().Debug().
 			Str("txHash", txHash.String()).
 			Str("cxtStateCallIndex", cxtState.CurrentCallFrame.CallIndex.ToString()).
 			Str("reqCallIndex", req.CallIndex.ToString()).
@@ -1591,7 +1315,7 @@ func (s *sscService) RequestCallCXT(req *api.CXTCallRequest) *api.CXTCallSSCResu
 			Str("addr", req.Addr.Hex()).
 			Str("sscAddr", sscReq.Addr.Hex()).
 			Str("callIndex", req.CallIndex.ToString()).Msg("request call cxt, start")
-		defer utils.SSCLogger().Info().Str("txHash", txHash.String()).Msg("request call cxt, end")
+		defer utils.SSCLogger().Debug().Str("txHash", txHash.String()).Msg("request call cxt, end")
 
 		ctx, cancel := context.WithTimeout(s.ctx, s.Config.CallTimeout)
 		defer cancel()
@@ -1651,13 +1375,17 @@ func (s *sscService) HandleCXTCall(req *api.CXTCallSSCRequest) *api.CXTCallResul
 	callState.Lock.Lock()
 	defer callState.Lock.Unlock()
 	txHash := common.BytesToHash(req.TxHash)
-	simuState := s.getState(txHash)
-	if simuState == nil {
+	s.stateLock.RLock()
+	simuState, err := s.getState(txHash)
+	if err != nil {
+		s.stateLock.RUnlock()
 		return &api.CXTCallResult{Err: "transaction has been closed"}
 	}
+	relatedShards := simuState.RelatedShards
+	s.stateLock.RUnlock()
 
-	utils.SSCLogger().Info().Str("txHash", txHash.Hex()).Str("callIndex", req.CallIndex.ToString()).Msg("handle cxt call, start")
-	defer utils.SSCLogger().Info().Str("txHash", txHash.Hex()).Msg("handle cxt call, end")
+	utils.SSCLogger().Debug().Str("txHash", txHash.Hex()).Str("callIndex", req.CallIndex.ToString()).Msg("handle cxt call, start")
+	defer utils.SSCLogger().Debug().Str("txHash", txHash.Hex()).Msg("handle cxt call, end")
 
 	header := s.bc.GetHeaderByHash(common.BytesToHash(req.BlockHash))
 	state, err := s.bc.StateAt(header.Root())
@@ -1675,11 +1403,12 @@ func (s *sscService) HandleCXTCall(req *api.CXTCallSSCRequest) *api.CXTCallResul
 	vmCtx := core.NewSSCVMContext(req.Caller, txHash, req.CallIndex, req.GasPrice, header, s.bc, nil)
 	sscvm := vm.NewSSCVM(vmCtx, state, chainConfig, *vmConfig, s, executionType)
 
-	// call contract with SimulationCall
+	utils.SSCLogger().Debug().Str("txHash", txHash.Hex()).Msgf("call contract with %s, callIndex=%s, simulationNum=%d",
+		executionType.String(), req.CallIndex.ToString(), req.SimulationNum)
 	ret, leftOverGas, err := sscvm.CallFromOtherShard(req.FromShardId, sender, req.Addr, req.Input, req.Gas, req.Value)
 	result := &api.CXTCallResult{
 		CallIndex:     req.CallIndex,
-		RelatedShards: simuState.RelatedShards,
+		RelatedShards: relatedShards,
 		Result:        ret,
 		LeftOverGas:   leftOverGas,
 		BlockHash:     header.Hash().Bytes(),
@@ -1717,12 +1446,12 @@ func (s *sscService) startCall(req *api.CXTCallSSCRequest) (*api.SimulationCallS
 		return nil, err
 	}
 
-	s.lock.Lock()
+	s.stateLock.Lock()
 	state := s.simulationState[txHash]
 	// check if callIndex is already in progress, don't start again
 	if state.SimulationCallStates[state.SimulationNum].Get(req.CallIndex) != nil {
-		utils.SSCLogger().Info().Str("txHash", txHash.Hex()).Msgf("callIndex has been started")
-		s.lock.Unlock()
+		utils.SSCLogger().Debug().Str("txHash", txHash.Hex()).Msgf("callIndex has been started, simulationNum=%d, callIndex=%s", state.SimulationNum, req.CallIndex.ToString())
+		s.stateLock.Unlock()
 		return state.SimulationCallStates[state.SimulationNum].Get(req.CallIndex), nil
 	}
 	// update new callIndex and clear current index
@@ -1733,10 +1462,10 @@ func (s *sscService) startCall(req *api.CXTCallSSCRequest) (*api.SimulationCallS
 		CallIndex: req.CallIndex,
 		PC:        0,
 	}
-	utils.SSCLogger().Info().Str("txHash", txHash.Hex()).Str("callIndex", state.CurrentCallFrame.CallIndex.ToString()).Int("currentIndex", state.CurrentCallFrame.PC).
+	utils.SSCLogger().Debug().Str("txHash", txHash.Hex()).Str("callIndex", state.CurrentCallFrame.CallIndex.ToString()).Int("currentIndex", state.CurrentCallFrame.PC).
 		Str("simulatedCallStates", state.SimulationCallStates[state.SimulationNum].ToString()).
-		Msgf("start call")
-	s.lock.Unlock()
+		Msgf("start call, simulationNum=%d, callIndex=%s", state.SimulationNum, req.CallIndex.ToString())
+	s.stateLock.Unlock()
 
 	callState := state.SimulationCallStates[state.SimulationNum].Get(req.CallIndex)
 	if callState == nil {
@@ -1754,9 +1483,9 @@ func (s *sscService) startCall(req *api.CXTCallSSCRequest) (*api.SimulationCallS
 		header := s.bc.GetHeaderByHash(callState.BlockHash)
 		// need to sync state
 		if header == nil {
-			utils.SSCLogger().Info().Msgf("block header not found, waiting for sync")
+			utils.SSCLogger().Debug().Msgf("block header not found, waiting for sync")
 			s.waitForSync(callState)
-			utils.SSCLogger().Info().Msgf("sync completed, block header founded")
+			utils.SSCLogger().Debug().Msgf("sync completed, block header founded")
 		}
 		s.bc.StateAt(header.Root())
 		state.SimulationCallStates[state.SimulationNum] = state.SimulationCallStates[state.SimulationNum].Add(callState)
@@ -1766,36 +1495,36 @@ func (s *sscService) startCall(req *api.CXTCallSSCRequest) (*api.SimulationCallS
 
 func (s *sscService) endCall(req *api.CXTCallSSCRequest) {
 	txHash := common.BytesToHash(req.TxHash)
-	s.lock.Lock()
+	s.stateLock.Lock()
 	state := s.simulationState[txHash]
-	utils.SSCLogger().Info().Str("txHash", txHash.Hex()).Str("callIndex", state.CurrentCallFrame.CallIndex.ToString()).Int("currentIndex", state.CurrentCallFrame.PC).
+	utils.SSCLogger().Debug().Str("txHash", txHash.Hex()).Str("callIndex", state.CurrentCallFrame.CallIndex.ToString()).Int("currentIndex", state.CurrentCallFrame.PC).
 		Interface("callStack", state.CallStack).
 		Msgf("end call")
 	state.CurrentCallFrame = state.CallStack.Pop()
-	s.lock.Unlock()
+	s.stateLock.Unlock()
 }
 
 func (s *sscService) waitForSync(callState *api.SimulationCallState) {
 	callState.SyncedCh = make(chan struct{})
 
-	utils.SSCLogger().Info().
+	utils.SSCLogger().Debug().
 		Str("txHash", common.Bytes2Hex(callState.CallRequest.TxHash)).
 		Str("callIndex", callState.CallIndex.ToString()).
 		Str("blockHash", callState.BlockHash.Hex()).Msg("waiting for sync")
 
-	s.lock.Lock()
+	s.stateLock.Lock()
 	callStates, exists := s.callStatesInWaiting[callState.BlockHash]
 	if !exists {
 		callStates = make([]*api.SimulationCallState, 0)
 	}
 	s.callStatesInWaiting[callState.BlockHash] = append(callStates, callState)
-	s.lock.Unlock()
+	s.stateLock.Unlock()
 
 	select {
 	case <-callState.SyncedCh:
-		utils.SSCLogger().Info().Msgf("callState synced %s", callState.CallIndex.ToString())
+		utils.SSCLogger().Debug().Msgf("callState synced %s", callState.CallIndex.ToString())
 	case <-s.ctx.Done():
-		utils.SSCLogger().Info().Msg("sscService context done")
+		utils.SSCLogger().Debug().Msg("sscService context done")
 	}
 }
 
@@ -1849,44 +1578,73 @@ func (s *sscService) HandleCommitVote(vote *api.CXTCommitVote) {
 	} else {
 		threshold = int(math.Ceil(float64(len(s.GetValidators(vote.ShardId))) / 2))
 	}
-	if vote.ShardId != s.SelfShard && vote.Type == api.Rollback && vote.Reason == api.Reason_InvalidSimulation {
+	if vote.ShardId != s.SelfShard && vote.Type == api.Rollback && vote.Reason == api.ReasonInvalidSimulation {
 		utils.SSCLogger().Warn().Str("txHash", common.BytesToHash(vote.TxHash).Hex()).
 			Msgf("received invalid simulation rollback vote from shard %d, ignore", vote.OriginShardId)
 		return
 	}
 	// 2
-	s.commitLock.Lock()
+	reachThreshold := false
+	var sscVote *api.CXTCommitSSCVote
 	txHash := common.BytesToHash(vote.TxHash)
-	if s.commitStates[txHash] == nil {
-		s.commitStates[txHash] = &api.CommitState{
-			CommitVotes:    make(map[int]map[uint32][]*api.CXTCommitVote),
-			CommitSSCVotes: make(map[int]map[uint32]*api.CXTCommitSSCVote),
+
+	func() {
+		s.commitLock.Lock()
+		defer s.commitLock.Unlock()
+		if s.commitStates[txHash] == nil {
+			s.commitStates[txHash] = &api.CommitState{
+				CommitVotes:     make(map[int]map[uint32][]*api.CXTCommitVote),
+				CommitSSCVotes:  make(map[int]map[uint32]*api.CXTCommitSSCVote),
+				RollbackVotes:   make(map[uint32][]*api.CXTCommitVote),
+				RollbackSSCVote: nil,
+			}
 		}
-	}
-	if s.commitStates[txHash].CommitVotes[vote.SimulationNum] == nil {
-		s.commitStates[txHash].CommitVotes[vote.SimulationNum] = make(map[uint32][]*api.CXTCommitVote)
-	}
-	if s.commitStates[txHash].CommitVotes[vote.SimulationNum][vote.ShardId] == nil {
-		s.commitStates[txHash].CommitVotes[vote.SimulationNum][vote.ShardId] = make([]*api.CXTCommitVote, 0)
-	}
-	if len(s.commitStates[txHash].CommitVotes[vote.SimulationNum][vote.ShardId]) >= threshold {
-		utils.SSCLogger().Info().Str("txHash", txHash.Hex()).Msgf("already received enough votes from shard %d, ignore", vote.ShardId)
-		s.commitLock.Unlock()
-		return
-	}
-	s.commitStates[txHash].CommitVotes[vote.SimulationNum][vote.ShardId] = append(s.commitStates[txHash].CommitVotes[vote.SimulationNum][vote.ShardId], vote)
-	utils.SSCLogger().Info().Str("txHash", txHash.Hex()).Msgf("received %s vote from shard %d, [%d/%d]",
-		vote.Type.String(), vote.OriginShardId, len(s.commitStates[txHash].CommitVotes[vote.SimulationNum][vote.ShardId]), threshold)
-	reachThreshold := len(s.commitStates[txHash].CommitVotes[vote.SimulationNum][vote.ShardId]) == threshold
-	s.commitLock.Unlock()
+		utils.SSCLogger().Debug().Str("txHash", txHash.Hex()).Msgf("handle commit vote, type=%s", vote.Type)
+		if vote.Type == api.Commit {
+			if s.commitStates[txHash].CommitVotes[vote.SimulationNum] == nil {
+				s.commitStates[txHash].CommitVotes[vote.SimulationNum] = make(map[uint32][]*api.CXTCommitVote)
+			}
+			if s.commitStates[txHash].CommitVotes[vote.SimulationNum][vote.ShardId] == nil {
+				s.commitStates[txHash].CommitVotes[vote.SimulationNum][vote.ShardId] = make([]*api.CXTCommitVote, 0)
+			}
+			if len(s.commitStates[txHash].CommitVotes[vote.SimulationNum][vote.ShardId]) >= threshold {
+				utils.SSCLogger().Debug().Str("txHash", txHash.Hex()).Msgf("already received enough votes from shard %d, ignore", vote.ShardId)
+				return
+			}
+			s.commitStates[txHash].CommitVotes[vote.SimulationNum][vote.ShardId] = append(s.commitStates[txHash].CommitVotes[vote.SimulationNum][vote.ShardId], vote)
+			utils.SSCLogger().Debug().Str("txHash", txHash.Hex()).Msgf("received %s vote from shard %d, [%d/%d]",
+				vote.Type.String(), vote.OriginShardId, len(s.commitStates[txHash].CommitVotes[vote.SimulationNum][vote.ShardId]), threshold)
+			reachThreshold = len(s.commitStates[txHash].CommitVotes[vote.SimulationNum][vote.ShardId]) == threshold
+			if reachThreshold {
+				sscVote = s.aggregateSSCCommitVote(s.commitStates[txHash].CommitVotes[vote.SimulationNum][vote.ShardId])
+			}
+		}
+		if vote.Type == api.Rollback {
+			utils.SSCLogger().Debug().Str("txHash", txHash.Hex()).Msgf("handle rollback vote")
+			if s.commitStates[txHash].RollbackVotes[vote.ShardId] == nil {
+				s.commitStates[txHash].RollbackVotes[vote.ShardId] = make([]*api.CXTCommitVote, 0)
+			}
+			if len(s.commitStates[txHash].RollbackVotes[vote.ShardId]) >= threshold {
+				utils.SSCLogger().Debug().Str("txHash", txHash.Hex()).Msgf("already received enough rollback votes from shard %d, ignore", vote.ShardId)
+				return
+			}
+			s.commitStates[txHash].RollbackVotes[vote.ShardId] = append(s.commitStates[txHash].RollbackVotes[vote.ShardId], vote)
+			utils.SSCLogger().Debug().Str("txHash", txHash.Hex()).Msgf("received %s vote from shard %d, [%d/%d]",
+				vote.Type.String(), vote.OriginShardId, len(s.commitStates[txHash].RollbackVotes[vote.ShardId]), threshold)
+			reachThreshold = len(s.commitStates[txHash].RollbackVotes[vote.ShardId]) == threshold
+			if reachThreshold {
+				sscVote = s.aggregateSSCCommitVote(s.commitStates[txHash].RollbackVotes[vote.ShardId])
+			}
+		}
+	}()
+
 	if reachThreshold {
 		// 3
 		leader := s.GetLeader(vote.OriginShardId, txHash)
 		ctx, cancel := context.WithTimeout(s.ctx, s.Config.CallTimeout)
 		defer cancel()
 
-		sscVote := s.aggregateSSCCommitVote(s.commitStates[txHash].CommitVotes[vote.SimulationNum][vote.ShardId])
-		utils.SSCLogger().Info().Str("txHash", txHash.Hex()).Msgf("send SSC commit vote to leader: %s, shard=%d, originShard=%d, type=%s", leader.Endpoint, vote.ShardId, vote.OriginShardId, vote.Type.String())
+		utils.SSCLogger().Debug().Str("txHash", txHash.Hex()).Msgf("send SSC commit vote to leader: %s, shard=%d, originShard=%d, type=%s", leader.Endpoint, vote.ShardId, vote.OriginShardId, vote.Type.String())
 		err := s.Comm.Call(ctx, nil, leader, api.Method_HandleCXTCommitSSCVote, sscVote)
 		if err != nil {
 			utils.SSCLogger().Error().Err(err).Msg("failed to send commit vote")
@@ -1931,7 +1689,11 @@ func (s *sscService) HandleCXTRecallProof(proof *api.CXTCommitProof) {
 	defer s.stateLock.Unlock()
 
 	txHash := common.BytesToHash(proof.TxHash)
-	simuState := s.getState(txHash)
+	simuState, err := s.getState(txHash)
+	if err != nil {
+		utils.SSCLogger().Error().Str("txHash", common.BytesToHash(proof.TxHash).Hex()).Err(err).Msg("handle cxt recall proof failed")
+		return
+	}
 	simuState.SimulationNum = proof.SimulationNum + 1
 	if simuState.SimulationCallStates[simuState.SimulationNum] == nil {
 		simuState.SimulationCallStates[simuState.SimulationNum] = make(api.SimulationCallStates, 0)
@@ -1956,8 +1718,8 @@ func (s *sscService) HandleCXTSSCCall(req *api.CXTCallSSCRequest) *api.CXTCallSS
 	// select the consistent state
 	header := s.bc.CurrentHeader()
 	req.BlockHash = header.Hash().Bytes()
-	utils.SSCLogger().Info().Str("txHash", common.BytesToHash(req.TxHash).String()).Msg("handle cxt ssc call, start")
-	defer utils.SSCLogger().Info().Str("txHash", common.BytesToHash(req.TxHash).String()).Msg("handle cxt ssc call, end")
+	utils.SSCLogger().Debug().Str("txHash", common.BytesToHash(req.TxHash).String()).Msg("handle cxt ssc call, start")
+	defer utils.SSCLogger().Debug().Str("txHash", common.BytesToHash(req.TxHash).String()).Msg("handle cxt ssc call, end")
 	committee := s.GetCommittee(s.SelfShard)
 	t := committee.Threshold
 	txHash := common.BytesToHash(req.TxHash)
@@ -2000,7 +1762,15 @@ func (s *sscService) HandleCXTSSCCall(req *api.CXTCallSSCRequest) *api.CXTCallSS
 			Err: err.Error(),
 		}
 	}
-	state := s.getState(txHash)
+
+	s.stateLock.Lock()
+	defer s.stateLock.Unlock()
+	state, err := s.getState(txHash)
+	if err != nil {
+		return &api.CXTCallSSCResult{
+			Err: err.Error(),
+		}
+	}
 	callStates := state.SimulationCallStates[req.SimulationNum]
 	callState := callStates.Get(req.CallIndex)
 	callState.CallSSCResult = sscResult
@@ -2033,28 +1803,31 @@ func (s *sscService) CommitSimulation(commit *api.SimulationCommit) {
 	txHash := common.BytesToHash(commit.TxHash)
 	switch commit.Status {
 	case api.OK:
-		utils.SSCLogger().Info().Msgf("simulation %s committed, status=%s", txHash.String(), commit.Status.String())
+		utils.SSCLogger().Info().Str("txHash", txHash.Hex()).Msgf("simulation committed, status=%s", commit.Status.String())
 	case api.LockConflict:
-		utils.SSCLogger().Error().Msgf("simulation %s failed, status=%s", txHash.String(), commit.Status.String())
+		utils.SSCLogger().Error().Str("txHash", txHash.Hex()).Msgf("simulation failed, status=%s", commit.Status.String())
 		return
 	case api.ExecutionFailed:
-		utils.SSCLogger().Error().Msgf("simulation %s failed, status=%s", txHash.String(), commit.Status.String())
+		utils.SSCLogger().Error().Str("txHash", txHash.Hex()).Msgf("simulation failed, status=%s", commit.Status.String())
 		s.closeTransaction(txHash, false)
 		return
 	}
 
-	simuState := s.getState(txHash)
-	// TODO verify the simulation commit
-	var (
-		err error
-	)
+	s.stateLock.Lock()
+	simuState, err := s.getState(txHash)
+	if err != nil {
+		s.stateLock.Unlock()
+		utils.SSCLogger().Error().Str("txHash", txHash.Hex()).Err(err).Msg("commit simulation failed")
+		return
+	}
 	// update related shards
 	simuState.RelatedShards = commit.RelatedShards
+	simulationCallStates := simuState.SimulationCallStates[commit.SimulationNum]
+	s.stateLock.Unlock()
 
 	// build commit simulation
-	simulationCallStates := simuState.SimulationCallStates[commit.SimulationNum]
 	callStates := make([]*api.CXTCallState, 0)
-	for _, simulationCallState := range simulationCallStates {
+	for i, simulationCallState := range simulationCallStates {
 		depentResults := make([]*api.CXTCallSSCResult, 0)
 		for _, dc := range simulationCallState.DependentCXTCalls {
 			depentResults = append(depentResults, dc.SSCResult)
@@ -2062,7 +1835,7 @@ func (s *sscService) CommitSimulation(commit *api.SimulationCommit) {
 		sort.Slice(depentResults, func(i, j int) bool {
 			return depentResults[i].CallIndex.Compare(depentResults[j].CallIndex) < 0
 		})
-		callStates = append(callStates, &api.CXTCallState{
+		callState := &api.CXTCallState{
 			CallIndex:        simulationCallState.CallIndex,
 			TopRequest:       simulationCallState.TopRequest,
 			CallRequest:      simulationCallState.CallRequest,
@@ -2070,9 +1843,15 @@ func (s *sscService) CommitSimulation(commit *api.SimulationCommit) {
 			DependentResults: depentResults,
 			CallResult:       simulationCallState.CallSSCResult,
 			TopResult:        simulationCallState.TopSSCResult,
-		})
-		utils.SSCLogger().Info().Str("txHash", txHash.Hex()).Msgf("build commit simulation, callIndex: %s, rwset: %v", simulationCallState.CallIndex.ToString(), simulationCallState.RWSet.WriteState.State)
+		}
+		callStates = append(callStates, callState)
+		if callState.TopResult == nil && callState.CallResult == nil {
+			utils.SSCLogger().Error().Str("txHash", txHash.Hex()).Msgf("callIndex %s has no result", simulationCallState.CallIndex.ToString())
+		}
+		utils.SSCLogger().Debug().Str("txHash", txHash.Hex()).Msgf("build commit simulation [%d/%d], callIndex: %s, rwset: %v", i+1, len(simulationCallStates), simulationCallState.CallIndex.ToString(), simulationCallState.RWSet.WriteState.State)
+
 	}
+
 	simulation := &api.CXTSimulation{
 		SimulationNum:        commit.SimulationNum,
 		TxHash:               commit.TxHash,
@@ -2085,16 +1864,20 @@ func (s *sscService) CommitSimulation(commit *api.SimulationCommit) {
 		BaseBLSSignedMessage: &api.BaseBLSSignedMessage{},
 	}
 
+	utils.SSCLogger().Debug().Str("txHash", txHash.Hex()).Msgf("build commit simulation completed")
+
 	s.buildSignaturesForSimulation(simulation)
 	err = s.txSubmitter.SubmitSimulationTx(simulation)
 	if err != nil {
 		utils.SSCLogger().Error().Err(err).Msg("failed to submit simulation tx")
 		return
 	}
-	utils.SSCLogger().Info().Str("txHash", txHash.Hex()).Msgf("simulation committed")
+	utils.SSCLogger().Debug().Str("txHash", txHash.Hex()).Msgf("simulation committed")
 }
 
 func (s *sscService) buildSignaturesForSimulation(simulation *api.CXTSimulation) {
+	txHash := common.BytesToHash(simulation.TxHash)
+	utils.SSCLogger().Debug().Str("txHash", txHash.Hex()).Msgf("begin to build signatures for simulation")
 	committee := s.GetCommittee(s.SelfShard)
 	t := committee.Threshold
 
@@ -2144,20 +1927,36 @@ func (s *sscService) buildSignaturesForSimulation(simulation *api.CXTSimulation)
 func (s *sscService) HandleCXTCommitSSCVote(vote *api.CXTCommitSSCVote) {
 	txHash := common.BytesToHash(vote.TxHash)
 	s.stateLock.RLock()
-	relatedShards := s.simulationState[txHash].RelatedShards
+	state, err := s.getState(txHash)
+	if err != nil {
+		s.stateLock.RUnlock()
+		utils.SSCLogger().Error().Str("txHash", txHash.Hex()).Err(err).Msgf("handle commit ssc vote failed")
+		return
+	}
+	relatedShards := state.RelatedShards
 	s.stateLock.RUnlock()
+
 	if !relatedShards.Contains(vote.ShardId) {
 		utils.SSCLogger().Error().Msgf("shard %d is not related to tx %s", vote.ShardId, txHash.String())
 		return
 	}
+	var sscVotes map[uint32]*api.CXTCommitSSCVote
 
 	s.commitLock.RLock()
 	commitState := s.commitStates[txHash]
-	if commitState.CommitSSCVotes[vote.SimulationNum] == nil {
-		commitState.CommitSSCVotes[vote.SimulationNum] = make(map[uint32]*api.CXTCommitSSCVote)
+	if vote.Type == api.Commit {
+		if commitState.CommitSSCVotes[vote.SimulationNum] == nil {
+			commitState.CommitSSCVotes[vote.SimulationNum] = make(map[uint32]*api.CXTCommitSSCVote)
+		}
+		commitState.CommitSSCVotes[vote.SimulationNum][vote.ShardId] = vote
+		sscVotes = commitState.CommitSSCVotes[vote.SimulationNum]
 	}
-	commitState.CommitSSCVotes[vote.SimulationNum][vote.ShardId] = vote
-	sscVotes := commitState.CommitSSCVotes[vote.SimulationNum]
+	if vote.Type == api.Rollback {
+		commitState.RollbackSSCVote = vote
+		sscVotes = map[uint32]*api.CXTCommitSSCVote{
+			vote.ShardId: vote,
+		}
+	}
 	s.commitLock.RUnlock()
 
 	s.SignalReSimulation(&api.ReSimulationSignal{
@@ -2170,17 +1969,20 @@ func (s *sscService) HandleCXTCommitSSCVote(vote *api.CXTCommitSSCVote) {
 		SimulateOrVerify: false,
 	})
 
-	utils.SSCLogger().Info().Str("txHash", txHash.Hex()).Msgf("received %s ssc vote [%d/%d], %d in %v, simulationNum=%d",
+	utils.SSCLogger().Debug().Str("txHash", txHash.Hex()).Msgf("received %s ssc vote [%d/%d], %d in %v, simulationNum=%d",
 		vote.Type, len(sscVotes), len(relatedShards), vote.ShardId, relatedShards, vote.SimulationNum)
-	if len(sscVotes) == len(relatedShards) {
+
+	if vote.Type == api.Rollback || len(sscVotes) == len(relatedShards) {
 		commitType := api.Commit
-		commitReason := api.Reason_SUCCESS
+		commitReason := api.ReasonSuccess
 		sscVoteList := make([]*api.CXTCommitSSCVote, 0)
 		recallShards := make([]uint32, 0)
 		for _, v := range sscVotes {
 			if v.Type == api.Rollback {
 				commitType = api.Rollback
 				commitReason = v.Reason
+				sscVoteList = append(make([]*api.CXTCommitSSCVote, 0), v)
+				break
 			}
 			if v.Type == api.Recall && commitType != api.Rollback {
 				commitType = api.Recall
@@ -2200,7 +2002,7 @@ func (s *sscService) HandleCXTCommitSSCVote(vote *api.CXTCommitSSCVote) {
 			members = append(members, s.GetLeader(shardId, txHash))
 		}
 
-		utils.SSCLogger().Info().Str("txHash", txHash.Hex()).Msgf("receive all related ssc votes, commit type: %v, reason: %v, simulationNum: %d, relatedShards: %v",
+		utils.SSCLogger().Debug().Str("txHash", txHash.Hex()).Msgf("receive all related ssc votes, commit type: %v, reason: %v, simulationNum: %d, relatedShards: %v",
 			commitType, commitReason, vote.SimulationNum, relatedShards)
 
 		switch commitType {
@@ -2240,6 +2042,8 @@ func (s *sscService) HandleCXTCommitSSCVote(vote *api.CXTCommitSSCVote) {
 			go func() {
 				s.startReSimulation(proof.TxHash, proof.SimulationNum+1)
 			}()
+		default:
+			utils.SSCLogger().Error().Str("txHash", txHash.Hex()).Msgf("unsupportted vote type: %s", vote.Type)
 		}
 	}
 }
@@ -2259,19 +2063,21 @@ func (s *sscService) sendReSimulationSignal(signal *api.ReSimulationSignal) erro
 
 func (s *sscService) SignalReSimulation(signal *api.ReSimulationSignal) {
 	txHash := common.BytesToHash(signal.TxHash)
-	utils.SSCLogger().Info().Str("txHash", txHash.Hex()).Msgf("handle signal resimulation, shardId: %d, OriginShardId: %d, simulationNum: %d, SimulateOrVerify: %v, needResimulate: %v",
+	utils.SSCLogger().Debug().Str("txHash", txHash.Hex()).Msgf("handle signal resimulation, shardId: %d, OriginShardId: %d, simulationNum: %d, SimulateOrVerify: %v, needResimulate: %v",
 		signal.ShardId, signal.OriginShardId, signal.SimulationNum, signal.SimulateOrVerify, signal.NeedResimulate)
 
-	state := s.getState(txHash)
-	if state == nil {
+	s.stateLock.RLock()
+	defer s.stateLock.RUnlock()
+	state, err := s.getState(txHash)
+	if err != nil {
 		utils.SSCLogger().Error().Str("txHash", txHash.Hex()).Msg("transaction has been closed")
 		return
 	}
 	if signal.SimulateOrVerify {
 		// if it's a simulate resimulation signal, just call resimulation
 		go func() {
-			utils.SSCLogger().Info().Str("txHash", txHash.Hex()).Msgf("start recall simulation directly for simulate, send notify to shard %d", signal.OriginShardId)
-			leader := s.GetLeader(signal.OriginShardId, txHash)
+			utils.SSCLogger().Debug().Str("txHash", txHash.Hex()).Msgf("start recall simulation directly for simulate, send notify to shard %d", signal.OriginShardId)
+			leader := s.GetLeader(signal.ShardId, txHash)
 
 			ctx, cancel := context.WithTimeout(s.ctx, s.Config.CallTimeout)
 			defer cancel()
@@ -2290,7 +2096,7 @@ func (s *sscService) SignalReSimulation(signal *api.ReSimulationSignal) {
 		}
 		state.ReSimulationSignals[signal.SimulationNum][signal.ShardId] = signal
 		if signal.NeedResimulate {
-			utils.SSCLogger().Info().Str("txHash", txHash.Hex()).Msgf("try to resimulation for verify conflict, collected %d/%d: %d in %v resimulation signals, simulationNum %d",
+			utils.SSCLogger().Debug().Str("txHash", txHash.Hex()).Msgf("try to resimulation for verify conflict, collected %d/%d: %d in %v resimulation signals, simulationNum %d",
 				len(state.ReSimulationSignals[signal.SimulationNum]), len(state.RelatedShards), signal.ShardId, state.RelatedShards, signal.SimulationNum)
 		}
 		if len(state.ReSimulationSignals[signal.SimulationNum]) == len(state.RelatedShards) {
@@ -2311,7 +2117,7 @@ func (s *sscService) SignalReSimulation(signal *api.ReSimulationSignal) {
 							shards = append(shards, shardId)
 						}
 					}
-					utils.SSCLogger().Info().Str("txHash", txHash.Hex()).Msgf("start re-simulation for verify, send notify to %v", shards)
+					utils.SSCLogger().Debug().Str("txHash", txHash.Hex()).Msgf("start re-simulation for verify, send notify to %v", shards)
 
 					ctx, cancel := context.WithTimeout(s.ctx, s.Config.CallTimeout)
 					defer cancel()
@@ -2330,24 +2136,32 @@ func (s *sscService) SignalReSimulation(signal *api.ReSimulationSignal) {
 }
 
 func (s *sscService) startReSimulation(txHash []byte, simulationNum int) {
-	state := s.getState(common.BytesToHash(txHash))
-	if state == nil {
-		utils.SSCLogger().Error().Str("txHash", common.BytesToHash(txHash).Hex()).Msg("transaction has been closed")
+	s.stateLock.Lock()
+	state, err := s.getState(common.BytesToHash(txHash))
+	if err != nil {
+		s.stateLock.Unlock()
+		utils.SSCLogger().Error().Err(err).Str("txHash", common.BytesToHash(txHash).Hex()).Msg("resimulation failed")
 		return
 	}
+	s.stateLock.Unlock()
 
 	ctx, cancel := context.WithTimeout(s.ctx, s.Config.CallTimeout)
 	defer cancel()
 
 	header := s.bc.CurrentHeader()
 	// request recall origin contract
+	lastReq := state.SimulationRequest
 	req := &api.CXTSimulationRequest{
-		SimulationNum: simulationNum,
 		TxHash:        txHash,
+		SimulationNum: simulationNum,
+		Author:        lastReq.Author,
 		BlockHash:     header.Hash().Bytes(),
+		Tx:            lastReq.Tx,
+		From:          lastReq.From,
+		GasPool:       0,
 	}
 
-	utils.SSCLogger().Info().Str("txHash", common.BytesToHash(txHash).Hex()).Msgf("start recall simulation, simulationNum: %d", simulationNum)
+	utils.SSCLogger().Debug().Str("txHash", common.BytesToHash(txHash).Hex()).Msgf("start recall simulation, simulationNum: %d", simulationNum)
 
 	committee := s.GetCommittee(s.SelfShard)
 	t := committee.Threshold
@@ -2377,34 +2191,42 @@ func (s *sscService) startReSimulation(txHash []byte, simulationNum int) {
 	if err != nil {
 		sscResult = &api.CXTSimulationSSCResult{Err: err.Error(), RelatedShards: []uint32{s.SelfShard}}
 	}
+	s.stateLock.Lock()
 	state.SimulationResult = sscResult
 	state.SimulationCallStates[simulationNum][0].TopSSCResult = sscResult
+	s.stateLock.Unlock()
 
 	// build and send simulation commit
-	var simulationCommit *api.SimulationCommit
-	if len(sscResult.Err) > 0 {
-		simulationCommit = &api.SimulationCommit{
-			SimulationNum:        req.SimulationNum,
-			TxHash:               txHash,
-			RelatedShards:        sscResult.RelatedShards,
-			Commit:               false,
-			Status:               api.ExecutionFailed,
-			BaseBLSSignedMessage: &api.BaseBLSSignedMessage{},
-		}
-		utils.SSCLogger().Error().Str("txHash", common.BytesToHash(txHash).Hex()).Err(errors.New(sscResult.Err)).Msgf("send simulation commit, simulationNum: %d, commit: %v, status: %s, relatedShards: %v",
-			simulationCommit.SimulationNum, simulationCommit.Commit, simulationCommit.Status.String(), simulationCommit.RelatedShards)
-	} else {
-		simulationCommit = &api.SimulationCommit{
-			SimulationNum:        req.SimulationNum,
-			TxHash:               txHash,
-			RelatedShards:        sscResult.RelatedShards,
-			Commit:               true,
-			Status:               api.OK,
-			BaseBLSSignedMessage: &api.BaseBLSSignedMessage{},
-		}
-		utils.SSCLogger().Info().Str("txHash", common.BytesToHash(txHash).Hex()).Msgf("send simulation commit, simulationNum: %d, commit: %v, status: %s, relatedShards: %v",
-			simulationCommit.SimulationNum, simulationCommit.Commit, simulationCommit.Status.String(), simulationCommit.RelatedShards)
+	simulationCommit := &api.SimulationCommit{
+		SimulationNum:        req.SimulationNum,
+		TxHash:               txHash,
+		Nonce:                req.Tx.Nonce(),
+		Sender:               req.From.Bytes(),
+		RelatedShards:        sscResult.RelatedShards,
+		BaseBLSSignedMessage: &api.BaseBLSSignedMessage{},
 	}
+
+	if len(sscResult.Err) == 0 {
+		simulationCommit.Commit = true
+		simulationCommit.Status = api.OK
+		utils.SSCLogger().Debug().Str("txHash", common.BytesToHash(simulationCommit.TxHash).Hex()).
+			Msgf("resimulation accomplished, send simulation commit, commit type: %v, simulationNum: %d, relatedShards: %v",
+				simulationCommit.Commit, simulationCommit.SimulationNum, simulationCommit.RelatedShards)
+	} else {
+		if api.ErrLockedByOtherTx.Error() == sscResult.Err {
+			utils.SSCLogger().Debug().Str("txHash", common.BytesToHash(txHash).Hex()).Msgf("resimulation failed err=%s, it has subscribe to resimulate again, nextSimulationNum=%d", sscResult.Err, req.SimulationNum+1)
+			simulationCommit.Commit = false
+			simulationCommit.Status = api.LockConflict
+			return
+		} else {
+			simulationCommit.Commit = false
+			simulationCommit.Status = api.ExecutionFailed
+		}
+		utils.SSCLogger().Error().Str("txHash", common.BytesToHash(simulationCommit.TxHash).Hex()).
+			Err(errors.New(sscResult.Err)).Msgf("resimulation accomplished, send simulation commit, commit type: %v, status: %v, simulationNum: %d, relatedShards: %v",
+			simulationCommit.Commit, simulationCommit.Status.String(), simulationCommit.SimulationNum, simulationCommit.RelatedShards)
+	}
+
 	s.thresholdSignSimulationCommit(simulationCommit)
 	members := make([]*api.Member, 0, len(committee.Members))
 	for _, shardId := range simulationCommit.RelatedShards {
@@ -2418,7 +2240,7 @@ func (s *sscService) NotifyReSimulationStart(txHash common.Hash) {
 }
 
 func (s *sscService) HandleCXTCommitProof(proof *api.CXTCommitProof) {
-	utils.SSCLogger().Info().Str("txHash", common.BytesToHash(proof.TxHash).Hex()).Msgf("handle commit or rollback proof, type: %v, simulationNum: %d", proof.Type, proof.SimulationNum)
+	utils.SSCLogger().Debug().Str("txHash", common.BytesToHash(proof.TxHash).Hex()).Msgf("handle commit or rollback proof, type: %v, simulationNum: %d", proof.Type, proof.SimulationNum)
 	// if proof is commit or rollback, send commit proof transaction
 	if proof.Type == api.Commit || proof.Type == api.Rollback {
 		err := s.txSubmitter.SubmitCommitOrRollbackTx(proof)
@@ -2429,14 +2251,6 @@ func (s *sscService) HandleCXTCommitProof(proof *api.CXTCommitProof) {
 		if proof.TxHash[0] == 0 {
 			s.txSubmitter.SubmitCommitOrRollbackTx(proof)
 		}
-		// // 模拟harmony的额外调用过程
-		// for i := 0; i < 1; i++ {
-		// 	err := s.txSubmitter.SubmitCommitOrRollbackTx(proof)
-		// 	if err != nil {
-		// 		utils.SSCLogger().Error().Err(err).Msg("failed to submit empty tx")
-		// 		return
-		// 	}
-		// }
 	}
 
 	if proof.Type == api.Recall {
@@ -2445,36 +2259,42 @@ func (s *sscService) HandleCXTCommitProof(proof *api.CXTCommitProof) {
 	}
 }
 
-func (s *sscService) getState(txHash common.Hash) *api.CXTSimulationState {
-	s.stateLock.RLock()
-	defer s.stateLock.RUnlock()
-	return s.simulationState[txHash]
+func (s *sscService) getState(txHash common.Hash) (*api.CXTSimulationState, error) {
+	if state, exists := s.simulationState[txHash]; exists {
+		return state, nil
+	}
+	if _, exists := s.finishedTxs[txHash]; exists {
+		return nil, api.ErrTxHasBeenClosed
+	}
+	return nil, api.ErrTxNotExist
 }
 
 func (s *sscService) closeTransaction(txHash common.Hash, commitOrRollback bool) {
 	utils.SSCLogger().Info().Str("txHash", txHash.Hex()).Msgf("close transaction, commit: %v", commitOrRollback)
-	s.stateLock.Lock()
-	defer s.stateLock.Unlock()
 	s.commitLock.Lock()
-	defer s.commitLock.Unlock()
-	s.finishedTxs[txHash] = commitOrRollback
-	delete(s.simulationState, txHash)
 	delete(s.commitStates, txHash)
 	delete(s.executionVerifyContexts, txHash)
+	s.commitLock.Unlock()
+	s.stateLock.Lock()
+	s.finishedTxs[txHash] = commitOrRollback
+	delete(s.simulationState, txHash)
+	s.stateLock.Unlock()
 }
 
 func (s *sscService) closeTransactions(txs map[common.Hash]bool) {
 	utils.SSCLogger().Info().Interface("txs", txs).Msgf("close transactions, num=%d", len(txs))
-	s.stateLock.Lock()
-	defer s.stateLock.Unlock()
 	s.commitLock.Lock()
-	defer s.commitLock.Unlock()
-	for txHash, commitOrRollback := range txs {
-		s.finishedTxs[txHash] = commitOrRollback
-		delete(s.simulationState, txHash)
+	for txHash, _ := range txs {
 		delete(s.commitStates, txHash)
 		delete(s.executionVerifyContexts, txHash)
 	}
+	s.commitLock.Unlock()
+	s.stateLock.Lock()
+	for txHash, commitOrRollback := range txs {
+		s.finishedTxs[txHash] = commitOrRollback
+		delete(s.simulationState, txHash)
+	}
+	s.stateLock.Unlock()
 }
 
 func (s *sscService) StateLockManager() api.StateLockManager {

@@ -3,6 +3,7 @@ package api
 import (
 	"context"
 	"github.com/ethereum/go-ethereum/common"
+	"github.com/harmony-one/harmony/block"
 	"github.com/harmony-one/harmony/core/types"
 	"github.com/harmony-one/harmony/numeric"
 	staking "github.com/harmony-one/harmony/staking/types"
@@ -122,8 +123,7 @@ type InternalService interface {
 
 	// SimulateCXTransaction
 	//
-	//	@Description: simulate cross-shard transaction called by proposer, send request to leader of CXTransaction, and wait
-	//	for the simulation result
+	//	@Description: simulate cross-shard transaction called by proposer, send request to leader of CXTransaction
 	SimulateCXTransaction(req *CXTSimulationRequest)
 
 	SimulationResult(txHash common.Hash) (*CXTSimulationSSCResult, error)
@@ -142,11 +142,13 @@ type InternalService interface {
 
 	// VerifySimulation
 	//	@Description: verify the simulation and vote for commit or rollback
-	VerifySimulation(simulationBytes []byte, stateDB StateDB)
+	VerifySimulation(simulationBytes []byte, stateDB StateDB, header *block.Header)
 
 	CommitOrRollbackWithProof(commitProofBytes []byte, stateDB StateDB) error
 
 	StateLockManager() StateLockManager
+
+	BlockCommitted(blockNum uint64)
 }
 
 // ShardService

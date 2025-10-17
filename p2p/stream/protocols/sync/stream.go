@@ -57,7 +57,7 @@ func (p *Protocol) wrapStream(raw libp2p_network.Stream) *syncStream {
 }
 
 func (st *syncStream) run() {
-	// tempDelete st.logger.Info().Str("StreamID", string(st.ID())).Msg("running sync protocol on stream")
+	st.logger.Info().Str("StreamID", string(st.ID())).Msg("running sync protocol on stream")
 	defer st.logger.Info().Str("StreamID", string(st.ID())).Msg("end running sync protocol on stream")
 
 	go st.handleReqLoop()
@@ -83,7 +83,7 @@ func (st *syncStream) readMsgLoop() {
 func (st *syncStream) deliverMsg(msg protobuf.Message) {
 	syncMsg := msg.(*syncpb.Message)
 	if syncMsg == nil {
-		// tempDelete st.logger.Info().Interface("message", msg).Msg("received unexpected sync message")
+		st.logger.Info().Interface("message", msg).Msg("received unexpected sync message")
 		return
 	}
 	if req := syncMsg.GetReq(); req != nil {
@@ -117,8 +117,8 @@ func (st *syncStream) handleReqLoop() {
 			err := st.handleReq(req)
 
 			if err != nil {
-				// tempDelete st.logger.Info().Err(err).Str("request", req.ToString()).
-				// tempDelete Msg("handle request error. Closing stream")
+				st.logger.Info().Err(err).Str("request", req.String()).
+					Msg("handle request error. Closing stream")
 				if err := st.Close(); err != nil {
 					st.logger.Err(err).Msg("failed to close sync stream")
 				}

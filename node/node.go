@@ -169,13 +169,13 @@ func (node *Node) SyncInstance() ISync {
 func (node *Node) GetOrCreateSyncInstance(initiate bool) ISync {
 	if node.NodeConfig.StagedSync {
 		if initiate && node.stateStagedSync == nil {
-			// tempDelete utils.Logger().Info().Msg("initializing staged state sync")
+			utils.Logger().Info().Msg("initializing staged state sync")
 			node.stateStagedSync = node.createStagedSync(node.Blockchain())
 		}
 		return node.stateStagedSync
 	}
 	if initiate && node.stateSync == nil {
-		// tempDelete utils.Logger().Info().Msg("initializing legacy state sync")
+		utils.Logger().Info().Msg("initializing legacy state sync")
 		node.stateSync = node.createStateSync(node.Beaconchain())
 	}
 	return node.stateSync
@@ -205,7 +205,7 @@ func (node *Node) chain(shardID uint32, options core.Options) core.BlockChain {
 	if isEnablePruneBeaconChain && isNotBeaconChainValidator {
 		bc.EnablePruneBeaconChainFeature()
 	} else if isEnablePruneBeaconChain && !isNotBeaconChainValidator {
-		// tempDelete utils.Logger().Info().Msg("`IsEnablePruneBeaconChain` only available in validator node and shard 1-3")
+		utils.Logger().Info().Msg("`IsEnablePruneBeaconChain` only available in validator node and shard 1-3")
 	}
 	return bc
 }
@@ -223,7 +223,7 @@ func (node *Node) tryBroadcast(tx *types.Transaction) {
 	msg := proto_node.ConstructTransactionListMessageAccount(types.Transactions{tx})
 
 	shardGroupID := nodeconfig.NewGroupIDByShardID(nodeconfig.ShardID(tx.ShardID()))
-	// tempDelete utils.Logger().Info().Str("shardGroupID", string(shardGroupID)).Msg("tryBroadcast")
+	utils.Logger().Info().Str("shardGroupID", string(shardGroupID)).Msg("tryBroadcast")
 
 	for attempt := 0; attempt < NumTryBroadCast; attempt++ {
 		err := node.host.SendMessageToGroups([]nodeconfig.GroupID{shardGroupID}, p2p.ConstructMessage(msg))
@@ -241,7 +241,7 @@ func (node *Node) tryBroadcastStaking(stakingTx *staking.StakingTransaction) {
 	shardGroupID := nodeconfig.NewGroupIDByShardID(
 		nodeconfig.ShardID(shard.BeaconChainShardID),
 	) // broadcast to beacon chain
-	// tempDelete utils.Logger().Info().Str("shardGroupID", string(shardGroupID)).Msg("tryBroadcastStaking")
+	utils.Logger().Info().Str("shardGroupID", string(shardGroupID)).Msg("tryBroadcastStaking")
 
 	for attempt := 0; attempt < NumTryBroadCast; attempt++ {
 		if err := node.host.SendMessageToGroups([]nodeconfig.GroupID{shardGroupID},
@@ -339,12 +339,12 @@ func (node *Node) addPendingStakingTransactions(newStakingTxs staking.StakingTra
 				poolTxs = append(poolTxs, tx)
 			}
 			errs := node.TxPool.AddRemotes(poolTxs)
-			// tempDelete pendingCount, queueCount := node.TxPool.Stats()
-			// tempDelete utils.Logger().Info().
-			// tempDelete 	Int("length of newStakingTxs", len(poolTxs)).
-			// tempDelete 	Int("totalPending", pendingCount).
-			// tempDelete 	Int("totalQueued", queueCount).
-			// tempDelete 	Msg("Got more staking transactions")
+			pendingCount, queueCount := node.TxPool.Stats()
+			utils.Logger().Info().
+				Int("length of newStakingTxs", len(poolTxs)).
+				Int("totalPending", pendingCount).
+				Int("totalQueued", queueCount).
+				Msg("Got more staking transactions")
 			return errs
 		}
 		return []error{
@@ -365,17 +365,17 @@ func (node *Node) AddPendingStakingTransaction(
 		var err error
 		for i := range errs {
 			if errs[i] != nil {
-				// tempDelete utils.Logger().Info().
-				// tempDelete 	Err(errs[i]).
-				// tempDelete 	Msg("[AddPendingStakingTransaction] Failed adding new staking transaction")
+				utils.Logger().Info().
+					Err(errs[i]).
+					Msg("[AddPendingStakingTransaction] Failed adding new staking transaction")
 				err = errs[i]
 				break
 			}
 		}
 		if err == nil || node.BroadcastInvalidTx {
-			// tempDelete utils.Logger().Info().
-			// tempDelete 	Str("Hash", newStakingTx.Hash().Hex()).
-			// tempDelete 	Msg("Broadcasting Staking Tx")
+			utils.Logger().Info().
+				Str("Hash", newStakingTx.Hash().Hex()).
+				Msg("Broadcasting Staking Tx")
 			node.tryBroadcastStaking(newStakingTx)
 		}
 		return err
@@ -739,9 +739,9 @@ func (node *Node) StartPubSub() error {
 		topicNamed := allTopics[i].Name
 		isConsensusBound := allTopics[i].consensusBound
 
-		// tempDelete utils.Logger().Info().
-		// tempDelete 	Str("topic", topicNamed).
-		// tempDelete 	Msg("enabled topic validation pubsub messages")
+		utils.Logger().Info().
+			Str("topic", topicNamed).
+			Msg("enabled topic validation pubsub messages")
 
 		// register topic validator for each topic
 		if err := pubsub.RegisterTopicValidator(
@@ -1114,19 +1114,19 @@ func New(
 		node.Consensus.SetBlockNum(blockchain.CurrentBlock().NumberU64() + 1)
 	}
 
-	// tempDelete h := node.Blockchain().GetHeaderByNumber(0)
-	// tempDelete utils.Logger().Info().
-	// tempDelete 	Interface("genesis block header", h).
-	// tempDelete 	Msgf("Genesis block hash %s", h.Hash())
+	h := node.Blockchain().GetHeaderByNumber(0)
+	utils.Logger().Info().
+		Interface("genesis block header", h).
+		Msgf("Genesis block hash %s", h.Hash())
 	// Setup initial state of syncing.
 	node.peerRegistrationRecord = map[string]*syncConfig{}
 	// Broadcast double-signers reported by consensus
 	if node.Consensus != nil {
 		go func() {
 			for doubleSign := range node.Consensus.SlashChan {
-				// tempDelete utils.Logger().Info().
-				// tempDelete 	RawJSON("double-sign-candidate", []byte(doubleSign.ToString())).
-				// tempDelete 	Msg("double sign notified by consensus leader")
+				utils.Logger().Info().
+					RawJSON("double-sign-candidate", []byte(doubleSign.String())).
+					Msg("double sign notified by consensus leader")
 				// no point to broadcast the slash if we aren't even in the right epoch yet
 				if !node.Blockchain().Config().IsStaking(
 					node.Blockchain().CurrentHeader().Epoch(),
@@ -1177,13 +1177,13 @@ func New(
 				// if pending crosslink is older than 10 epochs, delete it
 				if pending.EpochF.Cmp(crossLinkEpochThreshold) <= 0 {
 					invalidToDelete = append(invalidToDelete, pending)
-					// tempDelete utils.Logger().Info().
-					// tempDelete 	Uint32("shard", pending.ShardID()).
-					// tempDelete 	Int64("epoch", pending.Epoch().Int64()).
-					// tempDelete 	Uint64("blockNum", pending.BlockNum()).
-					// tempDelete 	Int64("viewID", pending.ViewID().Int64()).
-					// tempDelete 	Interface("hash", pending.Hash()).
-					// tempDelete 	Msg("[PendingCrossLinksOnInit] delete old pending cross links")
+					utils.Logger().Info().
+						Uint32("shard", pending.ShardID()).
+						Int64("epoch", pending.Epoch().Int64()).
+						Uint64("blockNum", pending.BlockNum()).
+						Int64("viewID", pending.ViewID().Int64()).
+						Interface("hash", pending.Hash()).
+						Msg("[PendingCrossLinksOnInit] delete old pending cross links")
 				}
 			}
 
@@ -1249,21 +1249,21 @@ func (node *Node) ShutDown() {
 		utils.Logger().Error().Err(err).Msg("failed to stop RPC")
 	}
 
-	// tempDelete utils.Logger().Info().Msg("stopping rosetta")
+	utils.Logger().Info().Msg("stopping rosetta")
 	if err := node.StopRosetta(); err != nil {
 		utils.Logger().Error().Err(err).Msg("failed to stop rosetta")
 	}
 
-	// tempDelete utils.Logger().Info().Msg("stopping services")
+	utils.Logger().Info().Msg("stopping services")
 	if err := node.StopServices(); err != nil {
 		utils.Logger().Error().Err(err).Msg("failed to stop services")
 	}
 
 	// Currently pubSub need to be stopped after consensus.
-	// tempDelete utils.Logger().Info().Msg("stopping pub-sub")
+	utils.Logger().Info().Msg("stopping pub-sub")
 	node.StopPubSub()
 
-	// tempDelete utils.Logger().Info().Msg("stopping host")
+	utils.Logger().Info().Msg("stopping host")
 	if err := node.host.Close(); err != nil {
 		utils.Logger().Error().Err(err).Msg("failed to stop p2p host")
 	}

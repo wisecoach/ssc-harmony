@@ -84,10 +84,10 @@ func (consensus *Consensus) announce(block *types.Block) {
 			))).
 			Msgf("[Announce] Cannot send announce message with message signer %s", key.Pub.Hex())
 	} else {
-		// tempDelete consensus.getLogger().Info().
-		// tempDelete 	Str("blockHash", block.Hash().Hex()).
-		// tempDelete 	Uint64("blockNum", block.NumberU64()).
-		// tempDelete 	Msgf("[Announce] Sent Announce Message with message signer %s", key.Pub.Hex())
+		consensus.getLogger().Info().
+			Str("blockHash", block.Hash().Hex()).
+			Uint64("blockNum", block.NumberU64()).
+			Msgf("[Announce] Sent Announce Message with message signer %s", key.Pub.Hex())
 	}
 
 	consensus.switchPhase("Announce", FBFTPrepare)
@@ -235,11 +235,11 @@ func (consensus *Consensus) onCommit(recvMsg *FBFTMessage) {
 	// Must have the corresponding block to verify commit signature.
 	blockObj := consensus.fBFTLog.GetBlockByHash(recvMsg.BlockHash)
 	if blockObj == nil {
-		// tempDelete consensus.getLogger().Info().
-		// tempDelete 	Uint64("blockNum", recvMsg.BlockNum).
-		// tempDelete 	Uint64("viewID", recvMsg.ViewID).
-		// tempDelete 	Str("blockHash", recvMsg.BlockHash.Hex()).
-		// tempDelete 	Msg("[OnCommit] Failed finding a matching block for committed message")
+		consensus.getLogger().Info().
+			Uint64("blockNum", recvMsg.BlockNum).
+			Uint64("viewID", recvMsg.ViewID).
+			Str("blockHash", recvMsg.BlockHash.Hex()).
+			Msg("[OnCommit] Failed finding a matching block for committed message")
 		return
 	}
 	commitPayload := signature.ConstructCommitPayload(consensus.Blockchain().Config(),
@@ -293,7 +293,7 @@ func (consensus *Consensus) onCommit(recvMsg *FBFTMessage) {
 	// // Read - End
 
 	if !quorumWasMet && quorumIsMet {
-		// tempDelete logger.Info().Msg("[OnCommit] 2/3 Enough commits received")
+		logger.Info().Msg("[OnCommit] 2/3 Enough commits received")
 		consensus.fBFTLog.MarkBlockVerified(blockObj)
 
 		if !blockObj.IsLastBlockInEpoch() {
@@ -307,10 +307,10 @@ func (consensus *Consensus) onCommit(recvMsg *FBFTMessage) {
 			if maxWaitTime > waitTime {
 				waitTime = maxWaitTime
 			}
-			// tempDelete consensus.getLogger().Info().Str("waitTime", waitTime.ToString()).
-			// tempDelete 	Msg("[OnCommit] Starting Grace Period")
+			consensus.getLogger().Info().Str("waitTime", waitTime.String()).
+				Msg("[OnCommit] Starting Grace Period")
 			time.Sleep(waitTime)
-			// tempDelete logger.Info().Msg("[OnCommit] Commit Grace Period Ended")
+			logger.Info().Msg("[OnCommit] Commit Grace Period Ended")
 
 			consensus.mutex.Lock()
 			defer consensus.mutex.Unlock()

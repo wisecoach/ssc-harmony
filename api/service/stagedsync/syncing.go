@@ -112,23 +112,23 @@ func CreateStagedSync(
 		finishCfg,
 	)
 
-	// tempDelete utils.Logger().Info().
-	// tempDelete 	Str("ip", ip).
-	// tempDelete 	Str("port", port).
-	// tempDelete 	Uint32("shard", bc.ShardID()).
-	// tempDelete 	Bool("isExplorer", isExplorer).
-	// tempDelete 	Bool("TurboMode", TurboMode).
-	// tempDelete 	Bool("memdb", UseMemDB).
-	// tempDelete 	Bool("doubleCheckBlockHashes", doubleCheckBlockHashes).
-	// tempDelete 	Uint64("maxBlocksPerCycle", maxBlocksPerCycle).
-	// tempDelete 	Uint64("maxBackgroundBlocks", maxBackgroundBlocks).
-	// tempDelete 	Uint64("maxMemSyncCycleSize", maxMemSyncCycleSize).
-	// tempDelete 	Bool("verifyAllSig", verifyAllSig).
-	// tempDelete 	Uint64("verifyHeaderBatchSize", verifyHeaderBatchSize).
-	// tempDelete 	Int("insertChainBatchSize", insertChainBatchSize).
-	// tempDelete 	Bool("debugMode", debugMode).
-	// tempDelete 	Str("dbDir", dbDir).
-	// tempDelete 	Msg("[STAGED_SYNC] staged sync created successfully")
+	utils.Logger().Info().
+		Str("ip", ip).
+		Str("port", port).
+		Uint32("shard", bc.ShardID()).
+		Bool("isExplorer", isExplorer).
+		Bool("TurboMode", TurboMode).
+		Bool("memdb", UseMemDB).
+		Bool("doubleCheckBlockHashes", doubleCheckBlockHashes).
+		Uint64("maxBlocksPerCycle", maxBlocksPerCycle).
+		Uint64("maxBackgroundBlocks", maxBackgroundBlocks).
+		Uint64("maxMemSyncCycleSize", maxMemSyncCycleSize).
+		Bool("verifyAllSig", verifyAllSig).
+		Uint64("verifyHeaderBatchSize", verifyHeaderBatchSize).
+		Int("insertChainBatchSize", insertChainBatchSize).
+		Bool("debugMode", debugMode).
+		Str("dbDir", dbDir).
+		Msg("[STAGED_SYNC] staged sync created successfully")
 
 	return New(ctx,
 		ip,
@@ -182,9 +182,9 @@ func initDB(ctx context.Context, db kv.RwDB) error {
 // SyncLoop will keep syncing with peers until catches up
 func (s *StagedSync) SyncLoop(bc core.BlockChain, isBeacon bool, consensus *consensus.Consensus, loopMinTime time.Duration) {
 
-	// tempDelete utils.Logger().Info().
-	// tempDelete 	Uint64("current height", bc.CurrentBlock().NumberU64()).
-	// tempDelete 	Msgf("staged sync is executing ... ")
+	utils.Logger().Info().
+		Uint64("current height", bc.CurrentBlock().NumberU64()).
+		Msgf("staged sync is executing ... ")
 
 	if !s.IsBeacon() {
 		s.RegisterNodeInfo()
@@ -195,9 +195,9 @@ func (s *StagedSync) SyncLoop(bc core.BlockChain, isBeacon bool, consensus *cons
 	if err != nil {
 		return
 	}
-	// tempDelete utils.Logger().Info().
-	// tempDelete 	Uint64("maxPeersHeight", maxPeersHeight).
-	// tempDelete 	Msgf("[STAGED_SYNC] max peers height")
+	utils.Logger().Info().
+		Uint64("maxPeersHeight", maxPeersHeight).
+		Msgf("[STAGED_SYNC] max peers height")
 	s.syncStatus.MaxPeersHeight = maxPeersHeight
 
 	for {
@@ -211,12 +211,12 @@ func (s *StagedSync) SyncLoop(bc core.BlockChain, isBeacon bool, consensus *cons
 		startHead := bc.CurrentBlock().NumberU64()
 
 		if startHead >= maxPeersHeight {
-			// tempDelete utils.Logger().Info().
-			// tempDelete 	Bool("isBeacon", isBeacon).
-			// tempDelete 	Uint32("shard", bc.ShardID()).
-			// tempDelete 	Uint64("maxPeersHeight", maxPeersHeight).
-			// tempDelete 	Uint64("currentHeight", startHead).
-			// tempDelete 	Msgf("[STAGED_SYNC] Node is now IN SYNC!")
+			utils.Logger().Info().
+				Bool("isBeacon", isBeacon).
+				Uint32("shard", bc.ShardID()).
+				Uint64("maxPeersHeight", maxPeersHeight).
+				Uint64("currentHeight", startHead).
+				Msgf("[STAGED_SYNC] Node is now IN SYNC!")
 			break
 		}
 		startTime := time.Now()
@@ -276,9 +276,9 @@ func (s *StagedSync) SyncLoop(bc core.BlockChain, isBeacon bool, consensus *cons
 		}
 	}
 	s.purgeAllBlocksFromCache()
-	// tempDelete utils.Logger().Info().
-	// tempDelete 	Uint64("new height", bc.CurrentBlock().NumberU64()).
-	// tempDelete 	Msgf("staged sync is executed")
+	utils.Logger().Info().
+		Uint64("new height", bc.CurrentBlock().NumberU64()).
+		Msgf("staged sync is executed")
 	return
 }
 

@@ -344,8 +344,8 @@ func (st *StateTransition) StakingTransitionDb() (usedGas uint64, err error) {
 		if err = rlp.DecodeBytes(msg.Data(), stkMsg); err != nil {
 			return 0, err
 		}
-		// tempDelete utils.Logger().Info().
-		// tempDelete 	Msgf("[DEBUG STAKING] staking type: %s, gas: %d, txn: %+v", msg.Type(), gas, stkMsg)
+		utils.Logger().Info().
+			Msgf("[DEBUG STAKING] staking type: %s, gas: %d, txn: %+v", msg.Type(), gas, stkMsg)
 		if msg.From() != stkMsg.ValidatorAddress {
 			return 0, errInvalidSigner
 		}
@@ -355,8 +355,8 @@ func (st *StateTransition) StakingTransitionDb() (usedGas uint64, err error) {
 		if err = rlp.DecodeBytes(msg.Data(), stkMsg); err != nil {
 			return 0, err
 		}
-		// tempDelete utils.Logger().Info().
-		// tempDelete 	Msgf("[DEBUG STAKING] staking type: %s, gas: %d, txn: %+v", msg.Type(), gas, stkMsg)
+		utils.Logger().Info().
+			Msgf("[DEBUG STAKING] staking type: %s, gas: %d, txn: %+v", msg.Type(), gas, stkMsg)
 		if msg.From() != stkMsg.ValidatorAddress {
 			return 0, errInvalidSigner
 		}
@@ -366,7 +366,7 @@ func (st *StateTransition) StakingTransitionDb() (usedGas uint64, err error) {
 		if err = rlp.DecodeBytes(msg.Data(), stkMsg); err != nil {
 			return 0, err
 		}
-		// tempDelete utils.Logger().Info().Msgf("[DEBUG STAKING] staking type: %s, gas: %d, txn: %+v", msg.Type(), gas, stkMsg)
+		utils.Logger().Info().Msgf("[DEBUG STAKING] staking type: %s, gas: %d, txn: %+v", msg.Type(), gas, stkMsg)
 		if msg.From() != stkMsg.DelegatorAddress {
 			return 0, errInvalidSigner
 		}
@@ -376,7 +376,7 @@ func (st *StateTransition) StakingTransitionDb() (usedGas uint64, err error) {
 		if err = rlp.DecodeBytes(msg.Data(), stkMsg); err != nil {
 			return 0, err
 		}
-		// tempDelete utils.Logger().Info().Msgf("[DEBUG STAKING] staking type: %s, gas: %d, txn: %+v", msg.Type(), gas, stkMsg)
+		utils.Logger().Info().Msgf("[DEBUG STAKING] staking type: %s, gas: %d, txn: %+v", msg.Type(), gas, stkMsg)
 		if msg.From() != stkMsg.DelegatorAddress {
 			return 0, errInvalidSigner
 		}
@@ -386,7 +386,7 @@ func (st *StateTransition) StakingTransitionDb() (usedGas uint64, err error) {
 		if err = rlp.DecodeBytes(msg.Data(), stkMsg); err != nil {
 			return 0, err
 		}
-		// tempDelete utils.Logger().Info().Msgf("[DEBUG STAKING] staking type: %s, gas: %d, txn: %+v", msg.Type(), gas, stkMsg)
+		utils.Logger().Info().Msgf("[DEBUG STAKING] staking type: %s, gas: %d, txn: %+v", msg.Type(), gas, stkMsg)
 		if msg.From() != stkMsg.DelegatorAddress {
 			return 0, errInvalidSigner
 		}

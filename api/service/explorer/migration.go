@@ -60,23 +60,23 @@ func (m *migrationV100) do() error {
 	go m.progressReportLoop()
 	defer close(m.finishedC)
 
-	// tempDelete m.log.Info().Str("progress", fmt.Sprintf("%v / %v", 0, m.totalNum)).
-	// tempDelete 	Msg("Start migration")
+	m.log.Info().Str("progress", fmt.Sprintf("%v / %v", 0, m.totalNum)).
+		Msg("Start migration")
 	if err := m.doMigration(); err != nil {
 		return errors.Wrap(err, "failed to migrate to V1.0.0")
 	}
 
-	// tempDelete m.log.Info().Msg("Finished migration. Starting value check")
+	m.log.Info().Msg("Finished migration. Starting value check")
 	m.isMigrateFinished.Set()
 
 	if err := m.checkResult(); err != nil {
 		return errors.Wrap(err, "check result failed")
 	}
-	// tempDelete m.log.Info().Msg("Finished result checking. Start writing version")
+	m.log.Info().Msg("Finished result checking. Start writing version")
 	if err := writeVersion(m.db, versionV100); err != nil {
 		return errors.Wrap(err, "write version")
 	}
-	// tempDelete m.log.Info().Msg("Finished migration")
+	m.log.Info().Msg("Finished migration")
 	return nil
 }
 
@@ -87,21 +87,21 @@ func (m *migrationV100) progressReportLoop() {
 		select {
 		case <-t.C:
 			if m.isMigrateFinished.IsSet() {
-				// tempDelete checked := atomic.LoadUint64(&m.checkedNum)
-				// tempDelete m.log.Info().Str("progress", fmt.Sprintf("%v / %v", checked, m.totalNum)).
-				// tempDelete 	Msg("checking in progress")
+				checked := atomic.LoadUint64(&m.checkedNum)
+				m.log.Info().Str("progress", fmt.Sprintf("%v / %v", checked, m.totalNum)).
+					Msg("checking in progress")
 			} else {
-				// tempDelete migrated := atomic.LoadUint64(&m.migratedNum)
-				// tempDelete m.log.Info().Str("progress", fmt.Sprintf("%v / %v", migrated, m.totalNum)).
-				// tempDelete 	Msg("migration in progress")
+				migrated := atomic.LoadUint64(&m.migratedNum)
+				m.log.Info().Str("progress", fmt.Sprintf("%v / %v", migrated, m.totalNum)).
+					Msg("migration in progress")
 			}
 
 		case <-m.finishedC:
-			// tempDelete m.log.Info().Msg("migration to 1.0.0 finished")
+			m.log.Info().Msg("migration to 1.0.0 finished")
 			return
 
 		case <-m.closeC:
-			// tempDelete m.log.Info().Msg("Migration interrupted")
+			m.log.Info().Msg("Migration interrupted")
 			return
 		}
 	}

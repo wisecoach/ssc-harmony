@@ -49,6 +49,7 @@ func NewSSCVMContext(origin common.Address, txHash common.Hash, callIndex api.Ca
 		CalculateMigrationGas: CalculateMigrationGasFn(chain),
 		ShardID:               chain.ShardID(),
 		NumShards:             shard.Schedule.InstanceForEpoch(header.Epoch()).NumShards(),
+		Header:                header,
 	}
 }
 

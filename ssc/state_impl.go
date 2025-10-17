@@ -14,6 +14,9 @@ func (s *sscService) GetCallState(txHash common.Hash) *api.SimulationCallState {
 
 	state := s.simulationState[txHash]
 	callState := state.SimulationCallStates[state.SimulationNum].Get(state.CurrentCallFrame.CallIndex)
+	if callState == nil {
+		utils.SSCLogger().Error().Str("txHash", txHash.Hex()).Interface("state", state).Msgf("get nil callstate")
+	}
 	return callState
 }
 
@@ -144,8 +147,7 @@ func (s *sscService) SetState(db api.StateDB, txHash common.Hash, address common
 	rwset.CurrentState.State[address][key] = value
 	rwset.WriteState.State[address][key] = value
 
-	utils.SSCLogger().Info().Str("txHash", txHash.Hex()).
-		Interface("callFrame", s.simulationState[txHash].CurrentCallFrame).
+	utils.SSCLogger().Debug().Str("txHash", txHash.Hex()).
 		Msgf("set state [%s:%s] = %s", address.Hex(), key.Hex(), value.Hex())
 	return nil
 }
@@ -206,7 +208,7 @@ func (s *sscService) SetSimuState(txHash common.Hash, address common.Address, ke
 		verifyContext.CurrentState.State[address] = make(map[common.Hash]common.Hash)
 	}
 	verifyContext.CurrentState.State[address][key] = value
-	utils.SSCLogger().Info().Str("txHash", txHash.Hex()).
+	utils.SSCLogger().Debug().Str("txHash", txHash.Hex()).
 		Interface("callFrame", verifyContext.CallFrame).
 		Msgf("set simu state [%s:%s] = %s", address.Hex(), key.Hex(), value.Hex())
 	return nil
@@ -227,7 +229,7 @@ func (s *sscService) GetResult(txHash common.Hash) (result []byte, leftOverGas u
 	ret := verifyContext.DependentResults[verifyContext.CallFrame.PC]
 	result = ret.Result
 	leftOverGas = ret.LeftOverGas
-	utils.SSCLogger().Info().
+	utils.SSCLogger().Debug().
 		Str("txHash", txHash.Hex()).
 		Interface("callFrame", verifyContext.CallFrame).
 		Msgf("get result, [%d/%d]: %v", verifyContext.CallFrame.PC+1, len(verifyContext.DependentResults), result)

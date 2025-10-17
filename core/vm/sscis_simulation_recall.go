@@ -4,6 +4,7 @@ import (
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/common/math"
 	"github.com/harmony-one/harmony/internal/params"
+	"github.com/harmony-one/harmony/ssc/api"
 )
 
 var (
@@ -35,7 +36,10 @@ func opSload_SSC_Recall(pc *uint64, inp Interpreter, contract *Contract, memory 
 	txHash := interpreter.vm.Context.TxHash
 	db := interpreter.vm.StateDB
 	loc := stack.peek()
-	val, _ := interpreter.vm.SSCService.GetState(db, txHash, contract.Address(), common.BigToHash(loc))
+	val, err := interpreter.vm.SSCService.GetState(db, txHash, contract.Address(), common.BigToHash(loc))
+	if err != nil {
+		return nil, err
+	}
 	loc.SetBytes(val.Bytes())
 	return nil, nil
 }
@@ -46,7 +50,10 @@ func opSstore_SSC_Recall(pc *uint64, inp Interpreter, contract *Contract, memory
 	db := interpreter.vm.StateDB
 	loc := common.BigToHash(stack.pop())
 	val := stack.pop()
-	interpreter.vm.SSCService.SetState(db, txHash, contract.Address(), loc, common.BigToHash(val))
+	err := interpreter.vm.SSCService.SetState(db, txHash, contract.Address(), loc, common.BigToHash(val))
+	if err != nil {
+		return nil, err
+	}
 	interpreter.intPool.put(val)
 	return nil, nil
 }
@@ -81,6 +88,9 @@ func opCall_SSC_Recall(pc *uint64, inp Interpreter, contract *Contract, memory *
 	contract.Gas += returnGas
 
 	interpreter.intPool.put(addr, value, inOffset, inSize, retOffset, retSize)
+	if err != nil && err.Error() == api.ErrLockedByOtherTx.Error() {
+		return ret, api.ErrLockedByOtherTx
+	}
 	return ret, nil
 }
 

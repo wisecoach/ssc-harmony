@@ -62,6 +62,7 @@ func (sender *MessageSender) SendWithRetry(blockNum uint64, msgType msg_pb.Messa
 		atomic.StoreUint32(&msgRetry.isActive, 1)
 		// First stop the old one
 		sender.StopRetry(msgType)
+		utils.Logger().Info().Msgf("begin to send with retry, type=%s, blockNum=%d", msgType.String(), blockNum)
 		sender.messagesToRetry.Store(msgType, &msgRetry)
 		go func() {
 			sender.Retry(&msgRetry)
@@ -134,6 +135,7 @@ func (sender *MessageSender) StopRetry(msgType msg_pb.MessageType) {
 	if ok {
 		msgRetry := data.(*MessageRetry)
 		atomic.StoreUint32(&msgRetry.isActive, 0)
+		utils.Logger().Info().Msgf("stop retry to send msg, type=%s, blockNum=%d", msgRetry.msgType.String(), msgRetry.blockNum)
 	}
 }
 

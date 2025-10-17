@@ -2,6 +2,7 @@ package worker
 
 import (
 	"bytes"
+	"encoding/json"
 	"fmt"
 	"github.com/harmony-one/harmony/ssc/api"
 	"math/big"
@@ -105,7 +106,7 @@ func (w *Worker) CommitSSCTransactions(
 	txs types.Transactions,
 	coinbase common.Address,
 ) {
-	for _, tx := range txs {
+	for i, tx := range txs {
 		// If we don't have enough gas for any further transactions then we're done
 		if w.current.gasPool.Gas() < params.TxGas {
 			utils.Logger().Info().Uint64("have", w.current.gasPool.Gas()).Uint64("want", params.TxGas).Msg("Not enough gas for further transactions")
@@ -130,9 +131,17 @@ func (w *Worker) CommitSSCTransactions(
 			continue
 		}
 
+		if bytes.Compare(vm.SimulationCommitAddr.Bytes(), tx.To().Bytes()) == 0 {
+			simulation := &api.SimulationCommit{}
+			json.Unmarshal(tx.Data(), simulation)
+			utils.SSCLogger().Info().Str("txHash", tx.Hash().Hex()).Msgf("commit simulation tx, nonce=%d, originTxHash=%s", tx.Nonce(), common.BytesToHash(simulation.TxHash).Hex())
+		}
+
 		w.current.state.Prepare(tx.Hash(), common.Hash{}, len(w.current.txs))
 		err := w.commitTransaction(tx, coinbase)
 		sender, _ := common2.AddressToBech32(from)
+
+		utils.Logger().Info().Err(err).Msgf("commit ssc transactions [%d/%d]", i+1, len(txs))
 
 		switch err {
 		case core.ErrGasLimitReached:
@@ -364,6 +373,7 @@ var (
 func (w *Worker) commitTransaction(
 	tx *types.Transaction, coinbase common.Address,
 ) error {
+	utils.Logger().Info().Msgf("commit transaction, nonce=%d, crossShard=%v", tx.Nonce(), tx.CrossShard())
 	snap := w.current.state.Snapshot()
 	gasUsed := w.current.header.GasUsed()
 	var err error

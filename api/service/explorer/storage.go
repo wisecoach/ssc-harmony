@@ -109,11 +109,11 @@ func newExplorerDB(hc *harmonyconfig.HarmonyConfig, dbPath string) (database, er
 		// init the storage using tikv
 		dbPath = fmt.Sprintf("explorer_tikv_%d", hc.General.ShardID)
 		readOnly := hc.TiKV.Role == tikv.RoleReader
-		// tempDelete utils.Logger().Info().Msg("explorer storage in tikv: " + dbPath)
+		utils.Logger().Info().Msg("explorer storage in tikv: " + dbPath)
 		return newExplorerTiKv(hc.TiKV.PDAddr, dbPath, readOnly)
 	} else {
 		// or leveldb
-		// tempDelete utils.Logger().Info().Msg("explorer storage folder: " + dbPath)
+		utils.Logger().Info().Msg("explorer storage folder: " + dbPath)
 		return newExplorerLvlDB(dbPath)
 	}
 }
@@ -234,12 +234,12 @@ func (s *storage) loop() {
 	for {
 		select {
 		case res := <-s.resultC:
-			// tempDelete s.log.Info().Uint64("block number", res.bn).Msg("writing explorer DB")
+			s.log.Info().Uint64("block number", res.bn).Msg("writing explorer DB")
 			if err := res.btc.Write(); err != nil {
 				s.log.Error().Err(err).Msg("explorer db failed to write")
 			}
 		case res := <-s.resultT:
-			// tempDelete s.log.Info().Str("block hash", res.data.Hash.Hex()).Msg("writing trace into explorer DB")
+			s.log.Info().Str("block hash", res.data.Hash.Hex()).Msg("writing trace into explorer DB")
 			if err := res.btc.Write(); err != nil {
 				s.log.Error().Err(err).Msg("explorer db failed to write trace data")
 			}

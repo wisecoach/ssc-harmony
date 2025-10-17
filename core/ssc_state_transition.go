@@ -77,7 +77,7 @@ func (st *SSCStateTransition) buyGas() error {
 			"had: %s but need: %s", have.String(), mgval.String(),
 		)
 	}
-	utils.SSCLogger().Info().Msgf("buyGas, buy=%d, left=%d", st.msg.Gas(), st.gp.Gas())
+	utils.SSCLogger().Debug().Msgf("buyGas, buy=%d, left=%d", st.msg.Gas(), st.gp.Gas())
 	if err := st.gp.SubGas(st.msg.Gas()); err != nil {
 		return err
 	}
@@ -137,12 +137,11 @@ func (st *SSCStateTransition) TransitionDb() (ExecutionResult, error) {
 	st.state.SetNonce(msg.From(), st.state.GetNonce(sender.Address())+1)
 	ret, st.gas, vmErr = sscvm.Call(sender, st.to(), st.data, st.gas, st.value)
 	if vmErr != nil {
-		utils.Logger().Debug().Err(vmErr).Msg("VM returned with error")
 		// The only possible consensus-error would be if there wasn't
 		// sufficient balance to make the transfer happen. The first
 		// balance transfer may never fail.
-
 		if vmErr == vm.ErrInsufficientBalance {
+			utils.Logger().Debug().Err(vmErr).Msg("VM returned with error")
 			return ExecutionResult{}, vmErr
 		}
 	}

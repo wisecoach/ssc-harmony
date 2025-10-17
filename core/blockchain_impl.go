@@ -644,30 +644,30 @@ func (bc *BlockChainImpl) loadLastState() error {
 	}
 
 	// Issue a status log for the user
-	// tempDelete currentFastBlock := bc.CurrentFastBlock()
+	currentFastBlock := bc.CurrentFastBlock()
 
-	// tempDelete headerTd := bc.GetTd(currentHeader.Hash(), currentHeader.Number().Uint64())
-	// tempDelete blockTd := bc.GetTd(currentBlock.Hash(), currentBlock.NumberU64())
-	// tempDelete fastTd := bc.GetTd(currentFastBlock.Hash(), currentFastBlock.NumberU64())
+	headerTd := bc.GetTd(currentHeader.Hash(), currentHeader.Number().Uint64())
+	blockTd := bc.GetTd(currentBlock.Hash(), currentBlock.NumberU64())
+	fastTd := bc.GetTd(currentFastBlock.Hash(), currentFastBlock.NumberU64())
 
-	// tempDelete utils.Logger().Info().
-	// tempDelete 	Str("number", currentHeader.Number().ToString()).
-	// tempDelete 	Str("hash", currentHeader.Hash().Hex()).
-	// tempDelete 	Str("td", headerTd.ToString()).
-	// tempDelete 	Str("age", common.PrettyAge(time.Unix(currentHeader.Time().Int64(), 0)).ToString()).
-	// tempDelete 	Msg("Loaded most recent local header")
-	// tempDelete utils.Logger().Info().
-	// tempDelete 	Str("number", currentBlock.Number().ToString()).
-	// tempDelete 	Str("hash", currentBlock.Hash().Hex()).
-	// tempDelete 	Str("td", blockTd.ToString()).
-	// tempDelete 	Str("age", common.PrettyAge(time.Unix(currentBlock.Time().Int64(), 0)).ToString()).
-	// tempDelete 	Msg("Loaded most recent local full block")
-	// tempDelete utils.Logger().Info().
-	// tempDelete 	Str("number", currentFastBlock.Number().ToString()).
-	// tempDelete 	Str("hash", currentFastBlock.Hash().Hex()).
-	// tempDelete 	Str("td", fastTd.ToString()).
-	// tempDelete 	Str("age", common.PrettyAge(time.Unix(currentFastBlock.Time().Int64(), 0)).ToString()).
-	// tempDelete 	Msg("Loaded most recent local fast block")
+	utils.Logger().Info().
+		Str("number", currentHeader.Number().String()).
+		Str("hash", currentHeader.Hash().Hex()).
+		Str("td", headerTd.String()).
+		Str("age", common.PrettyAge(time.Unix(currentHeader.Time().Int64(), 0)).String()).
+		Msg("Loaded most recent local header")
+	utils.Logger().Info().
+		Str("number", currentBlock.Number().String()).
+		Str("hash", currentBlock.Hash().Hex()).
+		Str("td", blockTd.String()).
+		Str("age", common.PrettyAge(time.Unix(currentBlock.Time().Int64(), 0)).String()).
+		Msg("Loaded most recent local full block")
+	utils.Logger().Info().
+		Str("number", currentFastBlock.Number().String()).
+		Str("hash", currentFastBlock.Hash().Hex()).
+		Str("td", fastTd.String()).
+		Str("age", common.PrettyAge(time.Unix(currentFastBlock.Time().Int64(), 0)).String()).
+		Msg("Loaded most recent local fast block")
 
 	return nil
 }
@@ -840,10 +840,10 @@ func (bc *BlockChainImpl) repairValidatorsAndCommitSigs(head **types.Block) erro
 	for {
 		// Abort if we've rewound to a head block that does have associated state
 		if _, err := state.New((*head).Root(), bc.stateCache, bc.snaps, bc.stateLockManager.GetLocker()); err == nil {
-			// tempDelete utils.Logger().Info().
-			// tempDelete 	Str("number", (*head).Number().ToString()).
-			// tempDelete 	Str("hash", (*head).Hash().Hex()).
-			// tempDelete 	Msg("Rewound blockchain to past state")
+			utils.Logger().Info().
+				Str("number", (*head).Number().String()).
+				Str("hash", (*head).Hash().Hex()).
+				Msg("Rewound blockchain to past state")
 			if err := rawdb.WriteHeadBlockHash(bc.db, (*head).Hash()); err != nil {
 				return errors.WithMessagef(err, "failed to write head block hash number %d", (*head).NumberU64())
 			}
@@ -885,9 +885,9 @@ func (bc *BlockChainImpl) removeInValidatorList(toRemove map[common.Address]stru
 	if len(toRemove) == 0 {
 		return nil
 	}
-	// tempDelete utils.Logger().Info().
-	// tempDelete 	Interface("validators", toRemove).
-	// tempDelete 	Msg("Removing validators from validator list")
+	utils.Logger().Info().
+		Interface("validators", toRemove).
+		Msg("Removing validators from validator list")
 
 	existingVals, err := bc.ReadValidatorList()
 	if err != nil {
@@ -915,9 +915,9 @@ func (bc *BlockChainImpl) ExportN(w io.Writer, first uint64, last uint64) error 
 	if first > last {
 		return fmt.Errorf("export failed: first (%d) is greater than last (%d)", first, last)
 	}
-	// tempDelete utils.Logger().Info().Uint64("count", last-first+1).Msg("Exporting batch of blocks")
+	utils.Logger().Info().Uint64("count", last-first+1).Msg("Exporting batch of blocks")
 
-	// tempDelete start, reported := time.Now(), time.Now()
+	start, reported := time.Now(), time.Now()
 	for nr := first; nr <= last; nr++ {
 		block := bc.GetBlockByNumber(nr)
 		if block == nil {
@@ -926,13 +926,13 @@ func (bc *BlockChainImpl) ExportN(w io.Writer, first uint64, last uint64) error 
 		if err := block.EncodeRLP(w); err != nil {
 			return err
 		}
-		// tempDelete if time.Since(reported) >= statsReportLimit {
-		// tempDelete 	utils.Logger().Info().
-		// tempDelete 		Uint64("exported", block.NumberU64()-first).
-		// tempDelete 		Str("elapsed", common.PrettyDuration(time.Since(start)).ToString()).
-		// tempDelete 		Msg("Exporting blocks")
-		// tempDelete 	reported = time.Now()
-		// tempDelete }
+		if time.Since(reported) >= statsReportLimit {
+			utils.Logger().Info().
+				Uint64("exported", block.NumberU64()-first).
+				Str("elapsed", common.PrettyDuration(time.Since(start)).String()).
+				Msg("Exporting blocks")
+			reported = time.Now()
+		}
 	}
 
 	return nil
@@ -1239,11 +1239,11 @@ func (bc *BlockChainImpl) Stop() {
 			if number := bc.CurrentBlock().NumberU64(); number > offset {
 				recent := bc.GetHeaderByNumber(number - offset)
 				if recent != nil {
-					// tempDelete utils.Logger().Info().
-					// tempDelete 	Str("block", recent.Number().ToString()).
-					// tempDelete 	Str("hash", recent.Hash().Hex()).
-					// tempDelete 	Str("root", recent.Root().Hex()).
-					// tempDelete 	Msg("Writing cached state to disk")
+					utils.Logger().Info().
+						Str("block", recent.Number().String()).
+						Str("hash", recent.Hash().Hex()).
+						Str("root", recent.Root().Hex()).
+						Msg("Writing cached state to disk")
 					if err := triedb.Commit(recent.Root(), true); err != nil {
 						utils.Logger().Error().Err(err).Msg("Failed to commit recent state trie")
 					}
@@ -1251,7 +1251,7 @@ func (bc *BlockChainImpl) Stop() {
 			}
 		}
 		if snapBase != (common.Hash{}) {
-			// tempDelete utils.Logger().Info().Interface("root", snapBase).Msg("Writing snapshot state to disk")
+			utils.Logger().Info().Interface("root", snapBase).Msg("Writing snapshot state to disk")
 			if err := triedb.Commit(snapBase, true); err != nil {
 				utils.Logger().Error().Err(err).Msg("Failed to commit recent state trie")
 			}
@@ -1277,7 +1277,7 @@ func (bc *BlockChainImpl) Stop() {
 	if bc.cacheConfig.TrieCleanJournal != "" {
 		bc.triedb.SaveCache(bc.cacheConfig.TrieCleanJournal)
 	}
-	// tempDelete utils.Logger().Info().Msg("Blockchain manager stopped")
+	utils.Logger().Info().Msg("Blockchain manager stopped")
 }
 
 // WriteStatus status of write
@@ -1422,7 +1422,7 @@ func (bc *BlockChainImpl) InsertReceiptChain(blockChain types.Blocks, receiptCha
 
 	var (
 		stats = struct{ processed, ignored int32 }{}
-		// tempDelete start = time.Now()
+		start = time.Now()
 		bytes = 0
 		batch = bc.db.NewBatch()
 	)
@@ -1495,15 +1495,15 @@ func (bc *BlockChainImpl) InsertReceiptChain(blockChain types.Blocks, receiptCha
 	rawdb.WriteHeadFastBlockHash(bc.db, head.Hash())
 	bc.currentFastBlock.Store(head)
 
-	// tempDelete utils.Logger().Info().
-	// tempDelete 	Int32("count", stats.processed).
-	// tempDelete 	Str("elapsed", common.PrettyDuration(time.Since(start)).ToString()).
-	// tempDelete 	Str("age", common.PrettyAge(time.Unix(head.Time().Int64(), 0)).ToString()).
-	// tempDelete 	Str("head", head.Number().ToString()).
-	// tempDelete 	Str("hash", head.Hash().Hex()).
-	// tempDelete 	Str("size", common.StorageSize(bytes).ToString()).
-	// tempDelete 	Int32("ignored", stats.ignored).
-	// tempDelete 	Msg("Imported new block receipts")
+	utils.Logger().Info().
+		Int32("count", stats.processed).
+		Str("elapsed", common.PrettyDuration(time.Since(start)).String()).
+		Str("age", common.PrettyAge(time.Unix(head.Time().Int64(), 0)).String()).
+		Str("head", head.Number().String()).
+		Str("hash", head.Hash().Hex()).
+		Str("size", common.StorageSize(bytes).String()).
+		Int32("ignored", stats.ignored).
+		Msg("Imported new block receipts")
 
 	return int(stats.processed), nil
 }
@@ -1585,11 +1585,11 @@ func (bc *BlockChainImpl) WriteBlockWithState(
 					// If we're exceeding limits but haven't reached a large enough memory gap,
 					// warn the user that the system is becoming unstable.
 					if chosen < lastWrite+bc.cacheConfig.TriesInMemory && bc.gcproc >= 2*bc.cacheConfig.TrieTimeLimit {
-						// tempDelete utils.Logger().Info().
-						// tempDelete 	Dur("time", bc.gcproc).
-						// tempDelete 	Dur("allowance", bc.cacheConfig.TrieTimeLimit).
-						// tempDelete 	Float64("optimum", float64(chosen-lastWrite)/float64(bc.cacheConfig.TriesInMemory)).
-						// tempDelete 	Msg("State in memory for too long, committing")
+						utils.Logger().Info().
+							Dur("time", bc.gcproc).
+							Dur("allowance", bc.cacheConfig.TrieTimeLimit).
+							Float64("optimum", float64(chosen-lastWrite)/float64(bc.cacheConfig.TriesInMemory)).
+							Msg("State in memory for too long, committing")
 					}
 					// Flush an entire trie and restart the counters
 					triedb.Commit(header.Root(), true)
@@ -1915,15 +1915,15 @@ func (bc *BlockChainImpl) insertChain(chain types.Blocks, verifyHeaders bool) (i
 		if err != nil {
 			return i, events, coalescedLogs, err
 		}
-		// tempDelete logger := utils.Logger().With().
-		// tempDelete 	Str("number", block.Number().ToString()).
-		// tempDelete 	Str("hash", block.Hash().Hex()).
-		// tempDelete 	Int("uncles", len(block.Uncles())).
-		// tempDelete 	Int("txs", len(block.Transactions())).
-		// tempDelete 	Int("stakingTxs", len(block.StakingTransactions())).
-		// tempDelete 	Uint64("gas", block.GasUsed()).
-		// tempDelete 	Str("elapsed", common.PrettyDuration(time.Since(bstart)).ToString()).
-		// tempDelete 	Logger()
+		logger := utils.Logger().With().
+			Str("number", block.Number().String()).
+			Str("hash", block.Hash().Hex()).
+			Int("uncles", len(block.Uncles())).
+			Int("txs", len(block.Transactions())).
+			Int("stakingTxs", len(block.StakingTransactions())).
+			Uint64("gas", block.GasUsed()).
+			Str("elapsed", common.PrettyDuration(time.Since(bstart)).String()).
+			Logger()
 
 		// Update the metrics touched during block commit
 		accountCommitTimer.Update(state.AccountCommits) // Account commits are complete, we can mark them
@@ -1931,10 +1931,11 @@ func (bc *BlockChainImpl) insertChain(chain types.Blocks, verifyHeaders bool) (i
 
 		blockWriteTimer.Update(time.Since(substart) - state.AccountCommits - state.StorageCommits)
 		blockInsertTimer.UpdateSince(bstart)
+		bc.processor.sscService.BlockCommitted(block.NumberU64())
 
 		switch status {
 		case CanonStatTy:
-			// tempDelete logger.Info().Msgf("Inserted new block s: %d e: %d n:%d", block.ShardID(), block.Epoch().Uint64(), block.NumberU64())
+			logger.Info().Msgf("Inserted new block s: %d e: %d n:%d", block.ShardID(), block.Epoch().Uint64(), block.NumberU64())
 			coalescedLogs = append(coalescedLogs, logs...)
 			blockInsertTimer.UpdateSince(bstart)
 			events = append(events, ChainEvent{block, block.Hash(), logs})
@@ -2021,8 +2022,8 @@ func (st *insertStats) report(chain []*types.Block, index int, cache common.Stor
 			context = context.Int("queued", st.queued)
 		}
 
-		// tempDelete logger := context.Logger()
-		// tempDelete logger.Info().Msg("Imported new chain segment")
+		logger := context.Logger()
+		logger.Info().Msg("Imported new chain segment")
 
 		*st = insertStats{startTime: now, lastIndex: index + 1}
 	}

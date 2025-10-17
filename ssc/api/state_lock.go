@@ -9,6 +9,7 @@ import (
 var (
 	ErrLockedByOtherTx  = errors.New("state is locked by other tx")
 	ErrTxHasBeenClosed  = errors.New("tx has been closed")
+	ErrTxNotExist       = errors.New("transaction is not exist")
 	ErrDeadLockDetected = errors.New("dead lock detected")
 )
 
@@ -18,6 +19,13 @@ func (k LockKey) Value() (common.Address, common.Hash) {
 	values := strings.Split(string(k), ":")
 	return common.HexToAddress(values[0]), common.HexToHash(values[1])
 }
+
+type LockType int
+
+const (
+	SharedLock LockType = iota
+	ExclusiveLock
+)
 
 func FormKey(address common.Address, key common.Hash) LockKey {
 	return LockKey(address.Hex() + ":" + key.Hex())
@@ -60,18 +68,18 @@ type StateLocker interface {
 	//
 	BindStateDB(stateDB StateDB)
 
-	// CheckLock
+	// Locked
 	//  @Description: Check if the key is available for locking.
 	//  @return error ErrLockedByOtherTx if the key is locked by other transaction.
-	CheckLock(key LockKey) error
+	Locked(key LockKey) error
 
-	// CheckReentrantLock
+	// CheckLockable
 	//  @Description: Check if the key is available for reentrant locking.
 	//  @param txHash	the reentrant transaction hash.
 	//  @return bool	if the key is available for reentrant locking.
-	CheckReentrantLock(key LockKey, txHash common.Hash) error
+	CheckLockable(key LockKey, txHash common.Hash, lockType LockType) error
 
-	Lock(txHash common.Hash, callIndex CallIndex, key LockKey, value common.Hash) error
+	Lock(txHash common.Hash, callIndex CallIndex, key LockKey, value common.Hash, lockType LockType) error
 
 	// Snapshot
 	// @Description: create a snapshot of the current state lock, it should be called by stateDB

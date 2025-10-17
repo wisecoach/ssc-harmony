@@ -89,29 +89,29 @@ func (consensus *Consensus) updatePublicKeys(pubKeys, allowlist []bls_cosi.Publi
 	if consensus.UpdatePublicKeysFunc != nil {
 		consensus.UpdatePublicKeysFunc(pubKeys)
 	}
-	// tempDelete consensus.getLogger().Info().Msg("My Committee updated")
-	// tempDelete for i := range pubKeys {
-	// tempDelete 	consensus.getLogger().Info().
-	// tempDelete 		Int("index", i).
-	// tempDelete 		Str("BLSPubKey", pubKeys[i].Bytes.Hex()).
-	// tempDelete 		Msg("Member")
-	// tempDelete }
+	consensus.getLogger().Info().Msg("My Committee updated")
+	for i := range pubKeys {
+		consensus.getLogger().Info().
+			Int("index", i).
+			Str("BLSPubKey", pubKeys[i].Bytes.Hex()).
+			Msg("Member")
+	}
 
 	allKeys := consensus.decider.Participants()
 	if len(allKeys) != 0 {
 		consensus.LeaderPubKey = &allKeys[0]
-		// tempDelete consensus.getLogger().Info().
-		// tempDelete 	Str("info", consensus.LeaderPubKey.Bytes.Hex()).Msg("Setting leader as first validator, because provided new keys")
+		consensus.getLogger().Info().
+			Str("info", consensus.LeaderPubKey.Bytes.Hex()).Msg("Setting leader as first validator, because provided new keys")
 	} else {
 		consensus.getLogger().Error().
 			Msg("[UpdatePublicKeys] Participants is empty")
 	}
-	// tempDelete for i := range pubKeys {
-	// tempDelete 	consensus.getLogger().Info().
-	// tempDelete 		Int("index", i).
-	// tempDelete 		Str("BLSPubKey", pubKeys[i].Bytes.Hex()).
-	// tempDelete 		Msg("Member")
-	// tempDelete }
+	for i := range pubKeys {
+		consensus.getLogger().Info().
+			Int("index", i).
+			Str("BLSPubKey", pubKeys[i].Bytes.Hex()).
+			Msg("Member")
+	}
 	// reset states after update public keys
 	// TODO: incorporate bitmaps in the decider, so their state can't be inconsistent.
 	consensus.updateBitmaps()
@@ -249,9 +249,9 @@ func (consensus *Consensus) checkViewID(msg *FBFTMessage) error {
 		consensus.LeaderPubKey = msg.SenderPubkeys[0]
 		consensus.IgnoreViewIDCheck.UnSet()
 		consensus.consensusTimeout[timeoutConsensus].Start()
-		// tempDelete consensus.getLogger().Info().
-		// tempDelete 	Str("leaderKey", consensus.LeaderPubKey.Bytes.Hex()).
-		// tempDelete 	Msg("[checkViewID] Start consensus timer")
+		consensus.getLogger().Info().
+			Str("leaderKey", consensus.LeaderPubKey.Bytes.Hex()).
+			Msg("[checkViewID] Start consensus timer")
 		return nil
 	} else if msg.ViewID > consensus.getCurBlockViewID() {
 		return consensus_engine.ErrViewIDNotMatch
@@ -359,7 +359,7 @@ func (consensus *Consensus) updateConsensusInformation() Mode {
 		return Syncing
 	}
 
-	// tempDelete consensus.getLogger().Info().Msg("[UpdateConsensusInformation] Updating.....")
+	consensus.getLogger().Info().Msg("[UpdateConsensusInformation] Updating.....")
 	// genesis block is a special case that will have shard state and needs to skip processing
 	isNotGenesisBlock := curHeader.Number().Cmp(big.NewInt(0)) > 0
 	if curHeader.IsLastBlockInEpoch() && isNotGenesisBlock {
@@ -409,9 +409,9 @@ func (consensus *Consensus) updateConsensusInformation() Mode {
 	oldLeader := consensus.LeaderPubKey
 	pubKeys, _ := committeeToSet.BLSPublicKeys()
 
-	// tempDelete consensus.getLogger().Info().
-	// tempDelete 	Int("numPubKeys", len(pubKeys)).
-	// tempDelete 	Msg("[UpdateConsensusInformation] Successfully updated public keys")
+	consensus.getLogger().Info().
+		Int("numPubKeys", len(pubKeys)).
+		Msg("[UpdateConsensusInformation] Successfully updated public keys")
 	consensus.updatePublicKeys(pubKeys, shard.Schedule.InstanceForEpoch(nextEpoch).ExternalAllowlist())
 
 	// Update voters in the committee
@@ -440,9 +440,9 @@ func (consensus *Consensus) updateConsensusInformation() Mode {
 			consensus.IgnoreViewIDCheck.Set()
 			hasError = true
 		} else {
-			// tempDelete consensus.getLogger().Info().
-			// tempDelete 	Str("leaderPubKey", leaderPubKey.Bytes.Hex()).
-			// tempDelete 	Msgf("[UpdateConsensusInformation] Most Recent LeaderPubKey Updated Based on BlockChain, blocknum: %d", curHeader.NumberU64())
+			consensus.getLogger().Info().
+				Str("leaderPubKey", leaderPubKey.Bytes.Hex()).
+				Msgf("[UpdateConsensusInformation] Most Recent LeaderPubKey Updated Based on BlockChain, blocknum: %d", curHeader.NumberU64())
 			consensus.LeaderPubKey = leaderPubKey
 		}
 	}
@@ -463,17 +463,17 @@ func (consensus *Consensus) updateConsensusInformation() Mode {
 			if (oldLeader != nil && consensus.LeaderPubKey != nil &&
 				!consensus.LeaderPubKey.Object.IsEqual(oldLeader.Object)) && consensus.isLeader() {
 				go func() {
-					// tempDelete consensus.GetLogger().Info().
-					// tempDelete 	Str("myKey", myPubKeys.SerializeToHexStr()).
-					// tempDelete 	Msg("[UpdateConsensusInformation] I am the New Leader")
+					consensus.GetLogger().Info().
+						Str("myKey", myPubKeys.SerializeToHexStr()).
+						Msg("[UpdateConsensusInformation] I am the New Leader")
 					consensus.ReadySignal(NewProposal(SyncProposal))
 				}()
 			}
 			return Normal
 		}
 	}
-	// tempDelete consensus.getLogger().Info().
-	// tempDelete 	Msgf("[UpdateConsensusInformation] not in committee, keys len %d Listening", len(pubKeys))
+	consensus.getLogger().Info().
+		Msgf("[UpdateConsensusInformation] not in committee, keys len %d Listening", len(pubKeys))
 
 	// not in committee
 	return Listening
@@ -561,10 +561,10 @@ func (consensus *Consensus) GetFinality() int64 {
 
 // switchPhase will switch FBFTPhase to desired phase.
 func (consensus *Consensus) switchPhase(subject string, desired FBFTPhase) {
-	// tempDelete consensus.getLogger().Info().
-	// tempDelete 	Str("from:", consensus.phase.ToString()).
-	// tempDelete 	Str("to:", desired.ToString()).
-	// tempDelete 	Str("switchPhase:", subject)
+	consensus.getLogger().Info().
+		Str("from:", consensus.phase.String()).
+		Str("to:", desired.String()).
+		Str("switchPhase:", subject)
 
 	consensus.phase = desired
 }

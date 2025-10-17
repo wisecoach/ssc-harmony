@@ -160,7 +160,7 @@ func (in *SSCVMInterpreter) Run(contract *Contract, input []byte, readOnly bool)
 		}
 
 		if op.String() == "SSTORE" {
-			utils.SSCLogger().Info().Str("txHash", in.vm.Context.TxHash.Hex()).
+			utils.SSCLogger().Debug().Str("txHash", in.vm.Context.TxHash.Hex()).
 				Msgf("executing opcode, pc=%d, op=%s, executionType=%s", pc, op.String(), in.vm.ExecutionType)
 		}
 		// execute the operation
@@ -180,11 +180,11 @@ func (in *SSCVMInterpreter) Run(contract *Contract, input []byte, readOnly bool)
 		switch {
 		case err != nil:
 			utils.SSCLogger().Error().Err(err).Str("txHash", in.vm.Context.TxHash.Hex()).
-				Uint64("pc", pc).Str("code", common.Bytes2Hex(contract.Code)).Msg("error during execution")
+				Uint64("pc", pc).Msg("error during execution")
 			return nil, err
 		case operation.reverts:
 			utils.SSCLogger().Error().Str("reason", common.Bytes2Hex(ret)).Err(ErrExecutionReverted).Str("txHash", in.vm.Context.TxHash.Hex()).
-				Uint64("pc", pc).Str("code", common.Bytes2Hex(contract.Code)).Msg("error during execution")
+				Uint64("pc", pc).Msg("error during execution")
 			return res, ErrExecutionReverted
 		case operation.halts:
 			return res, nil

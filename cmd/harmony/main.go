@@ -6,6 +6,7 @@ import (
 	"github.com/ethereum/go-ethereum/log"
 	"github.com/harmony-one/harmony/crypto/bls"
 	"github.com/harmony-one/harmony/internal/blsgen"
+	rpc_common "github.com/harmony-one/harmony/rpc/common"
 	"github.com/harmony-one/harmony/shard/committee"
 	"github.com/harmony-one/harmony/ssc"
 	"github.com/harmony-one/harmony/ssc/api"
@@ -462,11 +463,11 @@ func setupNodeAndRun(hc harmonyconfig.HarmonyConfig) {
 	nodeconfig.SetPeerID(myHost.GetID())
 
 	if hc.Log.VerbosePrints.Config {
-		// tempDelete utils.Logger().Info().Interface("config", rpc_common.Config{
-		// tempDelete 	HarmonyConfig: hc,
-		// tempDelete 	NodeConfig:    *nodeConfig,
-		// tempDelete 	ChainConfig:   *currentNode.Blockchain().Config(),
-		// tempDelete }).Msg("verbose prints config")
+		utils.Logger().Info().Interface("config", rpc_common.Config{
+			HarmonyConfig: hc,
+			NodeConfig:    *nodeConfig,
+			ChainConfig:   *currentNode.Blockchain().Config(),
+		}).Msg("verbose prints config")
 	}
 
 	// Setup services
@@ -491,11 +492,11 @@ func setupNodeAndRun(hc harmonyconfig.HarmonyConfig) {
 	}
 
 	if hc.DNSSync.Server && !hc.General.IsOffline {
-		// tempDelete utils.Logger().Info().Msg("support gRPC sync server")
+		utils.Logger().Info().Msg("support gRPC sync server")
 		currentNode.SupportGRPCSyncServer(hc.DNSSync.ServerPort)
 	}
 	if hc.DNSSync.Client && !hc.General.IsOffline {
-		// tempDelete utils.Logger().Info().Msg("go with gRPC sync client")
+		utils.Logger().Info().Msg("go with gRPC sync client")
 		currentNode.StartGRPCSyncClient()
 	}
 
@@ -864,7 +865,12 @@ func setupConsensusAndNode(hc harmonyconfig.HarmonyConfig, nodeConfig *nodeconfi
 
 	sscSelfAddr := common.HexToAddress(hc.SSC.SelfAddrHex)
 	bc := registry.GetBlockchain()
-	cm := ssc.NewCommitteeMechanism(ethCommon.Address(sscSelfAddr), nodeConfig.ShardID, bc)
+	sscOnChainConfig, err := ssc.LoadSSCConfigFromBlockChain(bc)
+	if err != nil {
+		utils.Logger().Error().Err(err).Msg("setup consensus and node failed")
+		return nil
+	}
+	cm := ssc.NewCommitteeMechanism(ethCommon.Address(sscSelfAddr), nodeConfig.ShardID, sscOnChainConfig)
 	sscConfig := &api.Config{
 		CallTimeout:              hc.SSC.CallTimeout,
 		CXTTimeout:               hc.SSC.CXTTimeout,
@@ -882,7 +888,7 @@ func setupConsensusAndNode(hc harmonyconfig.HarmonyConfig, nodeConfig *nodeconfi
 	chainId := registry.GetBlockchain().Config().ChainID
 	txSigner := ssc.NewTxSigner(chainId)
 	blsSigner := ssc.NewBLSSigner(nodeConfig.ShardID, &blsKey)
-	sscService := ssc.NewService(context.Background(), sscConfig, cm, blsSigner, currentNode, bc, txSigner)
+	sscService := ssc.NewService(context.Background(), sscConfig, cm, sscOnChainConfig, blsSigner, currentNode, bc, txSigner)
 	currentNode.SetSSCService(sscService)
 	shardState, _ := committee.WithStakingEnabled.Compute(
 		new(big.Int), registry.GetBlockchain(),

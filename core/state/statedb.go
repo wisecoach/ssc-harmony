@@ -377,7 +377,7 @@ func (db *DB) GetCodeHash(addr common.Address) common.Hash {
 // GetState retrieves a value from the given account's storage trie.
 func (db *DB) GetState(addr common.Address, hash common.Hash) (common.Hash, error) {
 	if db.locker != nil {
-		err := db.locker.CheckLock(api.FormKey(addr, hash))
+		err := db.locker.Locked(api.FormKey(addr, hash))
 		if err != nil {
 			state, _ := db.getState(addr, hash)
 			return state, err
@@ -503,7 +503,7 @@ func (db *DB) SetCode(addr common.Address, code []byte, isValidatorCode bool) {
 
 func (db *DB) SetState(addr common.Address, key, value common.Hash) error {
 	if db.locker != nil {
-		err := db.locker.CheckLock(api.FormKey(addr, key))
+		err := db.locker.Locked(api.FormKey(addr, key))
 		if err != nil {
 			return err
 		}
@@ -521,7 +521,7 @@ func (db *DB) setState(addr common.Address, key, value common.Hash) error {
 
 func (db *DB) GetStateWithLock(txHash common.Hash, callIndex api.CallIndex, address common.Address, key common.Hash) (common.Hash, error) {
 	stateKey := api.FormKey(address, key)
-	err := db.locker.CheckReentrantLock(stateKey, txHash)
+	err := db.locker.CheckLockable(stateKey, txHash, api.SharedLock)
 	if err != nil {
 		return common.Hash{}, err
 	}
@@ -529,7 +529,7 @@ func (db *DB) GetStateWithLock(txHash common.Hash, callIndex api.CallIndex, addr
 	if err != nil {
 		return common.Hash{}, err
 	}
-	err = db.locker.Lock(txHash, callIndex, stateKey, value)
+	err = db.locker.Lock(txHash, callIndex, stateKey, value, api.SharedLock)
 	if err != nil {
 		return common.Hash{}, err
 	}
@@ -538,7 +538,7 @@ func (db *DB) GetStateWithLock(txHash common.Hash, callIndex api.CallIndex, addr
 
 func (db *DB) SetStateWithLock(txHash common.Hash, callIndex api.CallIndex, address common.Address, key common.Hash, value common.Hash) error {
 	stateKey := api.FormKey(address, key)
-	err := db.locker.CheckReentrantLock(stateKey, txHash)
+	err := db.locker.CheckLockable(stateKey, txHash, api.ExclusiveLock)
 	if err != nil {
 		return err
 	}
@@ -546,7 +546,7 @@ func (db *DB) SetStateWithLock(txHash common.Hash, callIndex api.CallIndex, addr
 	if err != nil {
 		return err
 	}
-	err = db.locker.Lock(txHash, callIndex, stateKey, oldValue)
+	err = db.locker.Lock(txHash, callIndex, stateKey, oldValue, api.ExclusiveLock)
 	if err != nil {
 		return err
 	}

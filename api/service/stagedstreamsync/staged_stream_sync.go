@@ -519,10 +519,10 @@ func printLogs(tx kv.RwTx, timings []Timing) error {
 			logCtx = append(logCtx, string(timings[i].stage), timings[i].took.Truncate(time.Millisecond).String())
 		}
 	}
-	// tempDelete if len(logCtx) > 0 {
-	// tempDelete 	timingLog := fmt.Sprintf("Timings (slower than 50ms) %v", logCtx)
-	// tempDelete 	utils.Logger().Info().Msgf(WrapStagedSyncMsg(timingLog))
-	// tempDelete }
+	if len(logCtx) > 0 {
+		timingLog := fmt.Sprintf("Timings (slower than 50ms) %v", logCtx)
+		utils.Logger().Info().Msgf(WrapStagedSyncMsg(timingLog))
+	}
 
 	if tx == nil {
 		return nil

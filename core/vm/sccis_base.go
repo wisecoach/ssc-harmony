@@ -6,6 +6,7 @@ import (
 	"github.com/harmony-one/harmony/core/types"
 	"github.com/harmony-one/harmony/internal/params"
 	"github.com/harmony-one/harmony/shard"
+	"github.com/harmony-one/harmony/ssc/api"
 	"golang.org/x/crypto/sha3"
 	"math/big"
 )
@@ -1925,6 +1926,9 @@ func opCall_SSC_Base(pc *uint64, inp Interpreter, contract *Contract, memory *Me
 	contract.Gas += returnGas
 
 	interpreter.intPool.put(addr, value, inOffset, inSize, retOffset, retSize)
+	if err != nil && err.Error() == api.ErrLockedByOtherTx.Error() {
+		return ret, api.ErrLockedByOtherTx
+	}
 	return ret, nil
 }
 

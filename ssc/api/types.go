@@ -73,25 +73,28 @@ func (c CXTCommitType) String() string {
 }
 
 const (
-	Reason_SUCCESS CXTCommitReason = iota
-	Reason_ExecutionFailed
-	Reason_InvalidSimulation
-	Reason_ConflictRWSet_FailedLock
-	Reason_ConflictRWSet_Recall
+	ReasonSuccess CXTCommitReason = iota
+	ReasonExecutionFailed
+	ReasonInvalidSimulation
+	ReasonConflictRWSetFailedLock
+	ReasonConflictRWSetRecall
+	ReasonCxtTimeoutForSp1
 )
 
 func (c CXTCommitReason) String() string {
 	switch c {
-	case Reason_SUCCESS:
+	case ReasonSuccess:
 		return "SUCCESS"
-	case Reason_ExecutionFailed:
+	case ReasonExecutionFailed:
 		return "ExecutionFailed"
-	case Reason_InvalidSimulation:
+	case ReasonInvalidSimulation:
 		return "InvalidSimulation"
-	case Reason_ConflictRWSet_FailedLock:
+	case ReasonConflictRWSetFailedLock:
 		return "ConflictRWSet_FailedLock"
-	case Reason_ConflictRWSet_Recall:
+	case ReasonConflictRWSetRecall:
 		return "ConflictRWSet_Recall"
+	case ReasonCxtTimeoutForSp1:
+		return "ReasonCxtTimeoutForSp1"
 	default:
 		return "Unknown"
 	}
@@ -191,7 +194,8 @@ type Validator struct {
 }
 
 type ShardSimulateCommitteeConfig struct {
-	Committees []*ShardSimulateCommittee
+	Committees []*ShardSimulateCommittee `json:"committees" yaml:"committees"`
+	Timeout    *TimeoutConfig            `json:"timeout" yaml:"timeout"`
 }
 
 // ShardSimulateCommittee (SSC) is the committee of the shard simulation
@@ -201,6 +205,10 @@ type ShardSimulateCommittee struct {
 	Members   []*Member
 	Number    int
 	Threshold int
+}
+
+type TimeoutConfig struct {
+	Sp1 uint64 // source phase 1, used to notify origin shard to rollback cxt for timeout
 }
 
 type MessageToSign interface {
@@ -375,15 +383,7 @@ func (m *CXTSimulation) Bytes() []byte {
 
 func (m *CXTSimulation) String() string {
 	callStatesStr := ""
-	for _, callState := range m.CallStates {
-		dependentResultsStr := ""
-		for _, result := range callState.DependentResults {
-			dependentResultsStr += fmt.Sprintf("(%s:%v) ", result.CallIndex.ToString(), result.Result[len(result.Result)-1])
-		}
-		callStatesStr += fmt.Sprintf("%s: [%s]", callState.CallIndex.ToString(), dependentResultsStr)
-		dependentResultsStr += "|"
-	}
-	return fmt.Sprintf("simulation_%s_%d: {%s}", common.Bytes2Hex(m.TxHash), m.SimulationNum, callStatesStr)
+	return fmt.Sprintf("simulation_%s_%d: {%s}", m.TxHash, m.SimulationNum, callStatesStr)
 }
 
 // CXTReSimulation is the simulation of the cross-shard transaction
@@ -710,6 +710,7 @@ const (
 	InvalidSerialization InvalidSimulationType = iota
 	InvalidSignature
 	InvalidExecution
+	CXTTimeout
 )
 
 type CXTInvalidSimulationPayload struct {
@@ -1011,6 +1012,8 @@ func (s *StateSet) Equal(other *StateSet) bool {
 }
 
 type CommitState struct {
-	CommitVotes    map[int]map[uint32][]*CXTCommitVote  // simulationNum -> shardId -> votes
-	CommitSSCVotes map[int]map[uint32]*CXTCommitSSCVote // simulationNum -> shardId -> sscVote
+	CommitVotes     map[int]map[uint32][]*CXTCommitVote  // simulationNum -> shardId -> votes
+	CommitSSCVotes  map[int]map[uint32]*CXTCommitSSCVote // simulationNum -> shardId -> sscVote
+	RollbackVotes   map[uint32][]*CXTCommitVote          // shardId -> votes
+	RollbackSSCVote *CXTCommitSSCVote
 }

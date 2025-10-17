@@ -26,6 +26,7 @@ func (t *txSubmitter) SubmitSimulationTx(simulation *api.CXTSimulation) error {
 	t.lock.Lock()
 	defer t.lock.Unlock()
 
+	txHash := common.BytesToHash(simulation.TxHash)
 	t.txSigner.Address()
 	input, _ := json.Marshal(simulation)
 	tx := types.NewCrossShardTransaction(t.nonce, &vm.SimulationCommitAddr, t.selfShard, t.selfShard, big.NewInt(0), t.config.SimulationCommitGasLimit, t.config.SimulationCommitGasPrice, input)
@@ -35,7 +36,7 @@ func (t *txSubmitter) SubmitSimulationTx(simulation *api.CXTSimulation) error {
 	}
 	utils.SSCLogger().Info().Str("txHash", signedTx.Hash().Hex()).
 		Uint64("Nonce", t.nonce).
-		Str("originTxHash", common.Bytes2Hex(simulation.TxHash)).Msgf("submit simulation tx")
+		Str("originTxHash", txHash.Hex()).Msgf("submit simulation tx, nonce=%d", t.nonce)
 	err = t.nodeAPI.AddPendingTransaction(signedTx)
 	if err != nil {
 		return err

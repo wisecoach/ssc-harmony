@@ -127,10 +127,10 @@ func (vc *viewChange) GetM2Bitmap(viewID uint64) ([]byte, []byte) {
 
 	if len(sig2arr) > 0 {
 		m2Sig := bls_cosi.AggregateSig(sig2arr)
-		// tempDelete vc.getLogger().Info().Int("len", len(sig2arr)).Msg("[GetM2Bitmap] M2 (NIL) type signatures")
+		vc.getLogger().Info().Int("len", len(sig2arr)).Msg("[GetM2Bitmap] M2 (NIL) type signatures")
 		return m2Sig.Serialize(), vc.nilBitmap[viewID].Bitmap
 	}
-	// tempDelete vc.getLogger().Info().Uint64("viewID", viewID).Msg("[GetM2Bitmap] No M2 (NIL) type signatures")
+	vc.getLogger().Info().Uint64("viewID", viewID).Msg("[GetM2Bitmap] No M2 (NIL) type signatures")
 	return nil, nil
 }
 
@@ -143,10 +143,10 @@ func (vc *viewChange) GetM3Bitmap(viewID uint64) ([]byte, []byte) {
 	// even we check here for safty, m3 type signatures must >= 2f+1
 	if len(sig3arr) > 0 {
 		m3Sig := bls_cosi.AggregateSig(sig3arr)
-		// tempDelete vc.getLogger().Info().Int("len", len(sig3arr)).Msg("[GetM3Bitmap] M3 (ViewID) type signatures")
+		vc.getLogger().Info().Int("len", len(sig3arr)).Msg("[GetM3Bitmap] M3 (ViewID) type signatures")
 		return m3Sig.Serialize(), vc.viewIDBitmap[viewID].Bitmap
 	}
-	// tempDelete vc.getLogger().Info().Uint64("viewID", viewID).Msg("[GetM3Bitmap] No M3 (ViewID) type signatures")
+	vc.getLogger().Info().Uint64("viewID", viewID).Msg("[GetM3Bitmap] No M3 (ViewID) type signatures")
 	return nil, nil
 }
 
@@ -281,9 +281,9 @@ func (vc *viewChange) ProcessViewChangeMsg(
 			return errM1Payload
 		}
 
-		// tempDelete vc.getLogger().Info().Uint64("viewID", recvMsg.ViewID).
-		// tempDelete 	Str("validatorPubKey", senderKeyStr).
-		// tempDelete 	Msg("[ProcessViewChangeMsg] Add M1 (prepared) type message")
+		vc.getLogger().Info().Uint64("viewID", recvMsg.ViewID).
+			Str("validatorPubKey", senderKeyStr).
+			Msg("[ProcessViewChangeMsg] Add M1 (prepared) type message")
 
 		if _, ok := vc.bhpSigs[recvMsg.ViewID]; !ok {
 			vc.bhpSigs[recvMsg.ViewID] = map[string]*bls_core.Sign{}
@@ -295,9 +295,9 @@ func (vc *viewChange) ProcessViewChangeMsg(
 		}
 		vc.bhpBitmap[recvMsg.ViewID].SetKey(senderKey.Bytes, true) // Set the bitmap indicating that this validator signed.
 
-		// tempDelete vc.getLogger().Info().Uint64("viewID", recvMsg.ViewID).
-		// tempDelete 	Str("validatorPubKey", senderKeyStr).
-		// tempDelete 	Msg("[ProcessViewChangeMsg] Add M3 (ViewID) type message")
+		vc.getLogger().Info().Uint64("viewID", recvMsg.ViewID).
+			Str("validatorPubKey", senderKeyStr).
+			Msg("[ProcessViewChangeMsg] Add M3 (ViewID) type message")
 
 		if _, ok := vc.viewIDSigs[recvMsg.ViewID]; !ok {
 			vc.viewIDSigs[recvMsg.ViewID] = map[string]*bls_core.Sign{}
@@ -325,7 +325,7 @@ func (vc *viewChange) ProcessViewChangeMsg(
 			copy(preparedMsg.Payload[:], recvMsg.Payload[32:])
 
 			preparedMsg.SenderPubkeys = []*bls.PublicKeyWrapper{recvMsg.LeaderPubkey}
-			// tempDelete vc.getLogger().Info().Msg("[ProcessViewChangeMsg] New Leader Prepared Message Added")
+			vc.getLogger().Info().Msg("[ProcessViewChangeMsg] New Leader Prepared Message Added")
 			fbftlog.AddVerifiedMessage(&preparedMsg)
 			fbftlog.AddBlock(preparedBlock)
 		}
@@ -340,9 +340,9 @@ func (vc *viewChange) ProcessViewChangeMsg(
 		return errVerifyM2
 	}
 
-	// tempDelete vc.getLogger().Info().Uint64("viewID", recvMsg.ViewID).
-	// tempDelete 	Str("validatorPubKey", senderKeyStr).
-	// tempDelete 	Msg("[ProcessViewChangeMsg] Add M2 (NIL) type message")
+	vc.getLogger().Info().Uint64("viewID", recvMsg.ViewID).
+		Str("validatorPubKey", senderKeyStr).
+		Msg("[ProcessViewChangeMsg] Add M2 (NIL) type message")
 
 	if _, ok := vc.nilSigs[recvMsg.ViewID]; !ok {
 		vc.nilSigs[recvMsg.ViewID] = map[string]*bls_core.Sign{}
@@ -355,9 +355,9 @@ func (vc *viewChange) ProcessViewChangeMsg(
 	}
 	vc.nilBitmap[recvMsg.ViewID].SetKey(senderKey.Bytes, true) // Set the bitmap indicating that this validator signed.
 
-	// tempDelete vc.getLogger().Info().Uint64("viewID", recvMsg.ViewID).
-	// tempDelete 	Str("validatorPubKey", senderKeyStr).
-	// tempDelete 	Msg("[ProcessViewChangeMsg] Add M3 (ViewID) type message")
+	vc.getLogger().Info().Uint64("viewID", recvMsg.ViewID).
+		Str("validatorPubKey", senderKeyStr).
+		Msg("[ProcessViewChangeMsg] Add M3 (ViewID) type message")
 
 	if _, ok := vc.viewIDSigs[recvMsg.ViewID]; !ok {
 		vc.viewIDSigs[recvMsg.ViewID] = map[string]*bls_core.Sign{}
@@ -407,7 +407,7 @@ func (vc *viewChange) InitPayload(
 		if preparedMsg != nil {
 			if preparedBlock := fbftlog.GetBlockByHash(preparedMsg.BlockHash); preparedBlock != nil {
 				if err := verifyBlock(preparedBlock); err == nil {
-					// tempDelete vc.getLogger().Info().Uint64("viewID", viewID).Uint64("blockNum", blockNum).Int("size", binary.Size(preparedBlock)).Msg("[InitPayload] add my M1 (prepared) type messaage")
+					vc.getLogger().Info().Uint64("viewID", viewID).Uint64("blockNum", blockNum).Int("size", binary.Size(preparedBlock)).Msg("[InitPayload] add my M1 (prepared) type messaage")
 					msgToSign := append(preparedMsg.BlockHash[:], preparedMsg.Payload...)
 					for _, key := range privKeys {
 						// update the dictionary key if the viewID is first time received
@@ -433,7 +433,7 @@ func (vc *viewChange) InitPayload(
 			}
 		}
 		if !hasBlock {
-			// tempDelete vc.getLogger().Info().Uint64("viewID", viewID).Uint64("blockNum", blockNum).Msg("[InitPayload] add my M2 (NIL) type messaage")
+			vc.getLogger().Info().Uint64("viewID", viewID).Uint64("blockNum", blockNum).Msg("[InitPayload] add my M2 (NIL) type messaage")
 			for _, key := range privKeys {
 				if _, ok := vc.nilBitmap[viewID]; !ok {
 					nilBitmap := bls_cosi.NewMask(members)
@@ -465,7 +465,7 @@ func (vc *viewChange) InitPayload(
 	if !inited {
 		viewIDBytes := make([]byte, 8)
 		binary.LittleEndian.PutUint64(viewIDBytes, viewID)
-		// tempDelete vc.getLogger().Info().Uint64("viewID", viewID).Uint64("blockNum", blockNum).Msg("[InitPayload] add my M3 (ViewID) type message")
+		vc.getLogger().Info().Uint64("viewID", viewID).Uint64("blockNum", blockNum).Msg("[InitPayload] add my M3 (ViewID) type message")
 		for _, key := range privKeys {
 			if _, ok := vc.viewIDBitmap[viewID]; !ok {
 				viewIDBitmap := bls_cosi.NewMask(members)

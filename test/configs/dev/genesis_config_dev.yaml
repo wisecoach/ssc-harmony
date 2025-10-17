@@ -231,6 +231,8 @@ ssc_config:
       - 2
     number: 1
     threshold: 1
+  timeout:
+    sp1: 10
 genesis_accounts_dir: .hmy/expr_accounts
 number: 0
 gasused: 0

@@ -161,8 +161,8 @@ func (d *Downloader) waitForBootFinish() {
 }
 
 func (d *Downloader) waitForEnoughStreams(requiredStreams int) (bool, int) {
-	// tempDelete d.logger.Info().Int("requiredStreams", requiredStreams).
-	// tempDelete 	Msg("waiting for enough stream connections to continue syncing")
+	d.logger.Info().Int("requiredStreams", requiredStreams).
+		Msg("waiting for enough stream connections to continue syncing")
 
 	evtCh := make(chan streammanager.EvtStreamAdded, 1)
 	sub := d.syncProtocol.SubscribeAddStreamEvent(evtCh)
@@ -253,11 +253,11 @@ func (d *Downloader) loop() {
 				break
 			}
 			if initSync {
-				// tempDelete d.logger.Info().Int("block added", addedBN).
-				// tempDelete 	Uint64("current height", d.bc.CurrentBlock().NumberU64()).
-				// tempDelete 	Bool("initSync", initSync).
-				// tempDelete 	Uint32("shard", d.bc.ShardID()).
-				// tempDelete 	Msg(WrapStagedSyncMsg("sync finished"))
+				d.logger.Info().Int("block added", addedBN).
+					Uint64("current height", d.bc.CurrentBlock().NumberU64()).
+					Bool("initSync", initSync).
+					Uint32("shard", d.bc.ShardID()).
+					Msg(WrapStagedSyncMsg("sync finished"))
 			}
 			// If block number has been changed, trigger another sync
 			if addedBN != 0 {

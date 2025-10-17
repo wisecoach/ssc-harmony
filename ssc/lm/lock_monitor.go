@@ -70,7 +70,8 @@ func (m *Mutex) Unlock() {
 
 // RWMutex 带监控的读写锁
 type RWMutex struct {
-	rw sync.RWMutex
+	rw          sync.RWMutex
+	lockedStack []byte
 }
 
 func (rw *RWMutex) Lock() {
@@ -80,8 +81,10 @@ func (rw *RWMutex) Lock() {
 	}
 
 	done := make(chan struct{})
+	stack := debug.Stack()
 	go func() {
 		rw.rw.Lock()
+		rw.lockedStack = stack
 		close(done)
 	}()
 
@@ -89,16 +92,16 @@ func (rw *RWMutex) Lock() {
 	case <-done:
 		return
 	case <-time.After(TimeoutThreshold):
-		stack := debug.Stack()
 		utils.SSCLogger().Error().Msgf("\n\n⚠️ RW MUTEX LOCK TIMEOUT DETECTED ⚠️\n"+
 			"Waited longer than %s\n"+
-			"Current goroutine stack:\n%s\n\n",
-			TimeoutThreshold, string(stack))
+			"Current goroutine stack:\n%s\n\nLocked at:\n%s\n",
+			TimeoutThreshold, string(stack), string(rw.lockedStack))
 		<-done
 	}
 }
 
 func (rw *RWMutex) Unlock() {
+	rw.lockedStack = nil
 	rw.rw.Unlock()
 }
 
