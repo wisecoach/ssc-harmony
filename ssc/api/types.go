@@ -38,6 +38,7 @@ const (
 	OK SimulationCommitStatus = iota
 	ExecutionFailed
 	LockConflict
+	PoolTimeout
 )
 
 func (s SimulationCommitStatus) String() string {
@@ -48,6 +49,8 @@ func (s SimulationCommitStatus) String() string {
 		return "ExecutionFailed"
 	case LockConflict:
 		return "LockConflict"
+	case PoolTimeout:
+		return "PoolTimeout"
 	default:
 		return "Unknown"
 	}
@@ -185,12 +188,12 @@ type Member struct {
 	Address   common.Address
 	Stake     *big.Int `json:"stake" gencodec:"required"`
 	Endpoint  string
-	BLSPubKey []byte
+	BLSPubKey string
 }
 
 type Validator struct {
 	Address common.Address
-	PubKey  []byte
+	PubKey  string
 }
 
 type ShardSimulateCommitteeConfig struct {
@@ -208,7 +211,8 @@ type ShardSimulateCommittee struct {
 }
 
 type TimeoutConfig struct {
-	Sp1 uint64 // source phase 1, used to notify origin shard to rollback cxt for timeout
+	Sp1         uint64 `json:"sp1" yaml:"sp1"`                   // source phase 1, used to notify origin shard to rollback cxt for timeout
+	PoolTimeout uint64 `json:"pool_timeout" yaml:"pool_timeout"` // the timeout to remove cxt from pool
 }
 
 type MessageToSign interface {
@@ -447,13 +451,17 @@ type CXTCallRequest struct {
 	Gas           uint64
 	GasPrice      *big.Int `json:"gas_price" gencodec:"required"`
 	Value         *big.Int `json:"value" gencodec:"required"`
+	BlockHash     []byte
 }
 
 func (m *CXTCallRequest) Bytes() []byte {
 	temp := m.BaseSSCMessage
+	tempBlockHash := m.BlockHash
 	m.BaseSSCMessage = nil
+	m.BlockHash = nil
 	bytes, err := json.Marshal(m)
 	m.BaseSSCMessage = temp
+	m.BlockHash = tempBlockHash
 	if err != nil {
 		return nil
 	}

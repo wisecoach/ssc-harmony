@@ -242,14 +242,15 @@ func (vm *SSCVM) crossCall(targetShardId uint32, caller ContractRef, addr common
 	}
 
 	req := &api.CXTCallRequest{
-		TargetShardId: targetShardId,
-		TxHash:        vm.Context.TxHash.Bytes(),
-		Caller:        caller.Address(),
-		Addr:          addr,
-		Input:         input,
-		Gas:           gas,
-		GasPrice:      vm.Context.GasPrice,
-		Value:         value,
+		TargetShardId:  targetShardId,
+		TxHash:         vm.Context.TxHash.Bytes(),
+		Caller:         caller.Address(),
+		Addr:           addr,
+		Input:          input,
+		Gas:            gas,
+		GasPrice:       vm.Context.GasPrice,
+		Value:          value,
+		BaseSSCMessage: &api.BaseSSCMessage{},
 	}
 	result := vm.SSCService.CallCXTContract(req)
 	if len(result.Err) > 0 {

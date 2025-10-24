@@ -4,7 +4,7 @@ import (
 	"bytes"
 	"encoding/binary"
 	"github.com/ethereum/go-ethereum/common"
-	"github.com/harmony-one/harmony/core"
+	"github.com/harmony-one/harmony/crypto/bls"
 	"github.com/harmony-one/harmony/internal/utils"
 	"github.com/harmony-one/harmony/ssc/api"
 	"github.com/harmony-one/harmony/ssc/lm"
@@ -21,21 +21,24 @@ type CommitteeMechanism struct {
 	cmLock       lm.RWMutex
 	Committees   map[uint32]*api.ShardSimulateCommittee
 	Candidates   map[common.Address]*api.Candidate
-	Validators   map[uint32]map[common.Address]*api.Validator
+	Validators   map[uint32][]*api.Validator
 	isMember     bool
-	bc           core.BlockChain
+	signerMgr    api.BLSSignerMgr
 }
 
-func NewCommitteeMechanism(selfAddr common.Address, selfShard uint32, config *api.ShardSimulateCommitteeConfig) *CommitteeMechanism {
+func NewCommitteeMechanism(selfAddr common.Address, selfShard uint32, config *api.ShardSimulateCommitteeConfig, signerMgr api.BLSSignerMgr) *CommitteeMechanism {
 	cm := &CommitteeMechanism{
 		Config:       config,
 		SelfAddr:     selfAddr,
 		SelfShard:    selfShard,
+		shardNum:     0,
 		CurrentEpoch: 0,
+		cmLock:       lm.NewRWMutex(),
 		Committees:   make(map[uint32]*api.ShardSimulateCommittee),
 		Candidates:   make(map[common.Address]*api.Candidate),
-		Validators:   make(map[uint32]map[common.Address]*api.Validator),
-		cmLock:       lm.NewRWMutex(),
+		Validators:   make(map[uint32][]*api.Validator),
+		isMember:     false,
+		signerMgr:    signerMgr,
 	}
 	cm.loadFromConfig(config)
 	utils.SSCLogger().Info().Msgf("CommitteeMechanism initialized: SelfAddr: %s, SelfShard: %d, CurrentEpoch: %d, ShardNum: %d",
@@ -66,22 +69,9 @@ func (cm *CommitteeMechanism) ShardNum() uint32 {
 
 func (cm *CommitteeMechanism) loadFromConfig(config *api.ShardSimulateCommitteeConfig) {
 	for _, committee := range config.Committees {
+		cm.UpdateCommittee(committee.ShardID, committee)
 		cm.Committees[committee.ShardID] = committee
 	}
-	if cm.Committees[cm.SelfShard] == nil {
-		utils.SSCLogger().Error().Msgf("self shard %d committee is nil", cm.SelfShard)
-		return
-	}
-
-	for _, member := range cm.Committees[cm.SelfShard].Members {
-		if member.Address == cm.SelfAddr {
-			cm.isMember = true
-			break
-		}
-	}
-
-	cm.CurrentEpoch = cm.Committees[cm.SelfShard].Epoch
-	cm.shardNum = uint32(len(cm.Committees))
 }
 
 func (cm *CommitteeMechanism) GetLeader(shardId uint32, txhash common.Hash) *api.Member {
@@ -132,6 +122,8 @@ func (cm *CommitteeMechanism) UpdateCommittee(shardID uint32, committee *api.Sha
 	cm.cmLock.Lock()
 	defer cm.cmLock.Unlock()
 
+	utils.SSCLogger().Info().Interface("committee", committee).Msgf("updating committee for shard %d", shardID)
+
 	cm.Committees[shardID] = committee
 	cm.shardNum = uint32(len(cm.Committees))
 	if cm.SelfShard == shardID {
@@ -143,21 +135,47 @@ func (cm *CommitteeMechanism) UpdateCommittee(shardID uint32, committee *api.Sha
 			}
 		}
 	}
+
+	addr2Index := make(map[common.Address]int)
+	pubKeys := make([]bls.PublicKeyWrapper, 0, len(committee.Members))
+	for i, member := range committee.Members {
+		addr2Index[member.Address] = i
+		pubKey, err := bls.WrapperPublicKeyFromString(member.BLSPubKey)
+		if err != nil {
+			utils.SSCLogger().Error().Err(err).Msg("failed to parse BLS public key")
+			return
+		}
+		pubKeys = append(pubKeys, *pubKey)
+	}
+	cm.signerMgr.UpdateSSCPubKeys(shardID, addr2Index, pubKeys)
 }
 
-func (cm *CommitteeMechanism) GetValidators(shardId uint32) map[common.Address]*api.Validator {
+func (cm *CommitteeMechanism) GetValidators(shardId uint32) []*api.Validator {
 	cm.cmLock.RLock()
 	defer cm.cmLock.RUnlock()
 
 	return cm.Validators[shardId]
 }
 
-func (cm *CommitteeMechanism) UpdateValidators(shardId uint32, validators map[common.Address]*api.Validator) {
+func (cm *CommitteeMechanism) UpdateValidators(shardId uint32, validators []*api.Validator) {
 	cm.cmLock.Lock()
 	defer cm.cmLock.Unlock()
 
 	cm.Validators[shardId] = validators
 	cm.shardNum = uint32(len(cm.Committees))
+
+	addr2Index := make(map[common.Address]int)
+	pubKeys := make([]bls.PublicKeyWrapper, 0)
+	for i, member := range validators {
+		addr2Index[member.Address] = i
+		pubKey, err := bls.WrapperPublicKeyFromString(member.PubKey)
+		if err != nil {
+			utils.SSCLogger().Error().Err(err).Msg("failed to parse BLS public key")
+			return
+		}
+		pubKeys = append(pubKeys, *pubKey)
+	}
+	cm.signerMgr.UpdateValidatorPubKeys(shardId, addr2Index, pubKeys)
 }
 
 func (cm *CommitteeMechanism) Stake(address common.Address, stake *big.Int) {

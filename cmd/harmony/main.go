@@ -261,7 +261,7 @@ func setupNodeLog(config harmonyconfig.HarmonyConfig) {
 
 	// verbosity := config.Log.Verbosity
 	// utils.SetLogVerbosity(log.Lvl(verbosity))
-	// utils.SetLogVerbosity(log.LvlDebug)
+	utils.SetLogVerbosity(log.LvlDebug)
 	utils.SetLogVerbosity(log.LvlInfo)
 	if config.Log.Context != nil {
 		ip := config.Log.Context.IP
@@ -870,15 +870,6 @@ func setupConsensusAndNode(hc harmonyconfig.HarmonyConfig, nodeConfig *nodeconfi
 		utils.Logger().Error().Err(err).Msg("setup consensus and node failed")
 		return nil
 	}
-	cm := ssc.NewCommitteeMechanism(ethCommon.Address(sscSelfAddr), nodeConfig.ShardID, sscOnChainConfig)
-	sscConfig := &api.Config{
-		CallTimeout:              hc.SSC.CallTimeout,
-		CXTTimeout:               hc.SSC.CXTTimeout,
-		SimulationCommitGasLimit: hc.SSC.SimulationCommitGasLimit,
-		SimulationCommitGasPrice: hc.SSC.SimulationCommitGasPrice,
-		LockExecutionOnce:        hc.SSC.LockExecutionOnce,
-	}
-
 	blsSecretKey, err := blsgen.LoadBLSKeyWithPassPhrase(hc.SSC.BLSKeyPath, "")
 	if err != nil {
 		utils.Logger().Error().Err(err).Msg("cannot load BLS key")
@@ -887,20 +878,28 @@ func setupConsensusAndNode(hc harmonyconfig.HarmonyConfig, nodeConfig *nodeconfi
 	blsKey := bls.WrapperFromPrivateKey(blsSecretKey)
 	chainId := registry.GetBlockchain().Config().ChainID
 	txSigner := ssc.NewTxSigner(chainId)
-	blsSigner := ssc.NewBLSSigner(nodeConfig.ShardID, &blsKey)
-	sscService := ssc.NewService(context.Background(), sscConfig, cm, sscOnChainConfig, blsSigner, currentNode, bc, txSigner)
+	signerMgr := ssc.NewBLSSignerMgr(nodeConfig.ShardID, ethCommon.Address(sscSelfAddr), &blsKey)
+	cm := ssc.NewCommitteeMechanism(ethCommon.Address(sscSelfAddr), nodeConfig.ShardID, sscOnChainConfig, signerMgr)
+	sscConfig := &api.Config{
+		CallTimeout:              hc.SSC.CallTimeout,
+		CXTTimeout:               hc.SSC.CXTTimeout,
+		SimulationCommitGasLimit: hc.SSC.SimulationCommitGasLimit,
+		SimulationCommitGasPrice: hc.SSC.SimulationCommitGasPrice,
+		LockExecutionOnce:        hc.SSC.LockExecutionOnce,
+	}
+	sscService := ssc.NewService(context.Background(), sscConfig, cm, sscOnChainConfig, signerMgr, currentNode, bc, txSigner)
 	currentNode.SetSSCService(sscService)
 	shardState, _ := committee.WithStakingEnabled.Compute(
 		new(big.Int), registry.GetBlockchain(),
 	)
 	for _, c := range shardState.Shards {
-		validators := make(map[ethCommon.Address]*api.Validator)
+		validators := make([]*api.Validator, 0)
 		shardId := c.ShardID
 		for _, slot := range c.Slots {
-			validators[slot.EcdsaAddress] = &api.Validator{
+			validators = append(validators, &api.Validator{
 				Address: slot.EcdsaAddress,
-				PubKey:  slot.BLSPublicKey.Bytes(),
-			}
+				PubKey:  slot.BLSPublicKey.Hex(),
+			})
 		}
 		cm.UpdateValidators(shardId, validators)
 	}

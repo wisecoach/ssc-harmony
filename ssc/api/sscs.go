@@ -5,6 +5,7 @@ import (
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/harmony-one/harmony/block"
 	"github.com/harmony-one/harmony/core/types"
+	"github.com/harmony-one/harmony/crypto/bls"
 	"github.com/harmony-one/harmony/numeric"
 	staking "github.com/harmony-one/harmony/staking/types"
 	"math/big"
@@ -36,11 +37,19 @@ type ShardLocator interface {
 	ShardNum() uint32
 }
 
+type BLSSignerMgr interface {
+	GetSSCSigner() BLSSigner
+	UpdateSSCPubKeys(shardID uint32, addr2Index map[common.Address]int, pubKeys []bls.PublicKeyWrapper)
+	GetValidatorSigner() BLSSigner
+	UpdateValidatorPubKeys(shardID uint32, addr2Index map[common.Address]int, pubKeys []bls.PublicKeyWrapper)
+}
+
 type BLSSigner interface {
 	Sign(msg MessageToSign) ([]byte, error)
 	// Aggregate aggregate the signature of messages, and return aggregated signature, bitmap and error
 	Aggregate(msgs []SSCMessage) (signatures []byte, bitmap []byte, err error)
 	Verify(msg BLSSignedMessage) error
+	UpdatePubKeys(shardID uint32, addr2Index map[common.Address]int, pubKeys []bls.PublicKeyWrapper)
 }
 
 type TxSigner interface {
