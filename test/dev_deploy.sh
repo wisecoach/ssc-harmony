@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 
 SERVERS=("zjnu@10.7.95.200" "zjnu@10.7.95.201" "zjnu@10.7.95.202" "zjnu@10.7.95.203")
-WORK_DIR="/home/zjnu/ssc-harmony"
+WORK_DIR="/home/zjnu/go/src/github.com/harmony-one/ssc-harmony"
 ROOT=$WORK_DIR
 t=$(date +"%Y%m%d-%H%M%S")
 log_folder="${ROOT}/tmp_log/log-$t"

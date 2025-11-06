@@ -173,13 +173,13 @@ func (s *PublicSSCShardService) HandleCommitVote(
 	return nil, nil
 }
 
-func (s *PublicSSCShardService) RequestSimulationResult(
-	ctx context.Context,
-	req *api.SimulationResultRequest,
-) (*api.CXTSimulationSSCResult, error) {
-	ret, err := s.internalService.RequestSimulationResult(req)
-	if err != nil {
-		return nil, err
-	}
-	return ret, nil
-}
+// func (s *PublicSSCShardService) RequestSimulationResult(
+// 	ctx context.Context,
+// 	req *api.SimulationResultRequest,
+// ) (*api.CXTSimulationSSCResult, error) {
+// 	ret, err := s.internalService.RequestSimulationResult(req)
+// 	if err != nil {
+// 		return nil, err
+// 	}
+// 	return ret, nil
+// }

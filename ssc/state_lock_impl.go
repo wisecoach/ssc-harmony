@@ -182,8 +182,8 @@ func (s *stateLocker) CheckLockable(key api.LockKey, txHash common.Hash, lockTyp
 }
 
 func (s *stateLocker) Lock(txHash common.Hash, callIndex api.CallIndex, key api.LockKey, value common.Hash, lockType api.LockType) error {
-	s.lock.RLock()
-	defer s.lock.RUnlock()
+	s.lock.Lock()
+	defer s.lock.Unlock()
 
 	s.wfg.GrantLock(txHash, key, lockType)
 	if s.callIndex2lockedState[txHash] == nil {
@@ -213,8 +213,8 @@ func (s *stateLocker) Lock(txHash common.Hash, callIndex api.CallIndex, key api.
 }
 
 func (s *stateLocker) unlock(txHash common.Hash, callIndexStr string, key api.LockKey, rollback bool, newValue common.Hash) error {
-	s.lock.RLock()
-	defer s.lock.RUnlock()
+	s.lock.Lock()
+	defer s.lock.Unlock()
 
 	if state, exists := s.lockedStates[key]; exists {
 		s.wfg.UnlockState(txHash, key)
@@ -227,7 +227,9 @@ func (s *stateLocker) unlock(txHash common.Hash, callIndexStr string, key api.Lo
 		value := s.callIndex2lockedState[txHash][callIndexStr][key]
 		delete(s.callIndex2lockedState[txHash][callIndexStr], key)
 		for hash, _ := range state.waitingTxs {
-			s.waitingTxs[hash].Num2wait--
+			if tx, exists := s.waitingTxs[hash]; exists {
+				tx.Num2wait--
+			}
 		}
 		utils.SSCLogger().Debug().Str("txHash", txHash.Hex()).
 			Msg("unlock state, waiting txs Num2wait")
@@ -755,20 +757,6 @@ func (s *stateLockManager) waitingNumMap() map[string]int {
 	return nums
 }
 
-// func (s *stateLockManager) waitingTxMap() map[string]string {
-// 	txMap := make(map[string]string)
-// 	for _, tx := range s.waitingTxs {
-// 		str := "tx_" + strconv.Itoa(tx.Num2wait) + "|"
-// 		for key, _ := range tx.States {
-// 			if state, exist := s.lockedStates[key]; exist && state.locked {
-// 				str += string(key)[:16] + ":for(" + state.lockedBy.Hex()[:16] + "), "
-// 			}
-// 		}
-// 		txMap[tx.TxHash.Hex()[:16]] = str
-// 	}
-// 	return txMap
-// }
-
 func (s *stateLockManager) txMap(tree *redblacktree.Tree) map[common.Hash]int {
 	nums := make(map[common.Hash]int)
 	iter := tree.Iterator()
@@ -806,7 +794,9 @@ func (s *stateLockManager) handleReadyTxQueue() {
 			delete(state.waitingTxs, hash)
 			for otherTxHash, _ := range state.waitingTxs {
 				otherTx := s.waitingTxs[otherTxHash]
-				otherTx.Num2wait++
+				if otherTx != nil {
+					otherTx.Num2wait++
+				}
 			}
 		}
 
@@ -861,7 +851,9 @@ func (s *stateLockManager) handleReadyTxQueue() {
 						// remove waiting txs, and add other tx Num2wait for the state
 						for otherTxHash, _ := range state.waitingTxs {
 							otherTx := s.waitingTxs[otherTxHash]
-							otherTx.Num2wait--
+							if otherTx != nil {
+								otherTx.Num2wait--
+							}
 						}
 						state.waitingTxs[hash] = struct{}{}
 					}

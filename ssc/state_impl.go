@@ -153,6 +153,9 @@ func (s *sscService) SetState(db api.StateDB, txHash common.Hash, address common
 }
 
 func (s *sscService) SubSimuBalance(txHash common.Hash, address common.Address, amount *big.Int) error {
+	s.stateLock.Lock()
+	defer s.stateLock.Unlock()
+
 	verifyContext := s.executionVerifyContexts[txHash]
 	if verifyContext.CurrentState.Balance[address] == nil {
 		balance, exists := verifyContext.CallStateMap[verifyContext.CallFrame.CallIndex.ToString()].RWSet.ReadState.Balance[address]
@@ -166,6 +169,9 @@ func (s *sscService) SubSimuBalance(txHash common.Hash, address common.Address, 
 }
 
 func (s *sscService) AddSimuBalance(txHash common.Hash, address common.Address, balance *big.Int) error {
+	s.stateLock.Lock()
+	defer s.stateLock.Unlock()
+
 	verifyContext := s.executionVerifyContexts[txHash]
 	if verifyContext.CurrentState.Balance[address] == nil {
 		bal, exists := verifyContext.CallStateMap[verifyContext.CallFrame.CallIndex.ToString()].RWSet.ReadState.Balance[address]
@@ -179,6 +185,9 @@ func (s *sscService) AddSimuBalance(txHash common.Hash, address common.Address, 
 }
 
 func (s *sscService) GetSimuBalance(txHash common.Hash, address common.Address) (*big.Int, error) {
+	s.stateLock.RLock()
+	defer s.stateLock.RUnlock()
+
 	verifyContext := s.executionVerifyContexts[txHash]
 	if verifyContext.CurrentState.Balance[address] == nil {
 		bal, exists := verifyContext.CallStateMap[verifyContext.CallFrame.CallIndex.ToString()].RWSet.ReadState.Balance[address]
@@ -191,6 +200,9 @@ func (s *sscService) GetSimuBalance(txHash common.Hash, address common.Address) 
 }
 
 func (s *sscService) GetSimuState(txHash common.Hash, address common.Address, key common.Hash) (common.Hash, error) {
+	s.stateLock.RLock()
+	defer s.stateLock.RUnlock()
+
 	verifyContext := s.executionVerifyContexts[txHash]
 	if verifyContext.CurrentState.State[address] != nil {
 		return verifyContext.CurrentState.State[address][key], nil
@@ -203,6 +215,9 @@ func (s *sscService) GetSimuState(txHash common.Hash, address common.Address, ke
 }
 
 func (s *sscService) SetSimuState(txHash common.Hash, address common.Address, key common.Hash, value common.Hash) error {
+	s.stateLock.Lock()
+	defer s.stateLock.Unlock()
+
 	verifyContext := s.executionVerifyContexts[txHash]
 	if verifyContext.CurrentState.State[address] == nil {
 		verifyContext.CurrentState.State[address] = make(map[common.Hash]common.Hash)
@@ -215,6 +230,9 @@ func (s *sscService) SetSimuState(txHash common.Hash, address common.Address, ke
 }
 
 func (s *sscService) GetResult(txHash common.Hash) (result []byte, leftOverGas uint64, err error) {
+	s.stateLock.Lock()
+	defer s.stateLock.Unlock()
+
 	verifyContext := s.executionVerifyContexts[txHash]
 	if verifyContext == nil {
 		return nil, 0, api.ErrInvalidExecution

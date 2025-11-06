@@ -10,8 +10,11 @@ import (
 	"github.com/harmony-one/harmony/shard/committee"
 	"github.com/harmony-one/harmony/ssc"
 	"github.com/harmony-one/harmony/ssc/api"
+	"github.com/harmony-one/harmony/ssc/lm"
+	ol "log"
 	"math/big"
 	"math/rand"
+	"net/http"
 	_ "net/http/pprof"
 	"os"
 	"os/signal"
@@ -304,6 +307,14 @@ func setupNodeAndRun(hc harmonyconfig.HarmonyConfig) {
 	nodeconfigSetShardSchedule(hc)
 	nodeconfig.SetShardingSchedule(shard.Schedule)
 	nodeconfig.SetVersion(getHarmonyVersion())
+	lm.DisableMonitor()
+
+	go func() {
+		for {
+			utils.SSCLogger().Info().Msgf("goroutine num: %d", runtime.NumGoroutine())
+			<-time.After(time.Second * 10)
+		}
+	}()
 
 	if hc.General.NodeType == "validator" {
 		var err error
@@ -379,6 +390,13 @@ func setupNodeAndRun(hc harmonyconfig.HarmonyConfig) {
 		HTTPEnabled: hc.HTTP.RosettaEnabled,
 		HTTPIp:      hc.HTTP.IP,
 		HTTPPort:    hc.HTTP.RosettaPort,
+	}
+
+	if hc.HTTP.Port%100 == 0 {
+		go func() {
+			ol.Println(http.ListenAndServe(":6060", nil))
+		}()
+
 	}
 
 	fmt.Printf("node: %v, rpc address %v:%v\n", hc.General.DataDir, nodeConfig.IP, nodeConfig.RPCServer.HTTPPort)

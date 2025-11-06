@@ -6,6 +6,11 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"math"
+	"math/big"
+	"sort"
+	"sync"
+
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/event"
 	"github.com/harmony-one/harmony/block"
@@ -17,10 +22,6 @@ import (
 	"github.com/harmony-one/harmony/internal/utils"
 	"github.com/harmony-one/harmony/ssc/api"
 	"github.com/harmony-one/harmony/ssc/lm"
-	"math"
-	"math/big"
-	"sort"
-	"sync"
 )
 
 type sscService struct {
@@ -35,14 +36,13 @@ type sscService struct {
 	Config *api.Config
 	bc     core.BlockChain
 
-	stateLock       lm.RWMutex // cmLock for simulationState
-	simulationState map[common.Hash]*api.CXTSimulationState
-
-	commitLock   lm.RWMutex // cmLock for commitStates, finishedTxs
-	commitStates map[common.Hash]*api.CommitState
-	finishedTxs  map[common.Hash]bool
-
+	stateLock               lm.RWMutex // cmLock for simulationState, executionVerifyContexts, finishedTxs
+	simulationState         map[common.Hash]*api.CXTSimulationState
 	executionVerifyContexts map[common.Hash]*api.ExecutionVerifyContext // TxHash -> ExecutionVerifyContext
+	finishedTxs             map[common.Hash]bool
+
+	commitLock   lm.RWMutex // cmLock for commitStates
+	commitStates map[common.Hash]*api.CommitState
 
 	syncLock            lm.Mutex // cmLock for callStatesInWaiting
 	callStatesInWaiting map[common.Hash][]*api.SimulationCallState
@@ -51,8 +51,8 @@ type sscService struct {
 	simuWaitingChs map[common.Hash][]chan *api.CXTSimulationSSCResult
 	simuResultCh   map[common.Hash]chan *api.CXTSimulationSSCResult // used to notify simulation finished
 
-	preSimuLock    lm.Mutex                                         // cmLock for cachedResultCh
-	cachedResultCh map[common.Hash]chan *api.CXTSimulationSSCResult // cached for consensus leader
+	// preSimuLock    lm.Mutex                                         // cmLock for cachedResultCh
+	// cachedResultCh map[common.Hash]chan *api.CXTSimulationSSCResult // cached for consensus leader
 
 	ctx          context.Context
 	chainHeadCh  chan core.ChainHeadEvent
@@ -75,17 +75,17 @@ func NewService(ctx context.Context, config *api.Config, cm *CommitteeMechanism,
 		config:    config,
 	}
 	service := &sscService{
-		CommitteeMechanism:      cm,
-		Comm:                    NewComm(),
-		BLSSignerMgr:            signerMgr,
-		txSigner:                txSigner,
-		Config:                  config,
-		txSubmitter:             txSub,
-		bc:                      bc,
-		stateLock:               lm.NewRWMutex(),
-		commitLock:              lm.NewRWMutex(),
-		simuLock:                lm.NewMutex(),
-		preSimuLock:             lm.NewMutex(),
+		CommitteeMechanism: cm,
+		Comm:               NewComm(),
+		BLSSignerMgr:       signerMgr,
+		txSigner:           txSigner,
+		Config:             config,
+		txSubmitter:        txSub,
+		bc:                 bc,
+		stateLock:          lm.NewRWMutex(),
+		commitLock:         lm.NewRWMutex(),
+		simuLock:           lm.NewMutex(),
+		// preSimuLock:             lm.NewMutex(),
 		syncLock:                lm.NewMutex(),
 		simulationState:         make(map[common.Hash]*api.CXTSimulationState),
 		commitStates:            make(map[common.Hash]*api.CommitState),
@@ -94,10 +94,10 @@ func NewService(ctx context.Context, config *api.Config, cm *CommitteeMechanism,
 		finishedTxs:             make(map[common.Hash]bool),
 		simuWaitingChs:          make(map[common.Hash][]chan *api.CXTSimulationSSCResult),
 		simuResultCh:            make(map[common.Hash]chan *api.CXTSimulationSSCResult),
-		cachedResultCh:          make(map[common.Hash]chan *api.CXTSimulationSSCResult),
-		ctx:                     ctx,
-		chainHeadCh:             make(chan core.ChainHeadEvent, 10),
-		chainHeadSub:            nil,
+		// cachedResultCh:          make(map[common.Hash]chan *api.CXTSimulationSSCResult),
+		ctx:          ctx,
+		chainHeadCh:  make(chan core.ChainHeadEvent, 10),
+		chainHeadSub: nil,
 	}
 	service.lockStateMgr = newStateLockManager(service)
 	service.timerMgr = NewTimerManager(sscConfig.Timeout, service)
@@ -207,13 +207,6 @@ func (s *sscService) startCXT(txHash common.Hash, simulationNum int, originShard
 
 	// set cxt timeout ctx
 	timeoutCtx, cancel := context.WithTimeout(s.ctx, s.Config.CallTimeout)
-	go func() {
-		<-timeoutCtx.Done()
-		if errors.Is(timeoutCtx.Err(), context.DeadlineExceeded) {
-			// TODO handle cxt timeout
-			cancel()
-		}
-	}()
 
 	newState := &api.CXTSimulationState{
 		CurrentCallFrame: &api.CallFrame{
@@ -293,8 +286,8 @@ func (s *sscService) handleTxSp1Timeout(txHash common.Hash) {
 func (s *sscService) handleTxPoolTimeout(txHash common.Hash, poolTimeout uint64) {
 	s.stateLock.RLock()
 	state, err := s.getState(txHash)
+	s.stateLock.RUnlock()
 	if err != nil {
-		s.stateLock.RUnlock()
 		utils.SSCLogger().Error().Str("txHash", txHash.Hex()).Err(err).Msg("failed to get simulation state for pool timeout")
 		return
 	}
@@ -311,7 +304,6 @@ func (s *sscService) handleTxPoolTimeout(txHash common.Hash, poolTimeout uint64)
 	utils.SSCLogger().Debug().Str("txHash", txHash.Hex()).
 		Msgf("cxt has timeout for pool, close the transaction")
 	s.thresholdSignSimulationCommit(simulationCommit)
-	s.stateLock.RUnlock()
 	ctx, cancel := context.WithTimeout(s.ctx, s.Config.CallTimeout)
 	defer cancel()
 	leaders := make([]*api.Member, 0)
@@ -345,75 +337,69 @@ func newRWSet() *api.RWSet {
 	}
 }
 
-func (s *sscService) SimulationResult(txHash common.Hash) (*api.CXTSimulationSSCResult, error) {
-	s.preSimuLock.Lock()
-	ch := s.cachedResultCh[txHash]
-	s.preSimuLock.Unlock()
-	if ch != nil {
-		utils.SSCLogger().Debug().Str("txHash", txHash.Hex()).Msg("get simulation result from channel")
-		return <-ch, nil
-	}
-	// try to get result from ssc leader
-	leader := s.GetLeader(s.SelfShard, txHash)
-	ret := new(api.CXTSimulationSSCResult)
-	ctx, cancel := context.WithTimeout(s.ctx, s.Config.CallTimeout)
-	defer cancel()
-	req := &api.SimulationResultRequest{
-		TxHash:        txHash.Bytes(),
-		SimulationNum: 0,
-	}
-	err := s.Comm.Call(ctx, ret, leader, api.Method_RequestSimulationResult, req)
-	if err != nil {
-		return nil, err
-	}
+// func (s *sscService) SimulationResult(txHash common.Hash) (*api.CXTSimulationSSCResult, error) {
+// 	s.preSimuLock.Lock()
+// 	ch := s.cachedResultCh[txHash]
+// 	s.preSimuLock.Unlock()
+// 	if ch != nil {
+// 		utils.SSCLogger().Debug().Str("txHash", txHash.Hex()).Msg("get simulation result from channel")
+// 		return <-ch, nil
+// 	}
+// 	// try to get result from ssc leader
+// 	leader := s.GetLeader(s.SelfShard, txHash)
+// 	ret := new(api.CXTSimulationSSCResult)
+// 	ctx, cancel := context.WithTimeout(s.ctx, s.Config.CallTimeout)
+// 	defer cancel()
+// 	req := &api.SimulationResultRequest{
+// 		TxHash:        txHash.Bytes(),
+// 		SimulationNum: 0,
+// 	}
+// 	err := s.Comm.Call(ctx, ret, leader, api.Method_RequestSimulationResult, req)
+// 	if err != nil {
+// 		return nil, err
+// 	}
+//
+// 	return ret, nil
+// }
 
-	return ret, nil
-}
-
-func (s *sscService) RequestSimulationResult(req *api.SimulationResultRequest) (*api.CXTSimulationSSCResult, error) {
-	txHash := common.BytesToHash(req.TxHash)
-	s.simuLock.Lock()
-
-	if _, exists := s.finishedTxs[txHash]; exists {
-		s.simuLock.Unlock()
-		return nil, errors.New("tx has finished and committed")
-	}
-
-	state := s.simulationState[txHash]
-	if state == nil {
-		s.simuLock.Unlock()
-		return nil, errors.New("simulation state not found")
-	}
-
-	if state.SimulationResult != nil {
-		s.simuLock.Unlock()
-		return state.SimulationResult, nil
-	}
-
-	ch := s.simuResultCh[txHash]
-	if ch == nil {
-		s.simuLock.Unlock()
-		cachedTxs := make([]string, 0, len(s.simuResultCh))
-		for hash := range s.simuResultCh {
-			cachedTxs = append(cachedTxs, hash.Hex())
-		}
-		utils.SSCLogger().Error().Err(errors.New("simulation result channel is nil")).Interface("cachedTx", cachedTxs).Str("txHash", txHash.Hex()).Msg("failed to get simulation result")
-		return nil, errors.New("it haven't started simulation")
-	}
-
-	s.simuLock.Unlock()
-	return <-ch, nil
-}
+// func (s *sscService) RequestSimulationResult(req *api.SimulationResultRequest) (*api.CXTSimulationSSCResult, error) {
+// 	txHash := common.BytesToHash(req.TxHash)
+//
+// 	s.stateLock.Lock()
+// 	state, err := s.getState(txHash)
+// 	s.stateLock.Unlock()
+//
+// 	if err != nil {
+// 		return nil, err
+// 	}
+//
+// 	if state.SimulationResult != nil {
+// 		return state.SimulationResult, nil
+// 	}
+//
+// 	s.simuLock.Lock()
+// 	ch := s.simuResultCh[txHash]
+// 	s.simuLock.Unlock()
+// 	if ch == nil {
+// 		cachedTxs := make([]string, 0, len(s.simuResultCh))
+// 		for hash := range s.simuResultCh {
+// 			cachedTxs = append(cachedTxs, hash.Hex())
+// 		}
+// 		utils.SSCLogger().Error().Err(errors.New("simulation result channel is nil")).Interface("cachedTx", cachedTxs).Str("txHash", txHash.Hex()).Msg("failed to get simulation result")
+// 		return nil, errors.New("it haven't started simulation")
+// 	}
+//
+// 	return <-ch, nil
+// }
 
 func (s *sscService) SimulateCXTransaction(req *api.CXTSimulationRequest) {
 	utils.SSCLogger().Debug().Str("txHash", req.Tx.Hash().String()).Msg("simulate cx transaction, start")
 	leader := s.GetLeader(s.SelfShard, req.Tx.Hash())
 
 	ctx, cancel := context.WithTimeout(s.ctx, s.Config.CallTimeout)
-	ch := make(chan *api.CXTSimulationSSCResult)
-	s.simuLock.Lock()
-	s.cachedResultCh[req.Tx.Hash()] = ch
-	s.simuLock.Unlock()
+	// s.preSimuLock.Lock()
+	// s.cachedResultCh[req.Tx.Hash()] = ch
+	// s.preSimuLock.Unlock()
 
 	go func() {
 		defer cancel()
@@ -423,7 +409,6 @@ func (s *sscService) SimulateCXTransaction(req *api.CXTSimulationRequest) {
 			utils.SSCLogger().Error().Str("txHash", req.Tx.Hash().Hex()).Err(err).Msgf("failed to call start simulate cx transaction")
 			ret = &api.CXTSimulationSSCResult{Err: err.Error()}
 		}
-		ch <- ret
 		utils.SSCLogger().Debug().Str("txHash", req.Tx.Hash().String()).Msg("simulate cx transaction, end")
 	}()
 }
@@ -569,28 +554,10 @@ func (s *sscService) VerifySimulation(simulationBytes []byte, stateDB api.StateD
 		return
 	}
 
-	// err = s.signerMgr.GetSSCSigner().Verify(simulation)
-	// if err != nil {
-	// 	txHash := common.BytesToHash(simulation.TxHash)
-	// 	utils.SSCLogger().Error().Err(err).Str("txHash", txHash.Hex()).
-	// 		Msgf("failed to verify simulation signature")
-	// 	payload := &api.CXTInvalidSimulationPayload{
-	// 		Type: api.InvalidSerialization,
-	// 	}
-	// 	payloadBytes, _ := json.Marshal(payload)
-	// 	vote := &api.CXTCommitVote{
-	// 		TxHash:        txHash.Bytes(),
-	// 		Type:          api.Rollback,
-	// 		ShardId:       s.SelfShard,
-	// 		OriginShardId: simulation.OriginShardId,
-	// 		Reason:        api.ReasonInvalidSimulation,
-	// 		Payload:       payloadBytes,
-	// 	}
-	// 	s.sendCXTCommitVote(simulation.OriginShardId, vote)
-	// 	return
-	// }
-
 	txHash := common.BytesToHash(simulation.TxHash)
+	if s.SelfShard == simulation.OriginShardId {
+		s.timerMgr.StartTimer(txHash, header.NumberU64(), s.SelfShard)
+	}
 
 	conflictLockCallIndexes := make([]api.CallIndex, 0)
 	conflictLockKeys := make([]api.LockKey, 0)
@@ -602,7 +569,9 @@ func (s *sscService) VerifySimulation(simulationBytes []byte, stateDB api.StateD
 		callStateMap[callState.CallIndex.ToString()] = callState
 	}
 	verifyContext := &api.ExecutionVerifyContext{Simulation: simulation, CallStateMap: callStateMap}
+	s.stateLock.Lock()
 	s.executionVerifyContexts[txHash] = verifyContext
+	s.stateLock.Unlock()
 
 CallStates:
 	for i, callState := range simulation.CallStates {
@@ -762,16 +731,22 @@ CallStates:
 			Int("size", len(simulationBytes)).
 			Msgf("send cxt commit vote")
 		s.sendCXTCommitVote(s.SelfShard, vote)
-		if s.SelfShard == simulation.OriginShardId {
-			s.timerMgr.StartTimer(txHash, header.NumberU64(), s.SelfShard)
-		}
 	}
 }
 
 func (s *sscService) verifyExecuteForCallState(simulation *api.CXTSimulation, txHash common.Hash, callState *api.CXTCallState, stateDB *corestate.DB) error {
 	chainConfig := s.bc.Config()
 	vmConfig := s.bc.GetVMConfig()
+	s.stateLock.RLock()
 	verifyContext := s.executionVerifyContexts[txHash]
+	_, finished := s.finishedTxs[txHash]
+	s.stateLock.RUnlock()
+	if finished {
+		return api.ErrTxHasBeenClosed
+	}
+	if verifyContext == nil {
+		return errors.New("execution verify context is nil")
+	}
 
 	var (
 		origin    common.Address
@@ -1037,7 +1012,10 @@ func (s *sscService) CommitOrRollbackWithProof(commitProofBytes []byte, stateDB 
 		return err
 	}
 	txHash := common.BytesToHash(commitProof.TxHash)
-	if _, exists := s.finishedTxs[txHash]; exists {
+	s.stateLock.Lock()
+	_, exists := s.finishedTxs[txHash]
+	s.stateLock.Unlock()
+	if exists {
 		utils.SSCLogger().Debug().Str("txHash", txHash.Hex()).Msg("cxt has committed or rollback")
 		return nil
 	}
@@ -1116,6 +1094,7 @@ func (s *sscService) StartSimulateCXTransaction(req *api.CXTSimulationRequest) *
 
 	for _, member := range committee.Members {
 		go func() {
+			defer wg.Done()
 			ret := new(api.CXTSimulationResult)
 			err := s.Comm.Call(ctx, ret, member, api.Method_HandleSimulateRequest, req)
 			if err != nil {
@@ -1127,7 +1106,6 @@ func (s *sscService) StartSimulateCXTransaction(req *api.CXTSimulationRequest) *
 				results = append(results, ret)
 			}
 			lock.Unlock()
-			wg.Done()
 		}()
 	}
 	wg.Wait()
@@ -1195,11 +1173,13 @@ func (s *sscService) StartSimulateCXTransaction(req *api.CXTSimulationRequest) *
 	}
 	s.Comm.Multicast(ctx, leaders, api.Method_CommitSimulation, simulationCommit)
 
+	s.simuLock.Lock()
 	if s.simuResultCh[txHash] != nil {
 		s.simuResultCh[txHash] <- sscResult
 		close(s.simuResultCh[txHash])
 		delete(s.simuResultCh, txHash)
 	}
+	s.simuLock.Unlock()
 
 	return sscResult
 }
@@ -1218,6 +1198,7 @@ func (s *sscService) thresholdSignSimulationCommit(commit *api.SimulationCommit)
 
 	for _, member := range committee.Members {
 		go func() {
+			defer wg.Done()
 			signature := make([]byte, 0)
 			err := s.Comm.Call(ctx, &signature, member, api.Method_SignSimulationCommit, commit)
 			if err != nil {
@@ -1232,7 +1213,6 @@ func (s *sscService) thresholdSignSimulationCommit(commit *api.SimulationCommit)
 				})
 			}
 			lock.Unlock()
-			wg.Done()
 		}()
 	}
 	wg.Wait()
@@ -1247,6 +1227,9 @@ func (s *sscService) thresholdSignSimulationCommit(commit *api.SimulationCommit)
 }
 
 func (s *sscService) aggregateSimulationResults(results []api.SSCMessage) (*api.CXTSimulationSSCResult, error) {
+	if len(results) == 0 {
+		return nil, errors.New("no simulation results to aggregate")
+	}
 	result := results[0].(*api.CXTSimulationResult)
 	aggregatedSig, bitMap, err := s.BLSSignerMgr.GetSSCSigner().Aggregate(results)
 	if err != nil {
@@ -1275,8 +1258,8 @@ func (s *sscService) HandleSimulateRequest(ctx context.Context, req *api.CXTSimu
 	if err != nil {
 		return &api.CXTSimulationResult{Err: err.Error()}
 	}
-	callState.Lock.Lock()
-	defer callState.Lock.Unlock()
+	// callState.Lock.Lock()
+	// defer callState.Lock.Unlock()
 
 	s.stateLock.RLock()
 	simuState, err := s.getState(txHash)
@@ -1450,6 +1433,10 @@ func (s *sscService) RequestCallCXT(req *api.CXTCallRequest) *api.CXTCallSSCResu
 }
 
 func (s *sscService) aggregateSSCCallRequest(requests []*api.CXTCallRequest) *api.CXTCallSSCRequest {
+	if len(requests) == 0 {
+		utils.SSCLogger().Error().Msg("no cxt call requests to aggregate")
+		return nil
+	}
 	msgs := make([]api.SSCMessage, 0, len(requests))
 	for _, msg := range requests {
 		msgs = append(msgs, msg)
@@ -1648,13 +1635,13 @@ func (s *sscService) waitForSync(callState *api.SimulationCallState) {
 		Str("callIndex", callState.CallIndex.ToString()).
 		Str("blockHash", callState.BlockHash.Hex()).Msg("waiting for sync")
 
-	s.stateLock.Lock()
+	s.syncLock.Lock()
 	callStates, exists := s.callStatesInWaiting[callState.BlockHash]
 	if !exists {
 		callStates = make([]*api.SimulationCallState, 0)
 	}
 	s.callStatesInWaiting[callState.BlockHash] = append(callStates, callState)
-	s.stateLock.Unlock()
+	s.syncLock.Unlock()
 
 	select {
 	case <-callState.SyncedCh:
@@ -1665,6 +1652,10 @@ func (s *sscService) waitForSync(callState *api.SimulationCallState) {
 }
 
 func (s *sscService) aggregateSSCRecallRequest(requests []*api.CXTRecallRequest) *api.CXTRecallSSCRequest {
+	if len(requests) == 0 {
+		utils.SSCLogger().Error().Msg("no ssc recall requests to aggregate")
+		return nil
+	}
 	req := requests[0]
 	msgs := make([]api.SSCMessage, 0, len(requests))
 	for _, msg := range requests {
@@ -1811,6 +1802,10 @@ func (s *sscService) HandleCommitVote(vote *api.CXTCommitVote) {
 }
 
 func (s *sscService) aggregateSSCCommitVote(votes []*api.CXTCommitVote, sscOrValidator bool) *api.CXTCommitSSCVote {
+	if len(votes) == 0 {
+		utils.SSCLogger().Error().Msg("no ssc commit votes to aggregate")
+		return nil
+	}
 	msgs := make([]api.SSCMessage, 0, len(votes))
 	for _, vote := range votes {
 		msgs = append(msgs, vote)
@@ -1913,11 +1908,11 @@ func (s *sscService) HandleCXTSSCCall(req *api.CXTCallSSCRequest) *api.CXTCallSS
 
 	for _, member := range committee.Members {
 		go func() {
+			defer wg.Done()
 			ret := new(api.CXTCallResult)
 			err := s.Comm.Call(ctx, ret, member, api.Method_HandleCXTCall, req)
 			if err != nil {
 				utils.SSCLogger().Error().Str("txHash", txHash.Hex()).Err(err).Msg("failed to call cxt call")
-				wg.Done()
 				return
 			}
 			lock.Lock()
@@ -1925,7 +1920,6 @@ func (s *sscService) HandleCXTSSCCall(req *api.CXTCallSSCRequest) *api.CXTCallSS
 				results = append(results, ret)
 			}
 			lock.Unlock()
-			wg.Done()
 		}()
 	}
 	wg.Wait()
@@ -1953,6 +1947,10 @@ func (s *sscService) HandleCXTSSCCall(req *api.CXTCallSSCRequest) *api.CXTCallSS
 }
 
 func (s *sscService) aggregateCXSSCCallResult(results []api.SSCMessage) (*api.CXTCallSSCResult, error) {
+	if len(results) == 0 {
+		utils.SSCLogger().Error().Msg("no cxt call results to aggregate")
+		return nil, errors.New("no cxt call results to aggregate")
+	}
 	result := results[0].(*api.CXTCallResult)
 	aggregatedSig, bitMap, err := s.BLSSignerMgr.GetSSCSigner().Aggregate(results)
 	if err != nil {
@@ -2071,6 +2069,7 @@ func (s *sscService) buildSignaturesForSimulation(simulation *api.CXTSimulation)
 
 	for _, member := range committee.Members {
 		go func() {
+			defer wg.Done()
 			signature := make([]byte, 0)
 			err := s.Comm.Call(ctx, &signature, member, api.Method_SignCXTSimulation, simulation)
 			if err != nil {
@@ -2084,7 +2083,6 @@ func (s *sscService) buildSignaturesForSimulation(simulation *api.CXTSimulation)
 				})
 			}
 			lock.Unlock()
-			wg.Done()
 		}()
 	}
 
@@ -2341,7 +2339,7 @@ func (s *sscService) startReSimulation(txHash []byte, simulationNum int) {
 		GasPool:       0,
 	}
 
-	utils.SSCLogger().Debug().Str("txHash", common.BytesToHash(txHash).Hex()).Msgf("start recall simulation, simulationNum: %d", simulationNum)
+	utils.SSCLogger().Info().Str("txHash", common.BytesToHash(txHash).Hex()).Msgf("start recall simulation, simulationNum: %d", simulationNum)
 
 	committee := s.GetCommittee(s.SelfShard)
 	t := committee.Threshold
@@ -2352,10 +2350,11 @@ func (s *sscService) startReSimulation(txHash []byte, simulationNum int) {
 
 	for _, member := range committee.Members {
 		go func() {
+			defer wg.Done()
 			ret := new(api.CXTSimulationResult)
 			err := s.Comm.Call(ctx, ret, member, api.Method_HandleSimulateRequest, req)
 			if err != nil {
-				utils.SSCLogger().Error().Err(err).Msg("failed to call simulate request")
+				utils.SSCLogger().Error().Str("txHash", common.BytesToHash(txHash).String()).Err(err).Msg("failed to call simulate request")
 				return
 			}
 			lock.Lock()
@@ -2363,18 +2362,19 @@ func (s *sscService) startReSimulation(txHash []byte, simulationNum int) {
 				results = append(results, ret)
 			}
 			lock.Unlock()
-			wg.Done()
 		}()
 	}
 	wg.Wait()
 	sscResult, err := s.aggregateSimulationResults(results)
 	if err != nil {
+		utils.SSCLogger().Error().Str("txHash", common.BytesToHash(txHash).String()).Err(err).Msg("failed to aggregate simulation results")
 		sscResult = &api.CXTSimulationSSCResult{Err: err.Error(), RelatedShards: []uint32{s.SelfShard}}
+	} else {
+		s.stateLock.Lock()
+		state.SimulationResult = sscResult
+		state.SimulationCallStates[simulationNum][0].TopSSCResult = sscResult
+		s.stateLock.Unlock()
 	}
-	s.stateLock.Lock()
-	state.SimulationResult = sscResult
-	state.SimulationCallStates[simulationNum][0].TopSSCResult = sscResult
-	s.stateLock.Unlock()
 
 	// build and send simulation commit
 	simulationCommit := &api.SimulationCommit{
@@ -2451,30 +2451,30 @@ func (s *sscService) getState(txHash common.Hash) (*api.CXTSimulationState, erro
 
 func (s *sscService) closeTransaction(txHash common.Hash, commitOrRollback bool) {
 	utils.SSCLogger().Info().Str("txHash", txHash.Hex()).Msgf("close transaction, commit: %v", commitOrRollback)
+	s.stateLock.Lock()
+	delete(s.simulationState, txHash)
+	delete(s.executionVerifyContexts, txHash)
+	s.finishedTxs[txHash] = commitOrRollback
+	s.stateLock.Unlock()
 	s.commitLock.Lock()
 	delete(s.commitStates, txHash)
-	delete(s.executionVerifyContexts, txHash)
 	s.commitLock.Unlock()
-	s.stateLock.Lock()
-	s.finishedTxs[txHash] = commitOrRollback
-	delete(s.simulationState, txHash)
-	s.stateLock.Unlock()
 }
 
 func (s *sscService) closeTransactions(txs map[common.Hash]bool) {
 	utils.SSCLogger().Info().Interface("txs", txs).Msgf("close transactions, num=%d", len(txs))
+	s.stateLock.Lock()
+	for txHash, commitOrRollback := range txs {
+		delete(s.executionVerifyContexts, txHash)
+		delete(s.simulationState, txHash)
+		s.finishedTxs[txHash] = commitOrRollback
+	}
+	s.stateLock.Unlock()
 	s.commitLock.Lock()
 	for txHash, _ := range txs {
 		delete(s.commitStates, txHash)
-		delete(s.executionVerifyContexts, txHash)
 	}
 	s.commitLock.Unlock()
-	s.stateLock.Lock()
-	for txHash, commitOrRollback := range txs {
-		s.finishedTxs[txHash] = commitOrRollback
-		delete(s.simulationState, txHash)
-	}
-	s.stateLock.Unlock()
 }
 
 func (s *sscService) StateLockManager() api.StateLockManager {

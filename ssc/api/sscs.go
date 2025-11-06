@@ -24,10 +24,10 @@ const (
 	Method_CommitSimulation           = "ssc_commitSimulation"
 	Method_HandleCXTCommitSSCVote     = "ssc_handleCXTCommitSSCVote"
 	Method_HandleCXTCommitProof       = "ssc_handleCXTCommitProof"
-	Method_BroadcastCXTRecallProof    = "ssc_broadcastCXTRecallProof"
-	Method_RequestSimulationResult    = "ssc_requestSimulationResult"
-	Method_SignalReSimulation         = "ssc_signalReSimulation"
-	Method_NotifyReSimulationStart    = "ssc_notifyReSimulationStart"
+	// Method_BroadcastCXTRecallProof    = "ssc_broadcastCXTRecallProof"
+	// Method_RequestSimulationResult    = "ssc_requestSimulationResult"
+	Method_SignalReSimulation      = "ssc_signalReSimulation"
+	Method_NotifyReSimulationStart = "ssc_notifyReSimulationStart"
 )
 
 type ShardLocator interface {
@@ -135,7 +135,7 @@ type InternalService interface {
 	//	@Description: simulate cross-shard transaction called by proposer, send request to leader of CXTransaction
 	SimulateCXTransaction(req *CXTSimulationRequest)
 
-	SimulationResult(txHash common.Hash) (*CXTSimulationSSCResult, error)
+	// SimulationResult(txHash common.Hash) (*CXTSimulationSSCResult, error)
 
 	// CallCXTContract
 	//
@@ -205,7 +205,7 @@ type ShardService interface {
 	//  @Description: handle the commit vote from ssc's member, aggregate the votes after reaching threshold, then send
 	HandleCommitVote(vote *CXTCommitVote)
 
-	RequestSimulationResult(req *SimulationResultRequest) (*CXTSimulationSSCResult, error)
+	// RequestSimulationResult(req *SimulationResultRequest) (*CXTSimulationSSCResult, error)
 }
 
 // CrossService
