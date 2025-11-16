@@ -1,0 +1,42 @@
+ssc_config:
+  committees:
+  - shardid: 0
+    epoch: 0
+    members:
+    - address: 0x040c58c98df724d931475866aa8465bae4e199d2
+      stake: "1000000000000000000"
+      endpoint: 127.0.0.1:9000
+      blspubkey: 54f8b21cf0a49ffee123fdde3b7d091b207f191a60677ab96205c52a05189359ec3e2b2725d0615bb3a854b044b06882
+    number: 1
+    threshold: 1
+  - shardid: 1
+    epoch: 0
+    members:
+    - address: 0x0d43914fdb5c89997b122057cd480a04c582a1ad
+      stake: "1000000000000000000"
+      endpoint: 127.0.0.1:9040
+      blspubkey: 36135007f2d6509e972d104f83621c49851537764f7ab9db56c440c266a32eb7229b0b65aeb851f20793be177ad2c491
+    number: 1
+    threshold: 1
+  - shardid: 2
+    epoch: 0
+    members:
+    - address: 0x144b2a902ee2ce1b43f2ee5dfc7a52fb114e556a
+      stake: "1000000000000000000"
+      endpoint: 127.0.0.1:9080
+      blspubkey: 8d6b1572ecc17c8672652d38d10d39837161feb383228aec2b83679953b8156ad8cfa3bb62f325257a8ea0656d93d691
+    number: 1
+    threshold: 1
+  - shardid: 3
+    epoch: 0
+    members:
+    - address: 0x1cdab3a8d28c7e43cb3a14c06ddef9376b5bf348
+      stake: "1000000000000000000"
+      endpoint: 127.0.0.1:9120
+      blspubkey: ea9676b6348e7573573d21007140d5e975de838096dfd4722a2b779ef5beeef8c40bfd55a3135aa749f5e4a144698e84
+    number: 1
+    threshold: 1
+  timeout:
+    sp1: 20
+    pool_timeout: 20
+genesis_accounts_dir: .hmy/expr_accounts

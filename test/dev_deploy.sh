@@ -69,12 +69,16 @@ function launch_bootnode() {
 }
 
 function deploy() {
-    env=${3-dev}
-    config=./test/configs/${env}/launch_config_${env}.txt
-    launch_bootnode
-
     shard_num=$1
+    shard=$1
     shard_size=$2
+    validator=$2
+    ssc=$3
+    delay=$4
+    env="dev"
+
+    config="./test/configs/${env}/shard=${shard}_validator=${validator}_ssc=${ssc}_delay=${delay}/launch_config_${env}.txt"
+    launch_bootnode
 
     unset -v base_args
     declare -a base_args args
@@ -180,9 +184,18 @@ function download_log() {
 }
 
 function test() {
+    shard=$1
+    validator=$2
+    ssc=$3
+    delay=$4
     clean
     preset
-    deploy 4 5 dev
+    deploy $shard $validator $ssc $delay
 }
 
-#test
+shard=${1-4}
+validator=${2-4}
+ssc=${3-1}
+delay=${4-5}
+
+test $shard $validator $ssc $delay

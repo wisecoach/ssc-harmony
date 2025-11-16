@@ -63,12 +63,16 @@ function launch_bootnode() {
 }
 
 function simple_launch_shard() {
-    env=${3-local}
-    config=./test/configs/${env}/launch_config_${env}.txt
-    launch_bootnode
-
     shard_num=$1
+    shard=$1
     shard_size=$2
+    validator=$2
+    ssc=$3
+    delay=$4
+
+    env=local
+    config="./test/configs/${env}/shard=${shard}_validator=${validator}_ssc=${ssc}_delay=${delay}/launch_config_${env}.txt"
+    launch_bootnode
 
     unset -v base_args
     declare -a base_args args
@@ -103,7 +107,7 @@ function simple_launch_shard() {
         echo "shard_id=$shard_id, cnt=${per_shard_cnt[$shard_id]}, num=${shard_num}"
 
         mode='validator'
-        node_config='test/configs/local/default_config_local.toml'
+        node_config="test/configs/${env}/shard=${shard}_validator=${validator}_ssc=${ssc}_delay=${delay}/default_config_${env}.toml"
 
         args=("${base_args[@]}" --ip "${ip}" --port "${port}" --key "/tmp/${ip}-${port}.key" --db_dir "${ROOT}/db/db-${ip}-${port}" "--broadcast_invalid_tx=false" --shard_num "${shard_num}" --shard_size "${shard_size}" --run.shard "${shard_id}")
         if [[ -z "$ip" || -z "$port" || "$ip" == "#" ]]; then
@@ -156,7 +160,7 @@ function simple_launch_shard() {
           ;;
         esac
 
-        echo "begin to work: dryrun: ${DRYRUN}" "bin: ${ROOT}/bin/harmony" "${args[@]}" "${extra_args[@]}"
+        echo "begin to work: dryrun: ${DRYRUN}" "bin: ${ROOT}/bin/harmony" "${args[@]}"
 
         # Start the node
         ${DRYRUN} "${ROOT}/bin/harmony" "${args[@]}" "${extra_args[@]}" >> "${log_folder}/log-${port}.log" 2>&1 &
@@ -302,14 +306,17 @@ done
 
 shift $((OPTIND - 1))
 
-config=$1
+shard=${1-4}
+validator=${2-4}
+ssc=${3-1}
+delay=${4-5}
+
 shift 1 || usage
 unset -v extra_args
 declare -a extra_args
-extra_args=("$@")
 
 setup
-simple_launch_shard 4 5 local
+simple_launch_shard $shard $validator $ssc $delay
 monitor_with_wait
 generate_exit_report
 

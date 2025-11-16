@@ -1,0 +1,294 @@
+ssc_config:
+  committees:
+  - shardid: 0
+    epoch: 0
+    members:
+    - address: 0x040c58c98df724d931475866aa8465bae4e199d2
+      stake: "1000000000000000000"
+      endpoint: 10.7.95.200:9000
+      blspubkey: 54f8b21cf0a49ffee123fdde3b7d091b207f191a60677ab96205c52a05189359ec3e2b2725d0615bb3a854b044b06882
+    number: 1
+    threshold: 1
+  - shardid: 1
+    epoch: 0
+    members:
+    - address: 0x0d43914fdb5c89997b122057cd480a04c582a1ad
+      stake: "1000000000000000000"
+      endpoint: 10.7.95.201:9040
+      blspubkey: 36135007f2d6509e972d104f83621c49851537764f7ab9db56c440c266a32eb7229b0b65aeb851f20793be177ad2c491
+    number: 1
+    threshold: 1
+  - shardid: 2
+    epoch: 0
+    members:
+    - address: 0x144b2a902ee2ce1b43f2ee5dfc7a52fb114e556a
+      stake: "1000000000000000000"
+      endpoint: 10.7.95.202:9080
+      blspubkey: 8d6b1572ecc17c8672652d38d10d39837161feb383228aec2b83679953b8156ad8cfa3bb62f325257a8ea0656d93d691
+    number: 1
+    threshold: 1
+  - shardid: 3
+    epoch: 0
+    members:
+    - address: 0x1cdab3a8d28c7e43cb3a14c06ddef9376b5bf348
+      stake: "1000000000000000000"
+      endpoint: 10.7.95.203:9120
+      blspubkey: ea9676b6348e7573573d21007140d5e975de838096dfd4722a2b779ef5beeef8c40bfd55a3135aa749f5e4a144698e84
+    number: 1
+    threshold: 1
+  - shardid: 4
+    epoch: 0
+    members:
+    - address: 0x259ce4ac09256958d8c30210d2efa3d535e7a0ff
+      stake: "1000000000000000000"
+      endpoint: 10.7.95.204:9160
+      blspubkey: d90985c849998f8b67794599699c586aafe7f5259c7f756538c4cbbea9ee4bcc88f9b2f2f6ace239bf8507c4f1d1030d
+    number: 1
+    threshold: 1
+  - shardid: 5
+    epoch: 0
+    members:
+    - address: 0x2ab08effa2f3a43ef063909c6160644f0f1f92f3
+      stake: "1000000000000000000"
+      endpoint: 10.7.95.205:9200
+      blspubkey: bec75daad854ec3c0d93dd8dfb8e390c19f0e52a777f140a378ee4ca33287e00bc07dc93fccd49a75d22d93692bbbf8b
+    number: 1
+    threshold: 1
+  - shardid: 6
+    epoch: 0
+    members:
+    - address: 0x30af18df37b6977cf701f181f2a2a8234c47e2a6
+      stake: "1000000000000000000"
+      endpoint: 10.7.95.206:9240
+      blspubkey: 945223e248d831c9bd8be370934231c2aa92f2e9e7e0687839b20f66b96c6b82bd3920d5713e7d5a74dfd18b6d10c08f
+    number: 1
+    threshold: 1
+  - shardid: 7
+    epoch: 0
+    members:
+    - address: 0x3f9e2539e266efb3dc7d3cde330be6000e58b4ff
+      stake: "1000000000000000000"
+      endpoint: 10.7.95.207:9280
+      blspubkey: aa0be7bbffb15c3072b01dcbf2e2b759347006bf5396a7678b0f8afee3c18abc8d93301b3e4dd82ae678ba5e6f43400d
+    number: 1
+    threshold: 1
+  - shardid: 8
+    epoch: 0
+    members:
+    - address: 0x405fc0dbff175c3df2db87acf075047fcff63f03
+      stake: "1000000000000000000"
+      endpoint: 10.7.95.208:9320
+      blspubkey: 8e34c8390f7a2e72c61b61744d8a4e99fe8c1e5271441d0ae8faa185eac8c8349a11d9584f89ecfb7c36904ef4334c89
+    number: 1
+    threshold: 1
+  - shardid: 9
+    epoch: 0
+    members:
+    - address: 0x48df6415b12f7298fcb4c43da0abf69e57291c40
+      stake: "1000000000000000000"
+      endpoint: 10.7.95.209:9360
+      blspubkey: 8bd0cd950c785d75d7032f7db3519a7724b8408bbd8d2f55886c300cc1281cf849fa89a7971f190310c0aa7f08ba7c94
+    number: 1
+    threshold: 1
+  - shardid: 10
+    epoch: 0
+    members:
+    - address: 0x577f51af0a460b2a22a1cfa1b34ec9941619a262
+      stake: "1000000000000000000"
+      endpoint: 10.7.95.210:9400
+      blspubkey: 5e4931e126998ace9a1ab81ad31a07ed86f80829fc81c81c00d41a8928cf3c913c7646cd159afa7ff6abd52fa064ce04
+    number: 1
+    threshold: 1
+  - shardid: 11
+    epoch: 0
+    members:
+    - address: 0x5c057a71118010800ca908573096c4a9f93696c2
+      stake: "1000000000000000000"
+      endpoint: 10.7.95.211:9440
+      blspubkey: 83bd7efd4e214fbcc8f1d33cfc8370acf97e1314986f95a3ce5cc82b9d80efebe6c75519ba4252ad021961cfb248e80d
+    number: 1
+    threshold: 1
+  - shardid: 12
+    epoch: 0
+    members:
+    - address: 0x65c624393d16db033dc8743f0f20c3938b9eed83
+      stake: "1000000000000000000"
+      endpoint: 10.7.95.212:9480
+      blspubkey: afb475b390317a2783cee224338717bb2357af9ab23340e21caaed2dedb724a5bd48cf9e12119af0b400fd162425c314
+    number: 1
+    threshold: 1
+  - shardid: 13
+    epoch: 0
+    members:
+    - address: 0x6940aba47a0dedab7cfa5623bfaeffeec742b33c
+      stake: "1000000000000000000"
+      endpoint: 10.7.95.213:9520
+      blspubkey: ba38080da6bb04ec7583b9ae91f7df085b4b9f6620f112423f2352feafe5cafd92554efa2d0983296c8df520f18a2486
+    number: 1
+    threshold: 1
+  - shardid: 14
+    epoch: 0
+    members:
+    - address: 0x7703fab89d2f4e609771c6cc2ec137f4741d4be4
+      stake: "1000000000000000000"
+      endpoint: 10.7.95.214:9560
+      blspubkey: 6484aebf3c1204fc8f00bef3ae31954fb2b6c13b3e185165a519e590e097bf8bce21e6a6e031e1bd8a382c6225f15c8a
+    number: 1
+    threshold: 1
+  - shardid: 15
+    epoch: 0
+    members:
+    - address: 0x7a15d27c810cc0fd95e050ddaa41d8bc4a3a0a87
+      stake: "1000000000000000000"
+      endpoint: 10.7.95.215:9600
+      blspubkey: a08d538d9bf8ad1465bf3a247261118a4b7f7fb2a9abbdbfa0e9395f66f087249789a309473d4c5651e966da6acf7a0b
+    number: 1
+    threshold: 1
+  - shardid: 16
+    epoch: 0
+    members:
+    - address: 0x879d6ae5136fc86e5d376e79753b0fd97c896439
+      stake: "1000000000000000000"
+      endpoint: 10.7.95.216:9640
+      blspubkey: d95e40ff33d70e8908b85e30f8d34cd6627f932c656967b4868ea96d12ee795cd3c0ea24ebbd15dad0860622caa72a98
+    number: 1
+    threshold: 1
+  - shardid: 17
+    epoch: 0
+    members:
+    - address: 0x8bdc3356cd89eea7738485309241aec15e885421
+      stake: "1000000000000000000"
+      endpoint: 10.7.95.217:9680
+      blspubkey: b1563c09f85afb96905e6d8aa93b9c339b7e585397c0c19f2f23f25eb28697688b18ba5e0b7fcc7b7da5ba04769af209
+    number: 1
+    threshold: 1
+  - shardid: 18
+    epoch: 0
+    members:
+    - address: 0x9519b47902a05d33230a1787efbeb89b7d07c8dd
+      stake: "1000000000000000000"
+      endpoint: 10.7.95.218:9720
+      blspubkey: 9fa679e9c134cd01f17c0d5a7018292fafa033c4625477f134cbcc192fe406ce6c946b342bc738142be8a13a9aa02885
+    number: 1
+    threshold: 1
+  - shardid: 19
+    epoch: 0
+    members:
+    - address: 0x9ed0ea68a10892dffcc86dab9a621952bd9996c0
+      stake: "1000000000000000000"
+      endpoint: 10.7.95.219:9760
+      blspubkey: c017faa8b35f0a12fa8870788485fc05a8a79b323894804919565e64506d30b2b247c33d1af97bebbf507a8fba6f4114
+    number: 1
+    threshold: 1
+  - shardid: 20
+    epoch: 0
+    members:
+    - address: 0xa46df6db777ef72bb73f719c5a5ec91436d8bdd8
+      stake: "1000000000000000000"
+      endpoint: 10.7.95.220:9800
+      blspubkey: 5b7438de6a65632a703250f3b84e81e601305cb02551ada3f1a2b3fd5925d1eea5165cf41b9ce6c5b8be05cd06a6c309
+    number: 1
+    threshold: 1
+  - shardid: 21
+    epoch: 0
+    members:
+    - address: 0xaca84a5e9d7d4e30038efbe700b33e85ae3ac718
+      stake: "1000000000000000000"
+      endpoint: 10.7.95.221:9840
+      blspubkey: 463faa09ece2f4d1b3ab3f859f68f1d375d19df1553db74ccb3530c4513d4fd9c17333479a223a5e4a0094b67bcc0d87
+    number: 1
+    threshold: 1
+  - shardid: 22
+    epoch: 0
+    members:
+    - address: 0xb62b83be41ef6ec5bc258b0d608afbd396365114
+      stake: "1000000000000000000"
+      endpoint: 10.7.95.222:9880
+      blspubkey: 2645fa58d07c7d6654b0693e90cf83010a356774415f00b5915c159a0cc04d5e99677af4255ed44fab7ace07d644cd17
+    number: 1
+    threshold: 1
+  - shardid: 23
+    epoch: 0
+    members:
+    - address: 0xbd735a859b357e6519f1a3ed23410e91379649cb
+      stake: "1000000000000000000"
+      endpoint: 10.7.95.223:9920
+      blspubkey: a84e2af7703bb0fec364a1fb7be4a96f2df0c9b1f71658d6b906f802c77b569a449426350a3c8e79ca24ee77b181f300
+    number: 1
+    threshold: 1
+  - shardid: 24
+    epoch: 0
+    members:
+    - address: 0xc6de6e5c35c9078a94c87d9740c05efd6c993c15
+      stake: "1000000000000000000"
+      endpoint: 10.7.95.224:9960
+      blspubkey: cbc1c08a2f6d3a8c1d197e34ed29a051ec850d48323a75fe198ae0e3a80d50ab2ba1478751025f9461a3f8414a9f5b16
+    number: 1
+    threshold: 1
+  - shardid: 25
+    epoch: 0
+    members:
+    - address: 0xc9a758f1fe7c5a30c01ec6e8ffdd990c1fa2e3b0
+      stake: "1000000000000000000"
+      endpoint: 10.7.95.225:10000
+      blspubkey: 94e90f367badb32b41299cb1e506ec1a71eb3c29a88d5864366797ba745b796a5966467e354f39284165eb58e33a1190
+    number: 1
+    threshold: 1
+  - shardid: 26
+    epoch: 0
+    members:
+    - address: 0xd35b1a3d805b20b23a2ac7b5e75be94fd569dd19
+      stake: "1000000000000000000"
+      endpoint: 10.7.95.226:10040
+      blspubkey: 22fffdffd2d37f740ec42a2d8822ed14674540145d15cd2464846f00c99c2b74140f0018a926b3c63230c80772a24b0a
+    number: 1
+    threshold: 1
+  - shardid: 27
+    epoch: 0
+    members:
+    - address: 0xde70d0755864355fcaac0926d47b80520ba0f390
+      stake: "1000000000000000000"
+      endpoint: 10.7.95.227:10080
+      blspubkey: a2794c34807c86e96d79210c80b6e35eaa463edf76c6178958220adfab7fe8b969631bb63238ad60e5ed8026b5635199
+    number: 1
+    threshold: 1
+  - shardid: 28
+    epoch: 0
+    members:
+    - address: 0xe1283f09e812b0c0e20f09c12e7a54df111154ef
+      stake: "1000000000000000000"
+      endpoint: 10.7.95.228:10120
+      blspubkey: 694b476596300424b5e8217901d7f85a32cecb9ee13d017929a807670580b267dbe46c7314121cfd474bbe6b4dd4458f
+    number: 1
+    threshold: 1
+  - shardid: 29
+    epoch: 0
+    members:
+    - address: 0xeb78105cfd4b007706a303a345e18bb3e5e30f7f
+      stake: "1000000000000000000"
+      endpoint: 10.7.95.229:10160
+      blspubkey: ec68e6f7c109d5b4e9f8d5753788968cffc71a3b2b3c382704e9a771eeb7a3d174d309529932268829d24cefb1170b8f
+    number: 1
+    threshold: 1
+  - shardid: 30
+    epoch: 0
+    members:
+    - address: 0xf0466c9e131e06317d50918a1723e294dcfe6f61
+      stake: "1000000000000000000"
+      endpoint: 10.7.95.230:10200
+      blspubkey: 37fad80e4aed6c83eabe02ca9854601fe58baf99d592d94e69097e99051ab6eb6963eaefb4d5dad18b2236ac8002ce94
+    number: 1
+    threshold: 1
+  - shardid: 31
+    epoch: 0
+    members:
+    - address: 0xfa54a6b475c4c92c6a753e811871ad3bd4ac313d
+      stake: "1000000000000000000"
+      endpoint: 10.7.95.231:10240
+      blspubkey: ec03affb64a67f55848470846424d9d9944c61ef4552fa2ffafe9f344d247a97dc1d53f72940c9cdbdd95b4647c9f516
+    number: 1
+    threshold: 1
+  timeout:
+    sp1: 5
+    pool_timeout: 5
+genesis_accounts_dir: .hmy/expr_accounts

@@ -1,0 +1,48 @@
+ssc_config:
+  committees:
+  - shardid: 0
+    epoch: 0
+    members:
+    - address: 0x040c58c98df724d931475866aa8465bae4e199d2
+      stake: "1000000000000000000"
+      endpoint: 10.7.95.200:9000
+      blspubkey: 54f8b21cf0a49ffee123fdde3b7d091b207f191a60677ab96205c52a05189359ec3e2b2725d0615bb3a854b044b06882
+    - address: 0x061ff6d8ecb8ae360eeb1b4bbae2bf5ed4d6d88d
+      stake: "1000000000000000000"
+      endpoint: 10.7.95.200:9002
+      blspubkey: 28d79435ff16021c32a1195546dab38dabb6592107dc20646dc0ceb63960c021d0191ecf8e3fa91b6302bf71f53c398c
+    - address: 0x02a7b783f4d4092a4be4d39d08dfaae7d2bcc311
+      stake: "1000000000000000000"
+      endpoint: 10.7.95.200:9004
+      blspubkey: 63f22047116d66cad9d77ed7c6058310b7e16655f48eec2fdfeb564e96b9810074f9e09f157ec78863265b7785537f0d
+    - address: 0x006e927d80f40ce9f6c5dd67f0fe52df9e00cb42
+      stake: "1000000000000000000"
+      endpoint: 10.7.95.200:9006
+      blspubkey: 568268bd964f84da050d044b9b9242163cb49f31c6c657a8f2927b40705700f08d70f11e2d7986f428b3c6573d75e296
+    number: 4
+    threshold: 3
+  - shardid: 1
+    epoch: 0
+    members:
+    - address: 0x0d43914fdb5c89997b122057cd480a04c582a1ad
+      stake: "1000000000000000000"
+      endpoint: 10.7.95.201:9040
+      blspubkey: 36135007f2d6509e972d104f83621c49851537764f7ab9db56c440c266a32eb7229b0b65aeb851f20793be177ad2c491
+    - address: 0x0b01241225ed1c1ef1316e85bfd769b56ccde55c
+      stake: "1000000000000000000"
+      endpoint: 10.7.95.201:9042
+      blspubkey: 55d385a0efe6e97213e03d4fc3430e0f284d5ccf09d242a69e04923851f7af668271734a4ecddea051da4a100b24a580
+    - address: 0x0de06f2c243cc69be791f1097280b83c5a7a65b5
+      stake: "1000000000000000000"
+      endpoint: 10.7.95.201:9044
+      blspubkey: 5b4819fbdeec6470009bdaac73e992db4b734aec1c44f30c46180b36b3482cc76f1d1ac6ca6e4d3031d78be01258f30e
+    - address: 0x0b44069349f8eda86eeb44faa191e4f9f7a40612
+      stake: "1000000000000000000"
+      endpoint: 10.7.95.201:9046
+      blspubkey: 3e68a42fd207d2c525657a904073b13cd24b314330acb9c2aa7e4267c7a282b6fe053be044337e9d4f15fb935e32f698
+    number: 4
+    threshold: 3
+  timeout:
+    sp1: 5
+    pool_timeout: 5
+genesis_accounts_dir: .hmy/expr_accounts
