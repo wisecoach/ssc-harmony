@@ -176,11 +176,11 @@ func (p *StateProcessor) Process(
 			if cxReceipt != nil {
 				outcxs = append(outcxs, cxReceipt)
 			}
+			utils.SSCLogger().Debug().Str("txHash", tx.Hash().Hex()).Msgf("processor commit transaction receipt, block=%d, index=%d, root=%s", block.NumberU64(), len(receipts)-1, common.Bytes2Hex(receipt.PostState))
 			if len(stakeMsgs) > 0 {
 				blockStakeMsgs = append(blockStakeMsgs, stakeMsgs...)
 			}
 
-			allLogs = append(allLogs, receipt.Logs...)
 		}
 		utils.Logger().Debug().Int64("elapsed time", time.Now().Sub(startTime).Milliseconds()).Msg("Process Normal Txns")
 
@@ -250,6 +250,7 @@ func (p *StateProcessor) Process(
 		State:      statedb,
 	}
 	p.resultCache.Add(cacheKey, result)
+	utils.SSCLogger().Debug().Str("block num", block.Number().String()).Uint64("gasUsed", *usedGas).Msg("processor commit block")
 	return receipts, outcxs, blockStakeMsgs, allLogs, *usedGas, payout, statedb, nil
 }
 
@@ -412,9 +413,9 @@ func ApplyCXTTransaction(service api.Service, bc ChainContext, author *common.Ad
 		return nil, nil, nil, 0, err
 	}
 	// if the transaction is a transaction need to be executed on chain
-	if vm.SSCAddrsApplyOnChain[*tx.To()] != nil {
+	if vm.IsWriteCapableSSCContract(*tx.To()) {
 		vmCtx := NewSSCVMContext(msg.From(), tx.Hash(), api.CallIndex{}, tx.GasPrice(), header, bc, author)
-		sscvm := vm.NewSSCVM(vmCtx, statedb, config, cfg, service, vm.ExecutionVerify)
+		sscvm := vm.NewSSCVM(vmCtx, statedb, config, cfg, service, vm.Precompiled)
 		result, err := NewSSCStateTransition(sscvm, msg, gp).TransitionDb()
 		if err != nil {
 			return nil, nil, nil, 0, err
@@ -426,18 +427,19 @@ func ApplyCXTTransaction(service api.Service, bc ChainContext, author *common.Ad
 		receipt.Bloom = types.CreateBloom(types.Receipts{receipt})
 		receipt.TxHash = tx.Hash()
 		receipt.GasUsed = result.UsedGas
+		utils.SSCLogger().Debug().Str("txHash", tx.Hash().Hex()).Msgf("ApplyTransaction receipt, root=%s, gasUsed=%d, bloom=%s", common.Bytes2Hex(root), result.UsedGas, common.Bytes2Hex(receipt.Bloom.Bytes()))
 		return receipt, nil, nil, result.UsedGas, nil
+	} else {
+		statedb.SetNonce(msg.From(), statedb.GetNonce(msg.From())+1)
+		// if the transaction is a normal cross-shard transaction, it need to be stimulated which is called by block author, no need to execute it
+		root := statedb.IntermediateRoot(bc.Config().IsS3(header.Epoch())).Bytes()
+		receipt := types.NewReceipt(root, false, *usedGas)
+		receipt.Logs = make([]*types.Log, 0)
+		receipt.Bloom = types.CreateBloom(types.Receipts{receipt})
+		receipt.TxHash = tx.Hash()
+		receipt.GasUsed = 0
+		return receipt, nil, make([]staking.StakeMsg, 0), 0, nil
 	}
-
-	statedb.SetNonce(msg.From(), statedb.GetNonce(msg.From())+1)
-	// if the transaction is a normal cross-shard transaction, it need to be stimulated which is called by block author, no need to execute it
-	root := statedb.IntermediateRoot(bc.Config().IsS3(header.Epoch())).Bytes()
-	receipt := types.NewReceipt(root, false, *usedGas)
-	receipt.Logs = make([]*types.Log, 0)
-	receipt.Bloom = types.CreateBloom(types.Receipts{receipt})
-	receipt.TxHash = tx.Hash()
-	receipt.GasUsed = 0
-	return receipt, nil, make([]staking.StakeMsg, 0), 0, nil
 }
 
 // SimulateCXTransaction
@@ -463,7 +465,7 @@ func SimulateCXTransaction(service api.Service, bc ChainContext, author *common.
 		return nil, nil, nil, 0, err
 	}
 	// SimulationCommit and CxtCommitOrRollback needs to be executed for every validator
-	if vm.SSCAddrsApplyOnChain[*tx.To()] != nil {
+	if vm.IsWriteCapableSSCContract(*tx.To()) {
 		vmCtx := NewSSCVMContext(msg.From(), tx.Hash(), api.CallIndex{}, tx.GasPrice(), header, bc, author)
 		sscvm := vm.NewSSCVM(vmCtx, statedb, config, cfg, service, vm.Precompiled)
 		result, err := NewSSCStateTransition(sscvm, msg, gp).TransitionDb()
@@ -477,28 +479,9 @@ func SimulateCXTransaction(service api.Service, bc ChainContext, author *common.
 		receipt.Bloom = types.CreateBloom(types.Receipts{receipt})
 		receipt.TxHash = tx.Hash()
 		receipt.GasUsed = result.UsedGas
+		utils.SSCLogger().Debug().Str("txHash", tx.Hash().Hex()).Msgf("SimulateCXTransaction receipt, root=%s, gasUsed=%d, bloom=%s", common.Bytes2Hex(root), result.UsedGas, common.Bytes2Hex(receipt.Bloom.Bytes()))
 		return receipt, nil, nil, result.UsedGas, nil
 	} else {
-		// resultCh := make(chan struct{})
-		// go func() {
-		// 	select {
-		// 	case <-time.After(5 * time.Second):
-		// 		utils.Logger().Error().Msgf("get simulation result timeout")
-		// 	case <-resultCh:
-		// 		utils.Logger().Info().Msgf("get simulation result successfully")
-		// 	}
-		// }()
-		// result, err := service.SimulationResult(tx.Hash())
-		// resultCh <- struct{}{}
-		// if err != nil {
-		// 	utils.SSCLogger().Error().Err(err).Msg("SimulateCXTransaction: cannot get simulation result")
-		// 	return nil, nil, nil, 0, err
-		// }
-		// if len(result.Err) > 0 {
-		// 	utils.Logger().Error().Str("err", result.Err).Msg("SimulateCXTransaction: simulation failed")
-		// 	return nil, nil, nil, 0, errors.New(result.Err)
-		// }
-		// return the empty receipt, since the cx transaction is not executed on chain, shouldn't update the state
 		statedb.SetNonce(msg.From(), statedb.GetNonce(msg.From())+1)
 		root := statedb.IntermediateRoot(bc.Config().IsS3(header.Epoch()))
 		receipt := types.NewReceipt(root.Bytes(), false, *usedGas)

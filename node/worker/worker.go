@@ -373,7 +373,6 @@ var (
 func (w *Worker) commitTransaction(
 	tx *types.Transaction, coinbase common.Address,
 ) error {
-	utils.Logger().Info().Msgf("commit transaction, nonce=%d, crossShard=%v", tx.Nonce(), tx.CrossShard())
 	snap := w.current.state.Snapshot()
 	gasUsed := w.current.header.GasUsed()
 	var err error
@@ -415,6 +414,8 @@ func (w *Worker) commitTransaction(
 	w.current.receipts = append(w.current.receipts, receipt)
 	w.current.logs = append(w.current.logs, receipt.Logs...)
 	w.current.stakeMsgs = append(w.current.stakeMsgs, stakeMsgs...)
+
+	utils.SSCLogger().Info().Str("txHash", tx.Hash().Hex()).Uint64("blockNum", w.current.header.NumberU64()).Uint64("gasUsed", gasUsed).Msgf("commit transaction %d, nonce=%d, crossShard=%v", len(w.current.txs)-1, tx.Nonce(), tx.CrossShard())
 
 	if cx != nil {
 		w.current.outcxs = append(w.current.outcxs, cx)

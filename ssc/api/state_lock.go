@@ -1,9 +1,10 @@
 package api
 
 import (
+	"strings"
+
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/pkg/errors"
-	"strings"
 )
 
 var (
@@ -52,7 +53,7 @@ type StateLockManager interface {
 	//  @param txHash
 	//  @return error
 	//
-	UnSubscribe(txHash common.Hash) error
+	UnSubscribe(txHash common.Hash)
 
 	NotifyReSimulationStart(txHash common.Hash)
 }

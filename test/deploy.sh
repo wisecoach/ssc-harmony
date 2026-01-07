@@ -6,11 +6,11 @@ case "${0}" in
 *) progdir=. ;;
 esac
 
-ROOT="${progdir}/.."
+PROJECT_ROOT="${progdir}/.."
 USER=$(whoami)
 OS=$(uname -s)
 
-. "${ROOT}/scripts/setup_bls_build_flags.sh"
+. "${PROJECT_ROOT}/scripts/setup_bls_build_flags.sh"
 
 declare -A harmony_pids
 declare -A harmony_exit_codes
@@ -21,7 +21,7 @@ function cleanup() {
 
 function build() {
   if [[ "${NOBUILD}" != "true" ]]; then
-    pushd ${ROOT}
+    pushd ${PROJECT_ROOT}
     export GO111MODULE=on
     if [[ "$OS" == "Darwin" ]]; then
       # MacOS doesn't support static build
@@ -36,9 +36,9 @@ function build() {
 
 function setup() {
   # Setup blspass file
-  mkdir -p ${ROOT}/.hmy
-  if [[ ! -f "${ROOT}/.hmy/blspass.txt" ]]; then
-    touch "${ROOT}/.hmy/blspass.txt"
+  mkdir -p ${PROJECT_ROOT}/.hmy
+  if [[ ! -f "${PROJECT_ROOT}/.hmy/blspass.txt" ]]; then
+    touch "${PROJECT_ROOT}/.hmy/blspass.txt"
   fi
 
   # Kill nodes if any
@@ -48,15 +48,13 @@ function setup() {
   build
 
   # Create a tmp folder for logs
-  t=$(date +"%Y%m%d-%H%M%S")
-  log_folder="${ROOT}/tmp_log/log-$t"
   mkdir -p "${log_folder}"
   LOG_FILE=${log_folder}/r.log
 }
 
 function launch_bootnode() {
   echo "launching boot node ..."
-  ${DRYRUN} ${ROOT}/bin/bootnode -port 19875 -max_conn_per_ip 100 -force_public true >"${log_folder}"/bootnode.log 2>&1 | tee -a "${LOG_FILE}" &
+  ${DRYRUN} ${PROJECT_ROOT}/bin/bootnode -port 19875 -max_conn_per_ip 100 -force_public true >"${log_folder}"/bootnode.log 2>&1 | tee -a "${LOG_FILE}" &
   sleep 1
   BN_MA=$(grep "BN_MA" "${log_folder}"/bootnode.log | awk -F\= ' { print $2 } ')
   echo "bootnode launched." + " $BN_MA"
@@ -87,7 +85,7 @@ function simple_launch_shard() {
       verbosity=3
     fi
 
-    base_args=(--log_folder "${log_folder}" --min_peers "${MIN}" --bootnodes "${BN_MA}" "--network_type=$NETWORK" --blspass file:"${ROOT}/.hmy/blspass.txt" "--dns=false" "--verbosity=${verbosity}" "--p2p.security.max-conn-per-ip=100")
+    base_args=(--log_folder "${log_folder}" --min_peers "${MIN}" --bootnodes "${BN_MA}" "--network_type=$NETWORK" --blspass file:"${PROJECT_ROOT}/.hmy/blspass.txt" "--dns=false" "--verbosity=${verbosity}" "--p2p.security.max-conn-per-ip=100")
     sleep 2
 
     echo $PWD
@@ -109,7 +107,8 @@ function simple_launch_shard() {
         mode='validator'
         node_config="test/configs/${env}/shard=${shard}_validator=${validator}_ssc=${ssc}_delay=${delay}/default_config_${env}.toml"
 
-        args=("${base_args[@]}" --ip "${ip}" --port "${port}" --key "/tmp/${ip}-${port}.key" --db_dir "${ROOT}/db/db-${ip}-${port}" "--broadcast_invalid_tx=false" --shard_num "${shard_num}" --shard_size "${shard_size}" --run.shard "${shard_id}")
+        args=("${base_args[@]}" --ip "${ip}" --port "${port}" --key "/tmp/${ip}-${port}.key" --db_dir "${PROJECT_ROOT}/db/db-${ip}-${port}" "--broadcast_invalid_tx=false" \
+          --shard_num "${shard_num}" --shard_size "${shard_size}" --run.shard "${shard_id}" --log.verb 4)
         if [[ -z "$ip" || -z "$port" || "$ip" == "#" ]]; then
           echo "skip empty line or node or comment"
           continue
@@ -123,11 +122,11 @@ function simple_launch_shard() {
         if [[ ! -e "$bls_key" ]]; then
           args=("${args[@]}" --blskey_file "BLSKEY")
         elif [[ -f "$bls_key" ]]; then
-          args=("${args[@]}" --blskey_file "${ROOT}/${bls_key}")
-          args=("${args[@]}" --ssc.bls-key-path "${ROOT}/${bls_key}")
+          args=("${args[@]}" --blskey_file "${PROJECT_ROOT}/${bls_key}")
+          args=("${args[@]}" --ssc.bls-key-path "${PROJECT_ROOT}/${bls_key}")
           args=("${args[@]}" --ssc.self-addr-hex "${ethAddrHex}")
         elif [[ -d "$bls_key" ]]; then
-          args=("${args[@]}" --blsfolder "${ROOT}/${bls_key}")
+          args=("${args[@]}" --blsfolder "${PROJECT_ROOT}/${bls_key}")
         else
           echo "skipping unknown node"
           continue
@@ -160,10 +159,10 @@ function simple_launch_shard() {
           ;;
         esac
 
-        echo "begin to work: dryrun: ${DRYRUN}" "bin: ${ROOT}/bin/harmony" "${args[@]}"
+        echo "begin to work: dryrun: ${DRYRUN}" "bin: ${PROJECT_ROOT}/bin/harmony" "${args[@]}"
 
         # Start the node
-        ${DRYRUN} "${ROOT}/bin/harmony" "${args[@]}" "${extra_args[@]}" >> "${log_folder}/log-${port}.log" 2>&1 &
+        ${DRYRUN} "${PROJECT_ROOT}/bin/harmony" "${args[@]}" >> "${log_folder}/log-${port}.log" 2>&1 &
 
         local pid=$!
         harmony_pids["$pid"]="node_$port"
@@ -306,10 +305,24 @@ done
 
 shift $((OPTIND - 1))
 
-shard=${1-4}
-validator=${2-4}
-ssc=${3-1}
-delay=${4-5}
+ORG_ROOT=$PROJECT_ROOT/../
+
+if [ -f "$ORG_ROOT/.env" ] ; then
+  source $ORG_ROOT/.env
+else
+  echo "No .env file found in ${ORG_ROOT}"
+  exit 1
+fi
+
+shard=${SHARD_NUM:-4}
+validator=${VALIDATOR:-4}
+ssc=${SSC:-1}
+delay=${DELAY:-5}
+rate=${RATE:-1}
+exam="shard=${shard}_validator=${validator}_ssc=${ssc}_delay=${delay}_rate=${rate}"
+log_folder="${PROJECT_ROOT}/tmp_log/$exam"
+
+echo "perform exam: $exam"
 
 shift 1 || usage
 unset -v extra_args

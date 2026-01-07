@@ -157,8 +157,8 @@ VerifyHeaderBatchSize = 100
 NtpServer = "1.pool.ntp.org,0.beevik-ntp.pool.ntp.org"
 
 [TxPool]
-AccountQueue = 64
-AccountSlots = 16
+AccountQueue = 4096
+AccountSlots = 4096
 AllowedTxsFile = "./.hmy/allowedtxs.txt"
 BlacklistFile = "./.hmy/blacklist.txt"
 GlobalQueue = 5120

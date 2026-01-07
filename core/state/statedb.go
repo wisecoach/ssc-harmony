@@ -379,14 +379,14 @@ func (db *DB) GetState(addr common.Address, hash common.Hash) (common.Hash, erro
 	if db.locker != nil {
 		err := db.locker.Locked(api.FormKey(addr, hash))
 		if err != nil {
-			state, _ := db.getState(addr, hash)
+			state, _ := db.GetStateWithoutLock(addr, hash)
 			return state, err
 		}
 	}
-	return db.getState(addr, hash)
+	return db.GetStateWithoutLock(addr, hash)
 }
 
-func (db *DB) getState(addr common.Address, hash common.Hash) (common.Hash, error) {
+func (db *DB) GetStateWithoutLock(addr common.Address, hash common.Hash) (common.Hash, error) {
 	Object := db.getStateObject(addr)
 	if Object != nil {
 		return Object.GetState(db.db, hash), nil
@@ -508,10 +508,10 @@ func (db *DB) SetState(addr common.Address, key, value common.Hash) error {
 			return err
 		}
 	}
-	return db.setState(addr, key, value)
+	return db.SetStateWithoutLock(addr, key, value)
 }
 
-func (db *DB) setState(addr common.Address, key, value common.Hash) error {
+func (db *DB) SetStateWithoutLock(addr common.Address, key, value common.Hash) error {
 	Object := db.GetOrNewStateObject(addr)
 	if Object != nil {
 		Object.SetState(db.db, key, value)
@@ -519,13 +519,13 @@ func (db *DB) setState(addr common.Address, key, value common.Hash) error {
 	return nil
 }
 
-func (db *DB) GetStateWithLock(txHash common.Hash, callIndex api.CallIndex, address common.Address, key common.Hash) (common.Hash, error) {
+func (db *DB) GetAndLockState(txHash common.Hash, callIndex api.CallIndex, address common.Address, key common.Hash) (common.Hash, error) {
 	stateKey := api.FormKey(address, key)
 	err := db.locker.CheckLockable(stateKey, txHash, api.SharedLock)
 	if err != nil {
 		return common.Hash{}, err
 	}
-	value, err := db.getState(address, key)
+	value, err := db.GetStateWithoutLock(address, key)
 	if err != nil {
 		return common.Hash{}, err
 	}
@@ -536,13 +536,13 @@ func (db *DB) GetStateWithLock(txHash common.Hash, callIndex api.CallIndex, addr
 	return value, nil
 }
 
-func (db *DB) SetStateWithLock(txHash common.Hash, callIndex api.CallIndex, address common.Address, key common.Hash, value common.Hash) error {
+func (db *DB) SetAndLockState(txHash common.Hash, callIndex api.CallIndex, address common.Address, key common.Hash, value common.Hash) error {
 	stateKey := api.FormKey(address, key)
 	err := db.locker.CheckLockable(stateKey, txHash, api.ExclusiveLock)
 	if err != nil {
 		return err
 	}
-	oldValue, err := db.getState(address, key)
+	oldValue, err := db.GetStateWithoutLock(address, key)
 	if err != nil {
 		return err
 	}
@@ -550,11 +550,11 @@ func (db *DB) SetStateWithLock(txHash common.Hash, callIndex api.CallIndex, addr
 	if err != nil {
 		return err
 	}
-	return db.setState(address, key, value)
+	return db.SetStateWithoutLock(address, key, value)
 }
 
 func (db *DB) GetSSCConfig() *api.ShardSimulateCommitteeConfig {
-	byteSize, err := db.getState(api.SSCPrecompileContractAddr, api.CommitteesByteSize)
+	byteSize, err := db.GetStateWithoutLock(api.SSCPrecompileContractAddr, api.CommitteesByteSize)
 	if err != nil {
 		return nil
 	}
@@ -569,7 +569,7 @@ func (db *DB) GetSSCConfig() *api.ShardSimulateCommitteeConfig {
 	}
 	for i := 0; i < batchNum; i++ {
 		key := common.BigToHash(api.CommitteeOffset.Big().Add(api.CommitteeOffset.Big(), big.NewInt(int64(i))))
-		value, _ := db.getState(api.SSCPrecompileContractAddr, key)
+		value, _ := db.GetStateWithoutLock(api.SSCPrecompileContractAddr, key)
 		committeesBytes = append(committeesBytes, value.Bytes()...)
 	}
 	committeesBytes = committeesBytes[:size]
@@ -589,11 +589,11 @@ func (db *DB) SetSSCConfig(config *api.ShardSimulateCommitteeConfig) {
 	size := len(committeesBytes)
 	byteSize := big.NewInt(int64(size))
 	committeesBytes = append(committeesBytes, make([]byte, common.HashLength-size%common.HashLength)...)
-	db.setState(api.SSCPrecompileContractAddr, api.CommitteesByteSize, common.BigToHash(byteSize))
+	db.SetStateWithoutLock(api.SSCPrecompileContractAddr, api.CommitteesByteSize, common.BigToHash(byteSize))
 	for i := 0; i < len(committeesBytes)/common.HashLength; i++ {
 		key := common.BigToHash(api.CommitteeOffset.Big().Add(api.CommitteeOffset.Big(), big.NewInt(int64(i))))
 		value := common.BytesToHash(committeesBytes[i*common.HashLength : (i+1)*common.HashLength])
-		db.setState(api.SSCPrecompileContractAddr, key, value)
+		db.SetStateWithoutLock(api.SSCPrecompileContractAddr, key, value)
 	}
 }
 
@@ -1461,7 +1461,7 @@ func (db *DB) SetValidatorFirstElectionEpoch(addr common.Address, epoch *big.Int
 	if firstEpoch.Uint64() == 0 {
 		// Set only when it's not set (or it's 0)
 		bytes := common.BigToHash(epoch)
-		db.setState(addr, staking.FirstElectionEpochKey, bytes)
+		db.SetStateWithoutLock(addr, staking.FirstElectionEpochKey, bytes)
 	}
 }
 
@@ -1474,12 +1474,12 @@ func (db *DB) GetValidatorFirstElectionEpoch(addr common.Address) *big.Int {
 
 // SetValidatorFlag checks whether it is a validator object
 func (db *DB) SetValidatorFlag(addr common.Address) {
-	db.setState(addr, staking.IsValidatorKey, staking.IsValidator)
+	db.SetStateWithoutLock(addr, staking.IsValidatorKey, staking.IsValidator)
 }
 
 // UnsetValidatorFlag checks whether it is a validator object
 func (db *DB) UnsetValidatorFlag(addr common.Address) {
-	db.setState(addr, staking.IsValidatorKey, common.Hash{})
+	db.SetStateWithoutLock(addr, staking.IsValidatorKey, common.Hash{})
 }
 
 // IsValidator checks whether it is a validator object

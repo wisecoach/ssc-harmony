@@ -3,14 +3,16 @@ package ssc
 import (
 	"bytes"
 	"fmt"
-	"github.com/emirpasic/gods/trees/redblacktree"
-	"github.com/ethereum/go-ethereum/common"
-	"github.com/harmony-one/harmony/internal/utils"
-	"github.com/harmony-one/harmony/ssc/api"
 	"math/big"
 	"sort"
 	"sync"
 	"time"
+
+	"github.com/emirpasic/gods/trees/redblacktree"
+	"github.com/ethereum/go-ethereum/common"
+	"github.com/harmony-one/harmony/internal/utils"
+	"github.com/harmony-one/harmony/ssc/api"
+	"github.com/pkg/errors"
 )
 
 type lockedTxKey struct {
@@ -38,6 +40,7 @@ type lockedTx struct {
 	OriginShardId     uint32
 	SimulateOrVerify  bool
 	StartReSimuChan   chan struct{} `json:"-"`
+	CommitNum         uint64
 }
 
 func (t *lockedTx) Key() lockedTxKey {
@@ -70,16 +73,7 @@ func (l *lockEntry) revert(locker *stateLocker) {
 	defer locker.lock.Unlock()
 
 	locker.wfg.UnlockState(l.txHash, l.key)
-	locker.lockedStates[l.key].locked = false
-	locker.lockedStates[l.key].lockedBy = common.Hash{}
-	if locker.callIndex2lockedState[l.txHash] != nil {
-		if locker.callIndex2lockedState[l.txHash][l.callIndex.ToString()] != nil {
-			delete(locker.callIndex2lockedState[l.txHash][l.callIndex.ToString()], l.key)
-		}
-		if len(locker.callIndex2lockedState[l.txHash]) == 0 {
-			delete(locker.callIndex2lockedState, l.txHash)
-		}
-	}
+	locker.lockedStates.deleteLockedState(l.txHash, l.callIndex.ToString(), l.key)
 }
 
 type unlockEntry struct {
@@ -98,13 +92,7 @@ func (l *unlockEntry) revert(locker *stateLocker) {
 		locker.lock.Lock()
 		defer locker.lock.Unlock()
 		locker.wfg.GrantLock(l.txHash, l.key, l.lockType)
-		locker.lockedStates[l.key] = l.state
-		if locker.callIndex2lockedState[l.txHash] == nil {
-			locker.callIndex2lockedState[l.txHash] = make(map[string]map[api.LockKey]common.Hash)
-		}
-		if locker.callIndex2lockedState[l.txHash][l.callIndexStr] == nil {
-			locker.callIndex2lockedState[l.txHash][l.callIndexStr] = make(map[api.LockKey]common.Hash)
-		}
+		locker.lockedStates.addLockedState(l.txHash, l.callIndexStr, l.key, l.oldValue, l.state)
 		for txHash, _ := range l.state.waitingTxs {
 			locker.waitingTxs[txHash].Num2wait++
 		}
@@ -112,7 +100,7 @@ func (l *unlockEntry) revert(locker *stateLocker) {
 
 	if l.rollback {
 		locker.lock.Lock()
-		locker.callIndex2lockedState[l.txHash][l.callIndexStr][l.key] = l.newValue
+		locker.lockedStates.setLockedValue(l.txHash, l.callIndexStr, l.key, l.oldValue)
 		locker.lock.Unlock()
 
 		addr, key := l.key.Value()
@@ -149,6 +137,113 @@ func (j *lockJournal) revert(locker *stateLocker, snapshot int) {
 	j.entries = j.entries[:snapshot]
 }
 
+func newLockedStates() *lockedStates {
+	return &lockedStates{
+		lockedStates:          make(map[api.LockKey]*lockedState),
+		callIndex2lockedState: make(map[common.Hash]map[string]map[api.LockKey]common.Hash),
+		lockedAddBalance:      make(map[common.Hash]map[string]map[common.Address]*big.Int),
+		lockedSubBalance:      make(map[common.Hash]map[string]map[common.Address]*big.Int),
+	}
+}
+
+// not thread safe
+type lockedStates struct {
+	lockedStates          map[api.LockKey]*lockedState                           // address + key -> TxHash, used for lock
+	callIndex2lockedState map[common.Hash]map[string]map[api.LockKey]common.Hash // TxHash -> callIndex -> lockKey -> value, used for unlock
+	lockedAddBalance      map[common.Hash]map[string]map[common.Address]*big.Int // TxHash -> callIndex -> address -> freezeAddBalance
+	lockedSubBalance      map[common.Hash]map[string]map[common.Address]*big.Int // TxHash -> callIndex -> address -> freezeSubBalance
+}
+
+func (s *lockedStates) LockedStates() map[api.LockKey]*lockedState {
+	return s.lockedStates
+}
+
+func (s *lockedStates) CallIndex2LockedStates() map[common.Hash]map[string]map[api.LockKey]common.Hash {
+	return s.callIndex2lockedState
+}
+
+func (s *lockedStates) length() int {
+	return len(s.lockedStates)
+}
+
+func (s *lockedStates) get(key api.LockKey) (ls *lockedState, exists bool) {
+	ls, exists = s.lockedStates[key]
+	return
+}
+
+func (s *lockedStates) clear() {
+	for key, state := range s.lockedStates {
+		if len(state.waitingTxs) == 0 && bytes.Compare(state.lockedBy.Bytes(), common.Hash{}.Bytes()) == 0 {
+			delete(s.lockedStates, key)
+		}
+	}
+}
+
+func (s *lockedStates) init(key api.LockKey) *lockedState {
+	s.lockedStates[key] = &lockedState{
+		locked:     false,
+		lockedBy:   common.Hash{},
+		waitingTxs: make(map[common.Hash]struct{}),
+	}
+	return s.lockedStates[key]
+}
+
+func (s *lockedStates) getCallIndex2LockedStates(txHash common.Hash) map[string]map[api.LockKey]common.Hash {
+	return s.callIndex2lockedState[txHash]
+}
+
+func (s *lockedStates) getLockedValue(txHash common.Hash, callIndexStr string, key api.LockKey) common.Hash {
+	if s.callIndex2lockedState[txHash] == nil {
+		return common.Hash{}
+	}
+	if s.callIndex2lockedState[txHash][callIndexStr] == nil {
+		return common.Hash{}
+	}
+	return s.callIndex2lockedState[txHash][callIndexStr][key]
+}
+
+func (s *lockedStates) setLockedValue(txHash common.Hash, callIndexStr string, key api.LockKey, value common.Hash) {
+	if s.callIndex2lockedState[txHash] == nil {
+		s.callIndex2lockedState[txHash] = make(map[string]map[api.LockKey]common.Hash)
+	}
+	if s.callIndex2lockedState[txHash][callIndexStr] == nil {
+		s.callIndex2lockedState[txHash][callIndexStr] = make(map[api.LockKey]common.Hash)
+	}
+	s.callIndex2lockedState[txHash][callIndexStr][key] = value
+}
+
+func (s *lockedStates) addLockedState(txHash common.Hash, callIndexStr string, key api.LockKey, value common.Hash, state *lockedState) {
+	if s.callIndex2lockedState[txHash] == nil {
+		s.callIndex2lockedState[txHash] = make(map[string]map[api.LockKey]common.Hash)
+	}
+	if s.callIndex2lockedState[txHash][callIndexStr] == nil {
+		s.callIndex2lockedState[txHash][callIndexStr] = make(map[api.LockKey]common.Hash)
+	}
+	s.callIndex2lockedState[txHash][callIndexStr][key] = value
+	s.lockedStates[key] = state
+}
+
+func (s *lockedStates) deleteLockedState(txHash common.Hash, callIndexStr string, key api.LockKey) common.Hash {
+	if s.lockedStates[key] == nil {
+		return common.Hash{}
+	}
+	if len(s.lockedStates[key].waitingTxs) == 0 {
+		delete(s.lockedStates, key)
+	} else {
+		s.lockedStates[key].locked = false
+		s.lockedStates[key].lockedBy = common.Hash{}
+	}
+	value := s.callIndex2lockedState[txHash][callIndexStr][key]
+	delete(s.callIndex2lockedState[txHash][callIndexStr], key)
+	if len(s.callIndex2lockedState[txHash][callIndexStr]) == 0 {
+		delete(s.callIndex2lockedState[txHash], callIndexStr)
+	}
+	if len(s.callIndex2lockedState[txHash]) == 0 {
+		delete(s.callIndex2lockedState, txHash)
+	}
+	return value
+}
+
 type stateLocker struct {
 	txLock  sync.RWMutex
 	stateDB api.StateDB
@@ -168,8 +263,8 @@ func (s *stateLocker) Locked(key api.LockKey) error {
 	s.lock.RLock()
 	defer s.lock.RUnlock()
 
-	if ls, exists := s.lockedStates[key]; exists && ls.locked {
-		return api.ErrLockedByOtherTx
+	if ls, exists := s.lockedStates.get(key); exists && ls.locked {
+		return errors.Wrap(api.ErrLockedByOtherTx, fmt.Sprintf("locked by tx %s", ls.lockedBy.Hex()))
 	}
 	return nil
 }
@@ -186,19 +281,14 @@ func (s *stateLocker) Lock(txHash common.Hash, callIndex api.CallIndex, key api.
 	defer s.lock.Unlock()
 
 	s.wfg.GrantLock(txHash, key, lockType)
-	if s.callIndex2lockedState[txHash] == nil {
-		s.callIndex2lockedState[txHash] = make(map[string]map[api.LockKey]common.Hash)
+	ls, exists := s.lockedStates.get(key)
+	if !exists {
+		ls = &lockedState{waitingTxs: make(map[common.Hash]struct{})}
 	}
-	if s.callIndex2lockedState[txHash][callIndex.ToString()] == nil {
-		s.callIndex2lockedState[txHash][callIndex.ToString()] = make(map[api.LockKey]common.Hash)
-	}
-	s.callIndex2lockedState[txHash][callIndex.ToString()][key] = value
-	if s.lockedStates[key] == nil {
-		s.lockedStates[key] = &lockedState{waitingTxs: make(map[common.Hash]struct{})}
-	}
-	s.lockedStates[key].locked = true
-	s.lockedStates[key].lockedBy = txHash
-	s.lockedStates[key].lockTime = time.Now()
+	ls.locked = true
+	ls.lockedBy = txHash
+	ls.lockTime = time.Now()
+	s.lockedStates.addLockedState(txHash, callIndex.ToString(), key, value, ls)
 	s.journal.append(&lockEntry{
 		txHash:    txHash,
 		callIndex: callIndex,
@@ -208,7 +298,7 @@ func (s *stateLocker) Lock(txHash common.Hash, callIndex api.CallIndex, key api.
 	utils.SSCLogger().Debug().Str("txHash", txHash.Hex()).
 		Str("callIndex", callIndex.ToString()).
 		Str("key", string(key)).
-		Msgf("lock state, locked [%d/%d] state, journal %d", len(s.lockedStates), len(s.lockedStates), s.journal.length())
+		Msgf("lock state, locked %d state, journal %d", s.lockedStates.length(), s.journal.length())
 	return nil
 }
 
@@ -216,16 +306,9 @@ func (s *stateLocker) unlock(txHash common.Hash, callIndexStr string, key api.Lo
 	s.lock.Lock()
 	defer s.lock.Unlock()
 
-	if state, exists := s.lockedStates[key]; exists {
+	if state, exists := s.lockedStates.get(key); exists {
 		s.wfg.UnlockState(txHash, key)
-		if len(s.lockedStates[key].waitingTxs) == 0 {
-			delete(s.lockedStates, key)
-		} else {
-			s.lockedStates[key].locked = false
-			s.lockedStates[key].lockedBy = common.Hash{}
-		}
-		value := s.callIndex2lockedState[txHash][callIndexStr][key]
-		delete(s.callIndex2lockedState[txHash][callIndexStr], key)
+		value := s.lockedStates.deleteLockedState(txHash, callIndexStr, key)
 		for hash, _ := range state.waitingTxs {
 			if tx, exists := s.waitingTxs[hash]; exists {
 				tx.Num2wait--
@@ -271,8 +354,9 @@ func (s *stateLocker) CommitTx(txHash common.Hash) error {
 	s.txLock.Lock()
 	defer s.txLock.Unlock()
 
-	if s.callIndex2lockedState[txHash] != nil {
-		for callIndex, lockKeyMap := range s.callIndex2lockedState[txHash] {
+	c2ls := s.lockedStates.getCallIndex2LockedStates(txHash)
+	if c2ls != nil {
+		for callIndex, lockKeyMap := range c2ls {
 			for lockKey, _ := range lockKeyMap {
 				err := s.unlock(txHash, callIndex, lockKey, false, common.Hash{})
 				if err != nil {
@@ -293,15 +377,16 @@ func (s *stateLocker) RollbackTx(txHash common.Hash) error {
 	s.txLock.Lock()
 	defer s.txLock.Unlock()
 
-	if s.callIndex2lockedState[txHash] != nil {
-		for callIndex, lockKeyMap := range s.callIndex2lockedState[txHash] {
+	c2ls := s.lockedStates.getCallIndex2LockedStates(txHash)
+	if c2ls != nil {
+		for callIndex, lockKeyMap := range c2ls {
 			for lockKey, oldValue := range lockKeyMap {
 				addr, key := lockKey.Value()
-				newValue, err := s.stateDB.GetState(addr, key)
+				newValue, err := s.stateDB.GetStateWithoutLock(addr, key)
 				if err != nil {
 					return err
 				}
-				err = s.stateDB.SetState(addr, key, oldValue)
+				err = s.stateDB.SetStateWithoutLock(addr, key, oldValue)
 				if err != nil {
 					return err
 				}
@@ -400,6 +485,7 @@ func (g *waitForGraph) CheckLock(txHash common.Hash, lockKey api.LockKey, lockTy
 			Err(api.ErrLockedByOtherTx).
 			Bool("hasHeldOtherState", held).
 			Str("wfg", g.PrintGraph()).
+			Str("key", string(lockKey)).
 			Msgf("state locked by other tx")
 		return api.ErrLockedByOtherTx
 	}
@@ -544,17 +630,18 @@ func newStateLockManager(service *sscService) api.StateLockManager {
 	mgr := &stateLockManager{
 		sscService:            service,
 		lock:                  sync.RWMutex{},
+		commitCnt:             0,
 		waitingTxs:            make(map[common.Hash]*lockedTx),
+		commitNum2simulateTxs: make(map[uint64]map[common.Hash]*lockedTx),
+		commitNum2verifyTxs:   make(map[uint64]map[common.Hash]*lockedTx),
 		needSignalTxQueue:     redblacktree.NewWith(compareLockedTx),
 		readyTxQueue:          redblacktree.NewWith(compareLockedTx),
 		waitingTxQueue:        redblacktree.NewWith(compareLockedTx),
 		uncommittedTxQueue:    redblacktree.NewWith(compareLockedTx),
+		unsubscribedTxs:       make(map[common.Hash]struct{}),
 		wfg:                   newWaitForGraph(),
+		lockedStates:          newLockedStates(),
 		finishedTxs:           make(map[common.Hash]bool), // TxHash -> commit or rollback
-		lockedStates:          make(map[api.LockKey]*lockedState),
-		callIndex2lockedState: make(map[common.Hash]map[string]map[api.LockKey]common.Hash),
-		lockedAddBalance:      make(map[common.Hash]map[string]map[common.Address]*big.Int),
-		lockedSubBalance:      make(map[common.Hash]map[string]map[common.Address]*big.Int),
 	}
 
 	go mgr.checkLockTime()
@@ -575,18 +662,19 @@ type stateLockManager struct {
 
 	lock sync.RWMutex
 
-	waitingTxs         map[common.Hash]*lockedTx // TxHash -> locked States, used for conflict check
+	commitCnt             uint64
+	waitingTxs            map[common.Hash]*lockedTx // TxHash -> locked States, used for conflict check
+	commitNum2simulateTxs map[uint64]map[common.Hash]*lockedTx
+	commitNum2verifyTxs   map[uint64]map[common.Hash]*lockedTx
+
 	needSignalTxQueue  *redblacktree.Tree
 	readyTxQueue       *redblacktree.Tree
 	waitingTxQueue     *redblacktree.Tree
 	uncommittedTxQueue *redblacktree.Tree
-
-	wfg                   *waitForGraph
-	finishedTxs           map[common.Hash]bool                                   // TxHash -> commit or rollback
-	lockedStates          map[api.LockKey]*lockedState                           // address + key -> TxHash, used for lock
-	callIndex2lockedState map[common.Hash]map[string]map[api.LockKey]common.Hash // TxHash -> callIndex -> lockKey -> value, used for unlock
-	lockedAddBalance      map[common.Hash]map[string]map[common.Address]*big.Int // TxHash -> callIndex -> address -> freezeAddBalance
-	lockedSubBalance      map[common.Hash]map[string]map[common.Address]*big.Int // TxHash -> callIndex -> address -> freezeSubBalance
+	unsubscribedTxs    map[common.Hash]struct{}
+	wfg                *waitForGraph
+	lockedStates       *lockedStates
+	finishedTxs        map[common.Hash]bool // TxHash -> commit or rollback
 }
 
 func (s *stateLockManager) checkLockTime() {
@@ -594,14 +682,14 @@ func (s *stateLockManager) checkLockTime() {
 		time.Sleep(time.Second * 10)
 		s.lock.Lock()
 		now := time.Now()
-		for lockKey, ls := range s.lockedStates {
+		for lockKey, ls := range s.lockedStates.LockedStates() {
 			if ls.locked && now.Sub(ls.lockTime) > time.Second*10 && !ls.hasTimeout {
 				utils.SSCLogger().Warn().Str("lockKey", string(lockKey)).Str("lockedBy", ls.lockedBy.Hex()).
 					Msgf("the state has been locked for more than 10 second, unlock it")
 				ls.hasTimeout = true
 			}
 		}
-		utils.SSCLogger().Info().Msgf("check lock time, locked states: %d", len(s.lockedStates))
+		utils.SSCLogger().Info().Msgf("check lock time, locked states: %d", s.lockedStates.length())
 		s.lock.Unlock()
 	}
 }
@@ -637,6 +725,7 @@ func (s *stateLockManager) Subscribe(txHash common.Hash, nonce uint64, sender co
 		NextSimulationNum: nextSimulationNum,
 		OriginShardId:     originShardId,
 		SimulateOrVerify:  simulateOrVerify,
+		CommitNum:         s.commitCnt,
 		StartReSimuChan:   make(chan struct{}),
 	}
 
@@ -654,17 +743,17 @@ func (s *stateLockManager) Subscribe(txHash common.Hash, nonce uint64, sender co
 		return nil
 	}
 	s.uncommittedTxQueue.Put(tx.Key(), tx.TxHash)
-	s.waitingTxs[txHash] = tx
+	s.addTx(txHash, tx)
 
-	utils.SSCLogger().Error().Str("txHash", txHash.Hex()).
-		Msgf("check lockock conflict failed for simulation for %d, try to resimulate later, waiting: %d, uncommittedTxQueue: %d", nextSimulationNum, len(s.waitingTxs), s.uncommittedTxQueue.Size())
+	utils.SSCLogger().Info().Str("txHash", txHash.Hex()).
+		Msgf("check lock conflict failed for simulation for %d, try to resimulate later, waiting: %d, uncommittedTxQueue: %d, readyTxQueue: %d, waitingTxQueue: %d", nextSimulationNum, len(s.waitingTxs), s.uncommittedTxQueue.Size(), s.waitingTxQueue.Size(), s.readyTxQueue.Size())
 
 	return nil
 }
 
-func (s *stateLockManager) UnSubscribe(txHash common.Hash) error {
+func (s *stateLockManager) UnSubscribe(txHash common.Hash) {
 	if !s.sscService.IsLeader(txHash) {
-		return nil
+		return
 	}
 
 	s.lock.Lock()
@@ -672,16 +761,14 @@ func (s *stateLockManager) UnSubscribe(txHash common.Hash) error {
 
 	tx := s.waitingTxs[txHash]
 	if tx == nil {
-		return nil
+		return
 	}
 
-	s.uncommittedTxQueue.Remove(tx.Key())
-	s.waitingTxQueue.Remove(tx.Key())
+	s.unsubscribedTxs[txHash] = struct{}{}
+
 	utils.SSCLogger().Debug().Str("txHash", txHash.Hex()).
 		Msg("unsubscribe tx, remove from uncommitted and waiting queue")
-	delete(s.waitingTxs, txHash)
-
-	return nil
+	return
 }
 
 func (s *stateLockManager) NotifyReSimulationStart(txHash common.Hash) {
@@ -698,11 +785,105 @@ func (s *stateLockManager) NotifyReSimulationStart(txHash common.Hash) {
 	tx.StartReSimuChan <- struct{}{}
 }
 
+func (s *stateLockManager) printTxNums() {
+	simulateNums := make(map[uint64]int)
+	verifyNums := make(map[uint64]int)
+	for num, txs := range s.commitNum2simulateTxs {
+		simulateNums[num] = len(txs)
+	}
+	for num, txs := range s.commitNum2verifyTxs {
+		verifyNums[num] = len(txs)
+	}
+	tx2stateNums := make(map[string]int)
+	lockedStateNum := 0
+	for _, state := range s.lockedStates.LockedStates() {
+		if state.locked {
+			lockedStateNum++
+		}
+	}
+	stateNum := 0
+	for txHash, c2s := range s.lockedStates.CallIndex2LockedStates() {
+		txStateNum := 0
+		for _, states := range c2s {
+			txStateNum += len(states)
+		}
+		tx2stateNums[txHash.Hex()[2:10]] = txStateNum
+		stateNum += txStateNum
+	}
+	utils.SSCLogger().Info().
+		Int("commitCnt", int(s.commitCnt)).
+		Int("txsOnchain", len(tx2stateNums)).
+		Int("stateNum", stateNum).
+		Int("lockedStateNum", lockedStateNum).
+		Interface("simulateNums", simulateNums).
+		Interface("verifyNums", verifyNums).
+		Interface("tx2stateNums", tx2stateNums).
+		Msg("print waiting tx nums")
+}
+
+func (s *stateLockManager) addTx(txHash common.Hash, tx *lockedTx) {
+	s.waitingTxs[txHash] = tx
+	if tx.SimulateOrVerify {
+		if s.commitNum2simulateTxs[tx.CommitNum] == nil {
+			s.commitNum2simulateTxs[tx.CommitNum] = make(map[common.Hash]*lockedTx)
+		}
+		s.commitNum2simulateTxs[tx.CommitNum][txHash] = tx
+	} else {
+		if s.commitNum2verifyTxs[tx.CommitNum] == nil {
+			s.commitNum2verifyTxs[tx.CommitNum] = make(map[common.Hash]*lockedTx)
+		}
+		s.commitNum2verifyTxs[tx.CommitNum][txHash] = tx
+	}
+}
+
+func (s *stateLockManager) removeTx(txHash common.Hash, tx *lockedTx) {
+	delete(s.waitingTxs, txHash)
+	if tx.SimulateOrVerify {
+		delete(s.commitNum2simulateTxs[tx.CommitNum], txHash)
+		if len(s.commitNum2simulateTxs[tx.CommitNum]) == 0 {
+			delete(s.commitNum2simulateTxs, tx.CommitNum)
+		}
+	} else {
+		delete(s.commitNum2verifyTxs[tx.CommitNum], txHash)
+		if len(s.commitNum2verifyTxs[tx.CommitNum]) == 0 {
+			delete(s.commitNum2verifyTxs, tx.CommitNum)
+		}
+	}
+}
+
 func (s *stateLockManager) handleLockCommit() error {
 	s.lock.Lock()
 	defer s.lock.Unlock()
 
-	utils.SSCLogger().Debug().Msgf("needSignal_num=%d, ready_num=%d, waiting_num=%d, txs=%d", s.needSignalTxQueue.Size(), s.readyTxQueue.Size(), s.waitingTxQueue.Size(), len(s.waitingTxs))
+	s.commitCnt++
+	// s.printTxNums()
+
+	utils.SSCLogger().Info().Msgf("unsubscribe_num=%d, needSignal_num=%d, ready_num=%d, uncommitted_num=%d, waiting_num=%d, txs=%d, locked_states=%d",
+		len(s.unsubscribedTxs), s.needSignalTxQueue.Size(), s.readyTxQueue.Size(), s.uncommittedTxQueue.Size(), s.waitingTxQueue.Size(), len(s.waitingTxs), s.lockedStates.length())
+
+	// remove tx
+	for txHash := range s.unsubscribedTxs {
+		if tx, exists := s.waitingTxs[txHash]; exists {
+			key := tx.Key()
+			for lockKey, _ := range tx.States {
+				ls, exist := s.lockedStates.get(lockKey)
+				if exist {
+					delete(ls.waitingTxs, txHash)
+					if ls.lockedBy == txHash {
+						ls.locked = false
+						ls.lockedBy = common.Hash{}
+					}
+				}
+			}
+			s.uncommittedTxQueue.Remove(key)
+			s.waitingTxQueue.Remove(key)
+			s.readyTxQueue.Remove(key)
+			s.needSignalTxQueue.Remove(key)
+			s.removeTx(txHash, tx)
+		}
+	}
+	s.unsubscribedTxs = make(map[common.Hash]struct{})
+
 	// handle uncommitted waiting txs, and apply ready tx in uncommitted waiting txs
 	iter := s.uncommittedTxQueue.Iterator()
 	for iter.Next() {
@@ -710,16 +891,13 @@ func (s *stateLockManager) handleLockCommit() error {
 		txHash := iter.Value().(common.Hash)
 		tx := s.waitingTxs[txHash]
 		for lockKey, _ := range tx.States {
-			ls := s.lockedStates[lockKey]
-			if ls != nil && (bytes.Compare(common.Hash{}.Bytes(), ls.lockedBy.Bytes()) != 0 || len(ls.waitingTxs) > 0) {
-				tx.Num2wait++
-			}
-			if ls == nil {
-				s.lockedStates[lockKey] = &lockedState{
-					waitingTxs: make(map[common.Hash]struct{}),
+			ls, exists := s.lockedStates.get(lockKey)
+			if exists {
+				ls.waitingTxs[tx.TxHash] = struct{}{}
+				if bytes.Compare(common.Hash{}.Bytes(), ls.lockedBy.Bytes()) != 0 || len(ls.waitingTxs) > 0 {
+					tx.Num2wait++
 				}
 			}
-			s.lockedStates[lockKey].waitingTxs[tx.TxHash] = struct{}{}
 		}
 		s.waitingTxQueue.Put(key, tx.TxHash)
 	}
@@ -731,6 +909,11 @@ func (s *stateLockManager) handleLockCommit() error {
 		key := iter.Key().(lockedTxKey)
 		txHash := iter.Value().(common.Hash)
 		tx := s.waitingTxs[txHash]
+		if tx == nil {
+			utils.SSCLogger().Error().Str("txHash", txHash.Hex()).
+				Msg("tx not exist")
+			continue
+		}
 		if tx.Num2wait == 0 {
 			utils.SSCLogger().Debug().Str("txHash", tx.TxHash.Hex()).
 				Msg("the States required by the transaction are all unlocked, move to ready queue")
@@ -744,6 +927,8 @@ func (s *stateLockManager) handleLockCommit() error {
 
 	// handle new ready tx
 	s.handleReadyTxQueue()
+
+	s.lockedStates.clear()
 
 	return nil
 }
@@ -783,16 +968,14 @@ func (s *stateLockManager) handleReadyTxQueue() {
 
 		for lockKey, _ := range tx.States {
 			// don't set locked, just set lockBy means just subscribe
-			if s.lockedStates[lockKey] == nil {
-				s.lockedStates[lockKey] = &lockedState{
-					waitingTxs: make(map[common.Hash]struct{}),
-				}
+			ls, exists := s.lockedStates.get(lockKey)
+			if !exists {
+				ls = s.lockedStates.init(lockKey)
 			}
-			state := s.lockedStates[lockKey]
-			state.lockedBy = hash
+			ls.lockedBy = hash
 			// remove waiting txs, and add other tx Num2wait for the state
-			delete(state.waitingTxs, hash)
-			for otherTxHash, _ := range state.waitingTxs {
+			delete(ls.waitingTxs, hash)
+			for otherTxHash, _ := range ls.waitingTxs {
 				otherTx := s.waitingTxs[otherTxHash]
 				if otherTx != nil {
 					otherTx.Num2wait++
@@ -801,6 +984,16 @@ func (s *stateLockManager) handleReadyTxQueue() {
 		}
 
 		if s.sscService.IsLeader(hash) {
+			s.sscService.stateLock.RLock()
+			state, _ := s.sscService.getState(hash)
+			s.sscService.stateLock.RUnlock()
+			if state == nil {
+				utils.SSCLogger().Debug().Str("txHash", hash.Hex()).Msg("tx has been closed, unsubscribe it")
+				s.uncommittedTxQueue.Remove(tx.Key())
+				s.waitingTxQueue.Remove(tx.Key())
+				s.removeTx(hash, tx)
+				continue
+			}
 			s.needSignalTxQueue.Put(key, tx.TxHash)
 			s.waitingTxQueue.Remove(key)
 			go func() {
@@ -832,7 +1025,7 @@ func (s *stateLockManager) handleReadyTxQueue() {
 					s.lock.Lock()
 					defer s.lock.Unlock()
 					s.needSignalTxQueue.Remove(key)
-					delete(s.waitingTxs, hash)
+					s.removeTx(hash, tx)
 				case <-time.After(time.Second * 10):
 					utils.SSCLogger().Debug().Str("txHash", hash.Hex()).
 						Msgf("waited for 10s, but no resimulation started, keep in waiting queue")
@@ -841,21 +1034,19 @@ func (s *stateLockManager) handleReadyTxQueue() {
 					s.waitingTxQueue.Put(key, tx.TxHash)
 					s.needSignalTxQueue.Remove(key)
 					for lockKey, _ := range tx.States {
-						if s.lockedStates[lockKey] == nil {
-							s.lockedStates[lockKey] = &lockedState{
-								waitingTxs: make(map[common.Hash]struct{}),
-							}
+						ls, exists := s.lockedStates.get(lockKey)
+						if !exists {
+							ls = s.lockedStates.init(lockKey)
 						}
-						state := s.lockedStates[lockKey]
-						state.lockedBy = common.Hash{}
+						ls.lockedBy = common.Hash{}
 						// remove waiting txs, and add other tx Num2wait for the state
-						for otherTxHash, _ := range state.waitingTxs {
+						for otherTxHash, _ := range ls.waitingTxs {
 							otherTx := s.waitingTxs[otherTxHash]
 							if otherTx != nil {
 								otherTx.Num2wait--
 							}
 						}
-						state.waitingTxs[hash] = struct{}{}
+						ls.waitingTxs[hash] = struct{}{}
 					}
 				}
 			}()

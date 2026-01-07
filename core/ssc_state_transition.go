@@ -90,19 +90,23 @@ func (st *SSCStateTransition) buyGas() error {
 
 func (st *SSCStateTransition) preCheck() error {
 	// Make sure this transaction's nonce is correct.
-	if st.msg.CheckNonce() {
+	if st.msg.CheckNonce() && vm.IsWriteCapableSSCContract(st.to()) {
 		// just check the nonce if is lower
-		// nonce := st.state.GetNonce(st.msg.From())
-		// if nonce > st.msg.Nonce() {
-		// 	return ErrNonceTooLow
-		// }
+		nonce := st.state.GetNonce(st.msg.From())
+		if nonce > st.msg.Nonce() {
+			utils.SSCLogger().Error().Err(ErrNonceTooLow).Str("from", st.msg.From().Hex()).Msgf("nonce too low, tx nonce: %d, state nonce: %d", st.msg.Nonce(), nonce)
+			return ErrNonceTooLow
+		}
 
-		// if nonce < st.msg.Nonce() {
-		// 	return ErrNonceTooHigh
-		// } else if nonce > st.msg.Nonce() {
-		// 	return ErrNonceTooLow
-		// }
+		if nonce < st.msg.Nonce() {
+			utils.SSCLogger().Error().Err(ErrNonceTooHigh).Str("from", st.msg.From().Hex()).Msgf("nonce too high, tx nonce: %d, state nonce: %d", st.msg.Nonce(), nonce)
+			return ErrNonceTooHigh
+		} else if nonce > st.msg.Nonce() {
+			utils.SSCLogger().Error().Err(ErrNonceTooHigh).Str("from", st.msg.From().Hex()).Msgf("nonce too high, tx nonce: %d, state nonce: %d", st.msg.Nonce(), nonce)
+			return ErrNonceTooLow
+		}
 	}
+	utils.SSCLogger().Debug().Str("from", st.msg.From().Hex()).Msgf("nonce check passed, tx nonce: %d, state nonce: %d", st.msg.Nonce(), st.state.GetNonce(st.msg.From()))
 	return st.buyGas()
 }
 

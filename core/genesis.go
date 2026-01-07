@@ -22,12 +22,13 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"github.com/harmony-one/harmony/ssc/api"
-	"gopkg.in/yaml.v2"
 	"math/big"
 	"os"
 	"path/filepath"
 	"strings"
+
+	"github.com/harmony-one/harmony/ssc/api"
+	"gopkg.in/yaml.v2"
 
 	"github.com/ethereum/go-ethereum/common"
 	ethCommon "github.com/ethereum/go-ethereum/common"
@@ -64,7 +65,7 @@ const (
 	// ContractDeployerInitFund is the initial fund for the contract deployer account in testnet/devnet.
 	ContractDeployerInitFund = 10000000000
 	// InitFreeFund is the initial fund for permissioned accounts for testnet/devnet/
-	InitFreeFund = 1000000
+	InitFreeFund = 100000000
 )
 
 var (
@@ -88,8 +89,9 @@ type Genesis struct {
 	ShardStateHash common.Hash          `json:"shardStateHash" yaml:"shardStateHash,omitempty" gencodec:"required"`
 	ShardState     shard.State          `json:"shardState" yaml:"shardState,omitempty"     gencodec:"required"`
 
-	SSCConfig          *api.ShardSimulateCommitteeConfig `json:"ssc_config" yaml:"ssc_config"`
-	GenesisAccountsDir string                            `json:"genesis_accounts_dir" yaml:"genesis_accounts_dir"`
+	SSCConfig           *api.ShardSimulateCommitteeConfig `json:"ssc_config" yaml:"ssc_config"`
+	GenesisAccountsDir  string                            `json:"genesis_accounts_dir" yaml:"genesis_accounts_dir"`
+	ContractDeployerDir string                            `json:"contract_deployer_dir" yaml:"contract_deployer_dir"`
 
 	// These fields are used for consensus tests. Please don't use them
 	// in actual genesis blocks.
@@ -195,6 +197,18 @@ func NewGenesisSpec(netType nodeconfig.NetworkType, shardID uint32, configPath s
 					}
 					gen.SSCConfig.Committees = append(gen.SSCConfig.Committees, committee)
 				}
+			}
+			if len(gen.ContractDeployerDir) > 0 {
+				_ = filepath.WalkDir(gen.ContractDeployerDir, func(path string, d os.DirEntry, err error) error {
+					if strings.HasSuffix(d.Name(), ".key") {
+						addr := common.HexToAddress(strings.TrimSuffix(d.Name(), ".key"))
+						gen.Alloc[addr] = GenesisAccount{
+							Balance: big.NewInt(InitFreeFund).Mul(big.NewInt(InitFreeFund), big.NewInt(denominations.One)),
+						}
+						utils.Logger().Info().Msgf("genesis account: %s, addr: %s, balance: %s", path, addr, gen.Alloc[addr].Balance.String())
+					}
+					return nil
+				})
 			}
 			if len(gen.GenesisAccountsDir) > 0 {
 				_ = filepath.WalkDir(gen.GenesisAccountsDir, func(path string, d os.DirEntry, err error) error {

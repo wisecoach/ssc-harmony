@@ -127,10 +127,16 @@ func (consensus *Consensus) ProposeNewBlock(commitSigs chan []byte) (*types.Bloc
 			}
 		}
 
+		fromNonce := uint64(0)
+		toNonce := uint64(0)
+		if len(pendingSSCTxs) > 0 {
+			fromNonce = pendingSSCTxs[0].Nonce()
+			toNonce = pendingSSCTxs[len(pendingSSCTxs)-1].Nonce()
+		}
 		// Try commit normal and staking transactions based on the current state
 		// The successfully committed transactions will be put in the proposed block
-		utils.Logger().Info().Msgf("ProposeNewBlock: begin to commit transactions, ssc_txs=%d, plain_txs=%d, staking_txs=%d",
-			len(pendingSSCTxs), len(pendingPlainTxs), len(pendingStakingTxs))
+		utils.SSCLogger().Debug().Msgf("ProposeNewBlock: begin to commit transactions, ssc_txs=%d, plain_txs=%d, staking_txs=%d, ssc_nonce from %d to %d",
+			len(pendingSSCTxs), len(pendingPlainTxs), len(pendingStakingTxs), fromNonce, toNonce)
 		if err := worker.CommitTransactions(
 			pendingSSCTxs, pendingPlainTxs, pendingStakingTxs, beneficiary,
 		); err != nil {

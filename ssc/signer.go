@@ -3,6 +3,9 @@ package ssc
 import (
 	"bytes"
 	"crypto/ecdsa"
+	"math/big"
+	"runtime/debug"
+
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/crypto"
 	blslib "github.com/harmony-one/bls/ffi/go/bls"
@@ -12,8 +15,6 @@ import (
 	"github.com/harmony-one/harmony/internal/utils"
 	"github.com/harmony-one/harmony/ssc/api"
 	"github.com/pkg/errors"
-	"math/big"
-	"runtime/debug"
 )
 
 type blsSignerMgr struct {
@@ -94,11 +95,24 @@ func (s *blsSigner) Aggregate(msgs []api.SSCMessage) (signatures []byte, bitmap 
 	if len(msgs) == 0 {
 		return nil, nil, errors.New("empty msg")
 	}
+	utils.SSCLogger().Debug().Interface("msgs", msgs).Msgf("aggregating BLS signatures, num=%d", len(msgs))
+	msg := msgs[0]
+	// check if message is identical
+	for i := 1; i < len(msgs); i++ {
+		if !bytes.Equal(msg.Bytes(), msgs[i].Bytes()) {
+			utils.SSCLogger().Error().Interface("msg", msg).Msg("messages are not identical")
+			return nil, nil, errors.New("messages are not identical")
+		}
+	}
 	mask := bls.NewMask(s.shard2PublicKeys[s.selfShardId])
 	signs := make([]*blslib.Sign, 0)
 	for _, msg := range msgs {
 		sign := blslib.Sign{}
-		err := sign.Deserialize(msg.GetSignature())
+		signature := msg.GetSignature()
+		if signature == nil {
+			return nil, nil, errors.New("signature is nil")
+		}
+		err := sign.Deserialize(signature)
 		if err != nil {
 			stack := debug.Stack()
 			utils.SSCLogger().Error().Err(err).Interface("msg", msg).Msgf("failed to deserialize BLS signature, stack=%s", string(stack))
@@ -111,6 +125,16 @@ func (s *blsSigner) Aggregate(msgs []api.SSCMessage) (signatures []byte, bitmap 
 			utils.SSCLogger().Error().Err(err).Interface("msg", msg).Msgf("failed to set bit %d in BLS mask, %d", index, mask.Len())
 			return nil, nil, err
 		}
+		singleMask := bls.NewMask(s.shard2PublicKeys[s.selfShardId])
+		err = singleMask.SetBit(index, true)
+		verify := sign.Verify(singleMask.AggregatePublic, common.Bytes2Hex(msg.Bytes()))
+		if !verify {
+			stack := debug.Stack()
+			utils.SSCLogger().Error().Err(err).Interface("msg", msg).Msgf("failed to verify single BLS signature, stack=%s", string(stack))
+			return nil, nil, err
+		} else {
+			utils.SSCLogger().Debug().Interface("msg", msg).Msg("single BLS signature verified")
+		}
 	}
 	aggregateSig := bls.AggregateSig(signs)
 	return aggregateSig.Serialize(), mask.Bitmap, nil
@@ -122,17 +146,17 @@ func (s *blsSigner) Verify(msg api.BLSSignedMessage) error {
 	if err != nil {
 		return err
 	}
-	keys, err := mask.GetSignedPubKeysFromBitmap(msg.GetBLSBitMap())
-	if err != nil {
-		return err
-	}
-	mergedKey := &blslib.PublicKey{}
-	for _, key := range keys {
-		mergedKey.Add(key.Object)
-	}
-	if !bytes.Equal(mask.AggregatePublic.Serialize(), mergedKey.Serialize()) {
-		utils.SSCLogger().Error().Msg("aggregate public key mismatch")
-	}
+	// keys, err := mask.GetSignedPubKeysFromBitmap(msg.GetBLSBitMap())
+	// if err != nil {
+	// 	return err
+	// }
+	// mergedKey := &blslib.PublicKey{}
+	// for _, key := range keys {
+	// 	mergedKey.Add(key.Object)
+	// }
+	// if !bytes.Equal(mask.AggregatePublic.Serialize(), mergedKey.Serialize()) {
+	// 	utils.SSCLogger().Error().Msg("aggregate public key mismatch")
+	// }
 	sign := blslib.Sign{}
 	err = sign.Deserialize(msg.GetSignatures())
 	if err != nil {
@@ -160,7 +184,7 @@ func (s *blsSigner) UpdatePubKeys(shardID uint32, addr2Index map[common.Address]
 			utils.SSCLogger().Error().Err(err).Msg("failed to sign self-signed CXTCommitVote message after updating pub keys")
 			return
 		}
-		msg.BaseSSCMessage = &api.BaseSSCMessage{
+		msg.BaseSSCMessage = api.BaseSSCMessage{
 			Signature:  sign,
 			SenderAddr: s.selfAddr,
 		}
@@ -170,7 +194,7 @@ func (s *blsSigner) UpdatePubKeys(shardID uint32, addr2Index map[common.Address]
 			return
 		}
 		sscMsg := &api.CXTCommitSSCVote{}
-		sscMsg.BaseBLSSignedMessage = &api.BaseBLSSignedMessage{
+		sscMsg.BaseBLSSignedMessage = api.BaseBLSSignedMessage{
 			Signatures: aggregate,
 			BLSBitMap:  bitMap,
 			ShardId:    s.selfShardId,

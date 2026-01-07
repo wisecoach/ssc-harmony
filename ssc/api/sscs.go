@@ -2,13 +2,14 @@ package api
 
 import (
 	"context"
+	"math/big"
+
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/harmony-one/harmony/block"
 	"github.com/harmony-one/harmony/core/types"
 	"github.com/harmony-one/harmony/crypto/bls"
 	"github.com/harmony-one/harmony/numeric"
 	staking "github.com/harmony-one/harmony/staking/types"
-	"math/big"
 )
 
 const (
@@ -86,8 +87,10 @@ type StateDB interface {
 	GetCommittedState(common.Address, common.Hash) common.Hash
 	GetState(common.Address, common.Hash) (common.Hash, error)
 	SetState(common.Address, common.Hash, common.Hash) error
-	GetStateWithLock(txHash common.Hash, callIndex CallIndex, address common.Address, key common.Hash) (common.Hash, error)
-	SetStateWithLock(txHash common.Hash, callIndex CallIndex, address common.Address, key common.Hash, value common.Hash) error
+	GetStateWithoutLock(common.Address, common.Hash) (common.Hash, error)
+	SetStateWithoutLock(common.Address, common.Hash, common.Hash) error
+	GetAndLockState(txHash common.Hash, callIndex CallIndex, address common.Address, key common.Hash) (common.Hash, error)
+	SetAndLockState(txHash common.Hash, callIndex CallIndex, address common.Address, key common.Hash, value common.Hash) error
 
 	Exist(common.Address) bool
 	Empty(common.Address) bool
@@ -157,7 +160,7 @@ type InternalService interface {
 
 	StateLockManager() StateLockManager
 
-	BlockCommitted(blockNum uint64)
+	BlockCommitted(block *types.Block) error
 }
 
 // ShardService

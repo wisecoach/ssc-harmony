@@ -88,7 +88,7 @@ func opCall_SSC_EV(pc *uint64, inp Interpreter, contract *Contract, memory *Memo
 		ret, returnGas, err = interpreter.vm.Call(contract, toAddr, args, gas, value)
 	}
 
-	utils.SSCLogger().Info().
+	utils.SSCLogger().Debug().
 		Str("ExecutionType", interpreter.vm.ExecutionType.String()).
 		Str("txHash", interpreter.vm.Context.TxHash.Hex()).
 		Str("callIndex", interpreter.vm.Context.CrossCallIndex.ToString()).

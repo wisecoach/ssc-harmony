@@ -157,16 +157,16 @@ VerifyHeaderBatchSize = 100
 NtpServer = "1.pool.ntp.org,0.beevik-ntp.pool.ntp.org"
 
 [TxPool]
-AccountQueue = 64
-AccountSlots = 16
+AccountQueue = 40960
+AccountSlots = 40960
 AllowedTxsFile = "./.hmy/allowedtxs.txt"
 BlacklistFile = "./.hmy/blacklist.txt"
-GlobalQueue = 5120
-GlobalSlots = 4096
+GlobalQueue = 51200
+GlobalSlots = 40960
 Lifetime = "30m0s"
 LocalAccountsFile = "./.hmy/locals.txt"
 PriceBump = 1
-PriceLimit = 100e9
+PriceLimit = 10e5
 RosettaFixFile = ""
 
 [WS]

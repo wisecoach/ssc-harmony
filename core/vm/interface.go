@@ -63,6 +63,8 @@ type StateDB interface {
 	GetCommittedState(common.Address, common.Hash) common.Hash
 	GetState(common.Address, common.Hash) (common.Hash, error)
 	SetState(common.Address, common.Hash, common.Hash) error
+	SetStateWithoutLock(common.Address, common.Hash, common.Hash) error
+	GetStateWithoutLock(common.Address, common.Hash) (common.Hash, error)
 
 	Suicide(common.Address) bool
 	HasSuicided(common.Address) bool

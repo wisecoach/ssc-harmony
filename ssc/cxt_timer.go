@@ -19,7 +19,7 @@ func NewTimerManager(config *api.TimeoutConfig, service *sscService) *CXTTimerMa
 	return &CXTTimerManager{
 		lock:                   lm.NewMutex(),
 		service:                service,
-		selfShard:              0,
+		selfShard:              service.SelfShard,
 		bkNum2txForSp1:         make(map[uint64]map[common.Hash]struct{}),
 		bkNum2txForPoolTimeout: make(map[uint64]map[common.Hash]struct{}),
 		txs:                    make(map[common.Hash]txInfo),
@@ -35,13 +35,18 @@ type CXTTimerManager struct {
 	bkNum2txForPoolTimeout map[uint64]map[common.Hash]struct{}
 	txs                    map[common.Hash]txInfo
 	config                 *api.TimeoutConfig
+	blockNum               uint64
 }
 
 func (c *CXTTimerManager) StartPoolTimer(txHash common.Hash, blockNum uint64, originShardId uint32) {
 	c.lock.Lock()
 	defer c.lock.Unlock()
 
-	if c.selfShard == originShardId {
+	if c.config.PoolTimeout+blockNum < c.blockNum {
+		return
+	}
+
+	if _, exists := c.txs[txHash]; !exists {
 		poolTimeout := blockNum + c.config.PoolTimeout
 		utils.SSCLogger().Info().Str("txHash", txHash.String()).Msgf("start pool timer for cxt, which will timeout at block %d committed, [%d->%d]", poolTimeout, blockNum, poolTimeout)
 		if c.bkNum2txForPoolTimeout[poolTimeout] == nil {
@@ -84,9 +89,9 @@ func (c *CXTTimerManager) StartTimer(txHash common.Hash, blockNum uint64, origin
 	defer c.lock.Unlock()
 
 	if originShardId == c.selfShard {
-		c.removePoolTx(txHash)
+		// c.removePoolTx(txHash)
 		sp1 := blockNum + c.config.Sp1
-		utils.SSCLogger().Info().Str("txHash", txHash.String()).Msgf("start timer for cxt, which will timeout at block %d committed", sp1)
+		utils.SSCLogger().Debug().Str("txHash", txHash.String()).Msgf("start timer for cxt, which will timeout at block %d committed", sp1)
 		if c.bkNum2txForSp1[sp1] == nil {
 			c.bkNum2txForSp1[sp1] = map[common.Hash]struct{}{}
 		}
@@ -103,6 +108,8 @@ func (c *CXTTimerManager) StartTimer(txHash common.Hash, blockNum uint64, origin
 func (c *CXTTimerManager) BlockCommitted(blockNum uint64) {
 	c.lock.Lock()
 	defer c.lock.Unlock()
+
+	c.blockNum = blockNum
 
 	if txs, exists := c.bkNum2txForSp1[blockNum]; exists {
 		for hash, _ := range txs {

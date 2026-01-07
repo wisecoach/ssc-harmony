@@ -3,13 +3,15 @@ package ssc
 import (
 	"bytes"
 	"encoding/binary"
+	"math"
+	"math/big"
+
 	"github.com/ethereum/go-ethereum/common"
+	"github.com/harmony-one/harmony/core/types"
 	"github.com/harmony-one/harmony/crypto/bls"
 	"github.com/harmony-one/harmony/internal/utils"
 	"github.com/harmony-one/harmony/ssc/api"
 	"github.com/harmony-one/harmony/ssc/lm"
-	"math"
-	"math/big"
 )
 
 type CommitteeMechanism struct {
@@ -95,7 +97,7 @@ func (cm *CommitteeMechanism) IsLeader(txhash common.Hash) bool {
 	if committee, ok := cm.Committees[cm.SelfShard]; ok {
 		index := int(binary.BigEndian.Uint32(txhash[:4])) % committee.Number
 		isLeader := bytes.Compare(committee.Members[index].Address.Bytes(), cm.SelfAddr.Bytes()) == 0
-		utils.SSCLogger().Info().Msgf("leader index: %d, self addr: %s, leader addr: %s, is leader: %v", index, cm.SelfAddr.Hex(), committee.Members[index].Address.Hex(), isLeader)
+		utils.SSCLogger().Debug().Msgf("leader index: %d, self addr: %s, leader addr: %s, is leader: %v", index, cm.SelfAddr.Hex(), committee.Members[index].Address.Hex(), isLeader)
 		return isLeader
 	}
 
@@ -190,4 +192,15 @@ func (cm *CommitteeMechanism) Stake(address common.Address, stake *big.Int) {
 			Stake:   stake,
 		}
 	}
+}
+
+// HandleBlockCommitted
+// 1. update $R$, |Tx|, |STx_u|, $P_u$
+// 2. check if need to update committee
+//
+//	@Description:
+//	@param block
+//	@return error
+func (cm *CommitteeMechanism) HandleBlockCommitted(block *types.Block) error {
+	return nil
 }

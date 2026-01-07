@@ -298,7 +298,7 @@ func (node *Node) addPendingTransactions(registry *registry.Registry, newTxs typ
 		for i, tx := range poolTxs {
 			if txErrs[i] == nil {
 				// if transaction is cross-shard tx and it is not the tx apply on chain
-				if tx.CrossShard() && vm.SSCAddrsApplyOnChain[*tx.To()] == nil {
+				if tx.CrossShard() && !vm.IsWriteCapableSSCContract(*tx.To()) {
 					utils.Logger().Info().Str("txHash", tx.Hash().Hex()).Msg("Pre-Simulating cross shard transaction")
 					senderAddress, err := tx.SenderAddress()
 					if err != nil {

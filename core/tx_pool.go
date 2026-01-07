@@ -19,7 +19,6 @@ package core
 import (
 	"bytes"
 	"fmt"
-	"github.com/harmony-one/harmony/core/genesis"
 	"math"
 	"math/big"
 	"sort"
@@ -188,7 +187,7 @@ var DefaultTxPoolConfig = TxPoolConfig{
 
 	AccountSlots: 16,   // --txpool.accountslots
 	GlobalSlots:  4096, // --txpool.globalslots
-	AccountQueue: 64,   // --txpool.accountqueue
+	AccountQueue: 4096, // --txpool.accountqueue
 	GlobalQueue:  5120, // --txpool.globalqueue
 
 	Lifetime: 30 * time.Minute, // --txpool.lifetime
@@ -797,11 +796,19 @@ func (pool *TxPool) validateTx(tx types.PoolTransaction, local bool) error {
 
 		minGasPrice := new(big.Float).SetInt64(pool.gasPrice.Int64())
 		minGasPrice = minGasPrice.Mul(minGasPrice, new(big.Float).SetFloat64(1e-9)) // Gas-price is in Nano
+		utils.SSCLogger().Error().Str("txHash", tx.Hash().Hex()).
+			Uint64("Nonce", tx.Nonce()).
+			Msgf("transaction gas-price is %.18f ONE; minimum gas price is %.18f ONE", gasPrice, minGasPrice)
 		return errors.WithMessagef(ErrUnderpriced, "transaction gas-price is %.18f ONE; minimum gas price is %.18f ONE", gasPrice, minGasPrice)
 	}
 	currNonce := pool.currentState.GetNonce(from)
 	// Ensure the transaction adheres to nonce ordering
 	if currNonce > tx.Nonce() {
+		utils.SSCLogger().Error().Str("txHash", tx.Hash().Hex()).
+			Uint64("Nonce", tx.Nonce()).
+			Uint64("CurrentNonce", currNonce).
+			Str("from", from.Hex()).
+			Str("originTxHash", tx.Hash().Hex()).Msgf("nonce too low, nonce=%d", tx.Nonce())
 		return errors.WithMessagef(ErrNonceTooLow, "transaction nonce is %d", tx.Nonce())
 	}
 	// Transactor should have enough funds to cover the costs
@@ -997,9 +1004,11 @@ func (pool *TxPool) add(tx types.PoolTransaction, local bool) (replaced bool, er
 	}()
 
 	if tx.CrossShard() {
+		from, _ := tx.SenderAddress()
 		utils.SSCLogger().Info().Str("txHash", tx.Hash().Hex()).
-			Bool("isPreCompiled", vm.SSCAddrsApplyOnChain[*tx.To()] != nil).
-			Msgf("add a cross shard Tx, preCompiled: %v, nonce=%d, simulation: %v", vm.SSCAddrsApplyOnChain[*tx.To()] != nil, tx.Nonce(), tx.To().Hex() == vm.SimulationCommitAddr.Hex())
+			Bool("isPreCompiled", vm.IsWriteCapableSSCContract(*tx.To())).
+			Str("from", from.Hex()).
+			Msgf("add a cross shard Tx, preCompiled: %v, nonce=%d, simulation: %v", vm.IsWriteCapableSSCContract(*tx.To()), tx.Nonce(), tx.To().Hex() == vm.SimulationCommitAddr.Hex())
 	}
 
 	logger := utils.Logger().With().Stack().Logger()
@@ -1030,6 +1039,10 @@ func (pool *TxPool) add(tx types.PoolTransaction, local bool) (replaced bool, er
 				Str("price", tx.GasPrice().String()).
 				Msg("Discarding underpriced transaction")
 			underpricedTxCounter.Inc(1)
+			utils.Logger().Error().
+				Str("tx-hash-id", hash.Hex()).
+				Str("price", tx.GasPrice().String()).
+				Msgf("Underpriced transaction")
 			return false, errors.WithMessagef(ErrUnderpriced, "transaction gas-price is %.18f ONE in full transaction pool", gasPrice)
 		}
 		// New transaction is better than our worse ones, make room for it
@@ -1105,11 +1118,6 @@ func (pool *TxPool) add(tx types.PoolTransaction, local bool) (replaced bool, er
 	// Set or refresh beat for account timeout eviction
 	pool.beats[from] = time.Now()
 
-	utils.SSCLogger().Info().
-		Str("hash", hash.Hex()).
-		Interface("from", from).
-		Interface("to", tx.To()).
-		Msgf("Pooled new future transaction, nonce=%d", tx.Nonce())
 	return replace, nil
 }
 
@@ -1276,7 +1284,9 @@ func (pool *TxPool) addTxsLocked(txs types.PoolTransactions, local bool) []error
 	for i, tx := range txs {
 		replace, err := pool.add(tx, local)
 		if err == nil && !replace {
-			utils.Logger().Info().Str("txHash", tx.Hash().Hex()).Msg("Pooled new transaction")
+			utils.Logger().Info().Str("txHash", tx.Hash().Hex()).
+				Bool("crossShard", tx.CrossShard()).
+				Msg("Pooled new transaction")
 			from, _ := tx.SenderAddress() // already validated
 			dirty[from] = struct{}{}
 		}
@@ -1424,10 +1434,6 @@ func (pool *TxPool) promoteExecutables(accounts []common.Address) {
 				promoted = append(promoted, tx)
 				promotedForAccount = append(promotedForAccount, tx)
 			}
-		}
-
-		if bytes.Compare(genesis.SSCSubmitterAddr.Bytes(), addr.Bytes()) == 0 {
-			utils.SSCLogger().Info().Msgf("promote executable for onchain account, nonce=%d, promoted=%d", pool.pendingState.GetNonce(addr), len(promotedForAccount))
 		}
 
 		// Drop all transactions over the allowed limit

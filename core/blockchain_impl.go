@@ -21,7 +21,6 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
-	"github.com/harmony-one/harmony/ssc/api"
 	"io"
 	"log"
 	"math/big"
@@ -31,6 +30,8 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+
+	"github.com/harmony-one/harmony/ssc/api"
 
 	"github.com/pkg/errors"
 
@@ -1931,7 +1932,10 @@ func (bc *BlockChainImpl) insertChain(chain types.Blocks, verifyHeaders bool) (i
 
 		blockWriteTimer.Update(time.Since(substart) - state.AccountCommits - state.StorageCommits)
 		blockInsertTimer.UpdateSince(bstart)
-		bc.processor.sscService.BlockCommitted(block.NumberU64())
+		err = bc.processor.sscService.BlockCommitted(block)
+		if err != nil {
+			return i, events, coalescedLogs, err
+		}
 
 		switch status {
 		case CanonStatTy:

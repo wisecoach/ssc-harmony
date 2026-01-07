@@ -4,6 +4,7 @@ import (
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/common/math"
 	"github.com/harmony-one/harmony/internal/params"
+	"github.com/harmony-one/harmony/internal/utils"
 	"github.com/harmony-one/harmony/ssc/api"
 )
 
@@ -76,9 +77,15 @@ func opCall_SSC_Call(pc *uint64, inp Interpreter, contract *Contract, memory *Me
 		gas += params.CallStipend
 	}
 	ret, returnGas, err := interpreter.vm.Call(contract, toAddr, args, gas, value)
-	if err != nil {
-		stack.push(interpreter.intPool.getZero())
+	if err != nil && IsLockedByOtherTxErr(err.Error()) {
+		utils.SSCLogger().Error().Str("txHash", interpreter.vm.Context.TxHash.Hex()).Err(err).Msgf("error during execution, pc=%d, type=%s", pc, interpreter.vm.ExecutionType.String())
+		if IsLockedByOtherTxErr(err.Error()) {
+			return ret, api.ErrLockedByOtherTx
+		} else {
+			stack.push(interpreter.intPool.getZero())
+		}
 	} else {
+		utils.SSCLogger().Debug().Str("txHash", interpreter.vm.Context.TxHash.Hex()).Msgf("successful execution, pc=%d, type=%s, ret=%s", pc, interpreter.vm.ExecutionType.String(), common.Bytes2Hex(ret))
 		stack.push(interpreter.intPool.get().SetUint64(1))
 	}
 	if err == nil || err == ErrExecutionReverted {
@@ -90,9 +97,6 @@ func opCall_SSC_Call(pc *uint64, inp Interpreter, contract *Contract, memory *Me
 	contract.Gas += returnGas
 
 	interpreter.intPool.put(addr, value, inOffset, inSize, retOffset, retSize)
-	if err != nil && err.Error() == api.ErrLockedByOtherTx.Error() {
-		return ret, api.ErrLockedByOtherTx
-	}
 	return ret, nil
 }
 

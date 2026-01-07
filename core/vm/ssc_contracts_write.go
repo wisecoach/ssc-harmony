@@ -54,3 +54,8 @@ func (c *cxtCommitOrRollback) RunWriteCapable(vm *SSCVM, contract *Contract, inp
 	}
 	return nil, nil
 }
+
+func IsWriteCapableSSCContract(addr common.Address) bool {
+	_, ok := WriteCapablePrecompiledSSCContracts[addr]
+	return ok
+}

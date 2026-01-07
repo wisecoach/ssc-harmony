@@ -6,6 +6,13 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"io/fs"
+	"math"
+	"math/big"
+	"os"
+	"strconv"
+	"strings"
+
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/crypto"
 	"github.com/harmony-one/harmony/accounts/keystore"
@@ -17,12 +24,6 @@ import (
 	"github.com/pborman/uuid"
 	"github.com/pelletier/go-toml"
 	"gopkg.in/yaml.v2"
-	"io/fs"
-	"math"
-	"math/big"
-	"os"
-	"strconv"
-	"strings"
 )
 
 type Validator struct {
@@ -36,7 +37,7 @@ type Validator struct {
 }
 
 func build_client_keys() {
-	for i := 0; i < 64; i++ {
+	for i := 0; i < 1024; i++ {
 		privateKey, _ := ecdsa.GenerateKey(crypto.S256(), rand.Reader)
 
 		// 从私钥派生出公钥和地址
@@ -181,6 +182,14 @@ func buildConfig(config ShardConfig) {
 	defer file.Close()
 	json.NewDecoder(file).Decode(&shard2validators)
 
+	type DevServers struct {
+		IPs []string `json:"ips"`
+	}
+	devServers := new(DevServers)
+	file, _ = os.Open("../dev_servers.json")
+	defer file.Close()
+	json.NewDecoder(file).Decode(&devServers)
+
 	local_launch_config_lines := make([]string, 0)
 	dev_launch_config_lines := make([]string, 0)
 	for i := uint32(0); i < config.shard; i++ {
@@ -189,7 +198,7 @@ func buildConfig(config ShardConfig) {
 			local_launch_config_lines = append(local_launch_config_lines, fmt.Sprintf("%s %s %s %d %s %d",
 				v.Address, v.EthAddr, v.BLSKeyPATH, v.ShardID, "127.0.0.1", 9000+40*int(i)+j*2))
 			dev_launch_config_lines = append(dev_launch_config_lines, fmt.Sprintf("%s %s %s %d %s %d",
-				v.Address, v.EthAddr, v.BLSKeyPATH, v.ShardID, fmt.Sprintf("10.7.95.%d", 200+i), 9000+40*int(i)+j*2))
+				v.Address, v.EthAddr, v.BLSKeyPATH, v.ShardID, devServers.IPs[i], 9000+40*int(i)+j*2))
 		}
 	}
 	os.WriteFile(local_path+"/"+"launch_config_local.txt", []byte(strings.Join(local_launch_config_lines, "\n")), 0644)
@@ -211,13 +220,13 @@ func buildConfig(config ShardConfig) {
 			localSSCMembers = append(localSSCMembers, &api.Member{
 				Address:   common.HexToAddress(s.EthAddr),
 				Stake:     new(big.Int).SetUint64(1000000000000000000),
-				Endpoint:  fmt.Sprintf("127.0.0.1:%d", 9000+40*int(i)+j*2),
+				Endpoint:  fmt.Sprintf("http://127.0.0.1:%d", 9500+40*int(i)+j*2),
 				BLSPubKey: s.BLSPublicKey,
 			})
 			devSSCMembers = append(devSSCMembers, &api.Member{
 				Address:   common.HexToAddress(s.EthAddr),
 				Stake:     new(big.Int).SetUint64(1000000000000000000),
-				Endpoint:  fmt.Sprintf("10.7.95.%d:%d", 200+i, 9000+40*int(i)+j*2),
+				Endpoint:  fmt.Sprintf("http://%s:%d", devServers.IPs[i], 9500+40*int(i)+j*2),
 				BLSPubKey: s.BLSPublicKey,
 			})
 		}
@@ -241,16 +250,19 @@ func buildConfig(config ShardConfig) {
 	localConfig.Committees = localSSC
 	devConfig.Committees = devSSC
 	type GenesisConfig struct {
-		SSCConfig          *api.ShardSimulateCommitteeConfig `json:"ssc_config" yaml:"ssc_config"`
-		GenesisAccountsDir string                            `json:"genesis_accounts_dir" yaml:"genesis_accounts_dir"`
+		SSCConfig           *api.ShardSimulateCommitteeConfig `json:"ssc_config" yaml:"ssc_config"`
+		GenesisAccountsDir  string                            `json:"genesis_accounts_dir" yaml:"genesis_accounts_dir"`
+		ContractDeployerDir string                            `json:"contract_deployer_dir" yaml:"contract_deployer_dir"`
 	}
 	local_genesis := &GenesisConfig{
-		SSCConfig:          localConfig,
-		GenesisAccountsDir: ".hmy/expr_accounts",
+		SSCConfig:           localConfig,
+		GenesisAccountsDir:  ".hmy/expr_accounts",
+		ContractDeployerDir: ".hmy/contract_deploy_accounts",
 	}
 	dev_genesis := &GenesisConfig{
-		SSCConfig:          devConfig,
-		GenesisAccountsDir: ".hmy/expr_accounts",
+		SSCConfig:           devConfig,
+		GenesisAccountsDir:  ".hmy/expr_accounts",
+		ContractDeployerDir: ".hmy/contract_deploy_accounts",
 	}
 	writeYaml(local_path+"/"+"genesis_config_local.yaml", local_genesis)
 	writeYaml(dev_path+"/"+"genesis_config_dev.yaml", dev_genesis)
@@ -276,14 +288,14 @@ func main() {
 			shard:     4,
 			validator: 4,
 			ssc:       1,
-			delay:     5,
+			delay:     10,
 		},
 		{
-			name:      "基准测试，时延10",
+			name:      "基准测试，时延5",
 			shard:     4,
 			validator: 4,
 			ssc:       1,
-			delay:     10,
+			delay:     5,
 		},
 		{
 			name:      "基准测试，时延20",
@@ -297,35 +309,35 @@ func main() {
 			shard:     2,
 			validator: 4,
 			ssc:       1,
-			delay:     5,
+			delay:     10,
 		},
 		{
 			name:      "不同分片数_8",
 			shard:     8,
 			validator: 4,
 			ssc:       1,
-			delay:     5,
+			delay:     10,
 		},
 		{
 			name:      "不同分片数_16",
 			shard:     16,
 			validator: 4,
 			ssc:       1,
-			delay:     5,
+			delay:     10,
 		},
 		{
 			name:      "不同分片数_32",
 			shard:     32,
 			validator: 4,
 			ssc:       1,
-			delay:     5,
+			delay:     10,
 		},
 		{
 			name:      "安全性测试",
 			shard:     2,
 			validator: 10,
 			ssc:       4,
-			delay:     5,
+			delay:     10,
 		},
 	}
 	for _, config := range configs {

@@ -419,7 +419,7 @@ func IsRunningBeaconChain(c *consensus.Consensus) bool {
 func (node *Node) BootstrapConsensus() error {
 	ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
 	defer cancel()
-	min := node.Consensus.MinPeers * node.HarmonyConfig.General.ShardNum
+	min := node.Consensus.MinPeers
 	enoughMinPeers := make(chan struct{}, 1)
 	const checkEvery = 1 * time.Second
 	go func() {

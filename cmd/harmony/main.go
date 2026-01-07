@@ -3,14 +3,6 @@ package main
 import (
 	"context"
 	"fmt"
-	"github.com/ethereum/go-ethereum/log"
-	"github.com/harmony-one/harmony/crypto/bls"
-	"github.com/harmony-one/harmony/internal/blsgen"
-	rpc_common "github.com/harmony-one/harmony/rpc/common"
-	"github.com/harmony-one/harmony/shard/committee"
-	"github.com/harmony-one/harmony/ssc"
-	"github.com/harmony-one/harmony/ssc/api"
-	"github.com/harmony-one/harmony/ssc/lm"
 	ol "log"
 	"math/big"
 	"math/rand"
@@ -24,6 +16,15 @@ import (
 	"strings"
 	"syscall"
 	"time"
+
+	"github.com/ethereum/go-ethereum/log"
+	"github.com/harmony-one/harmony/crypto/bls"
+	"github.com/harmony-one/harmony/internal/blsgen"
+	rpc_common "github.com/harmony-one/harmony/rpc/common"
+	"github.com/harmony-one/harmony/shard/committee"
+	"github.com/harmony-one/harmony/ssc"
+	"github.com/harmony-one/harmony/ssc/api"
+	"github.com/harmony-one/harmony/ssc/lm"
 
 	ethCommon "github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/common/hexutil"
@@ -262,10 +263,10 @@ func setupNodeLog(config harmonyconfig.HarmonyConfig) {
 	logPath := filepath.Join(config.Log.Folder, config.Log.FileName)
 	sscLogPath := filepath.Join(config.Log.Folder, "ssc-"+config.Log.FileName)
 
-	// verbosity := config.Log.Verbosity
-	// utils.SetLogVerbosity(log.Lvl(verbosity))
-	utils.SetLogVerbosity(log.LvlDebug)
-	utils.SetLogVerbosity(log.LvlInfo)
+	verbosity := config.Log.Verbosity
+	utils.SetLogVerbosity(log.Lvl(verbosity))
+	// utils.SetLogVerbosity(log.LvlDebug)
+	// utils.SetLogVerbosity(log.LvlInfo)
 	if config.Log.Context != nil {
 		ip := config.Log.Context.IP
 		port := config.Log.Context.Port
@@ -392,11 +393,10 @@ func setupNodeAndRun(hc harmonyconfig.HarmonyConfig) {
 		HTTPPort:    hc.HTTP.RosettaPort,
 	}
 
-	if hc.HTTP.Port%100 == 0 {
+	if (hc.HTTP.Port-9500)%40 == 0 {
 		go func() {
 			ol.Println(http.ListenAndServe(":6060", nil))
 		}()
-
 	}
 
 	fmt.Printf("node: %v, rpc address %v:%v\n", hc.General.DataDir, nodeConfig.IP, nodeConfig.RPCServer.HTTPPort)

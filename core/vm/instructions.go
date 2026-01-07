@@ -18,6 +18,7 @@ package vm
 
 import (
 	"errors"
+	"github.com/harmony-one/harmony/internal/utils"
 	"math/big"
 
 	"github.com/ethereum/go-ethereum/common"
@@ -710,7 +711,7 @@ func opMstore8(pc *uint64, inp Interpreter, contract *Contract, memory *Memory, 
 func opSload(pc *uint64, inp Interpreter, contract *Contract, memory *Memory, stack *Stack) ([]byte, error) {
 	interpreter := inp.(*EVMInterpreter)
 	loc := stack.peek()
-	val, err := interpreter.evm.StateDB.GetState(contract.Address(), common.BigToHash(loc))
+	val, err := interpreter.evm.StateDB.GetStateWithoutLock(contract.Address(), common.BigToHash(loc))
 	loc.SetBytes(val.Bytes())
 	return nil, err
 }
@@ -719,8 +720,11 @@ func opSstore(pc *uint64, inp Interpreter, contract *Contract, memory *Memory, s
 	interpreter := inp.(*EVMInterpreter)
 	loc := common.BigToHash(stack.pop())
 	val := stack.pop()
-	interpreter.evm.StateDB.SetState(contract.Address(), loc, common.BigToHash(val))
-
+	err := interpreter.evm.StateDB.SetStateWithoutLock(contract.Address(), loc, common.BigToHash(val))
+	if err != nil {
+		utils.SSCLogger().Error().Err(err).Msgf("opSstore failed")
+		return nil, err
+	}
 	interpreter.intPool.put(val)
 	return nil, nil
 }

@@ -1,6 +1,11 @@
 package vm
 
 import (
+	"math/big"
+	"strconv"
+	"strings"
+	"sync/atomic"
+
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/crypto"
 	"github.com/harmony-one/harmony/core/state"
@@ -8,8 +13,6 @@ import (
 	"github.com/harmony-one/harmony/internal/utils"
 	"github.com/harmony-one/harmony/ssc/api"
 	"github.com/pkg/errors"
-	"math/big"
-	"sync/atomic"
 )
 
 type ExecutionType int
@@ -146,7 +149,7 @@ func (vm *SSCVM) Call(caller ContractRef, addr common.Address, input []byte, gas
 	}
 
 	if SSCAddrsApplyOnChain[addr] != nil {
-		utils.SSCLogger().Info().
+		utils.SSCLogger().Debug().
 			Str("ExecutionType", vm.ExecutionType.String()).
 			Str("txHash", vm.Context.TxHash.Hex()).
 			Str("callIndex", vm.Context.CrossCallIndex.ToString()).
@@ -159,7 +162,7 @@ func (vm *SSCVM) Call(caller ContractRef, addr common.Address, input []byte, gas
 	targetShardId := vm.SSCService.GetShardID(addr)
 	isCrossCall := targetShardId != vm.Context.ShardID
 
-	utils.SSCLogger().Info().
+	utils.SSCLogger().Debug().
 		Str("ExecutionType", vm.ExecutionType.String()).
 		Str("txHash", vm.Context.TxHash.Hex()).
 		Str("callIndex", vm.Context.CrossCallIndex.ToString()).
@@ -250,7 +253,7 @@ func (vm *SSCVM) crossCall(targetShardId uint32, caller ContractRef, addr common
 		Gas:            gas,
 		GasPrice:       vm.Context.GasPrice,
 		Value:          value,
-		BaseSSCMessage: &api.BaseSSCMessage{},
+		BaseSSCMessage: api.BaseSSCMessage{},
 	}
 	result := vm.SSCService.CallCXTContract(req)
 	if len(result.Err) > 0 {
@@ -279,6 +282,7 @@ func (vm *SSCVM) callSSCPrecompiledContract(caller ContractRef, addr common.Addr
 
 func (vm *SSCVM) CallFromOtherShard(fromShard uint32, caller ContractRef, addr common.Address, input []byte, gas uint64, value *big.Int) (ret []byte, leftOverGas uint64, err error) {
 	if vm.vmConfig.NoRecursion && vm.depth > 0 {
+		utils.SSCLogger().Error().Str("txHash", vm.Context.TxHash.Hex()).Msgf("callFromOtherShard: caller=%s, addr=%s", caller.Address().Hex(), addr.Hex())
 		return nil, gas, nil
 	}
 
@@ -308,6 +312,7 @@ func (vm *SSCVM) CallFromOtherShard(fromShard uint32, caller ContractRef, addr c
 		snapshot = vm.StateDB.Snapshot()
 	)
 	if !vm.StateDB.Exist(addr) {
+		utils.SSCLogger().Error().Str("txHash", vm.Context.TxHash.Hex()).Msgf("state is not exists: caller=%s, addr=%s", caller.Address().Hex(), addr.Hex())
 		precompiles := PrecompiledContractsHomestead
 		var writeCapablePrecompiles map[common.Address]WriteCapablePrecompiledContract
 		if vm.ChainConfig().IsS3(vm.Context.EpochNumber) {
@@ -330,6 +335,7 @@ func (vm *SSCVM) CallFromOtherShard(fromShard uint32, caller ContractRef, addr c
 			writeCapablePrecompiles = WriteCapablePrecompiledContractsCrossXfer
 		}
 		if (len(writeCapablePrecompiles) == 0 || writeCapablePrecompiles[addr] == nil) && precompiles[addr] == nil && vm.ChainConfig().IsS3(vm.Context.EpochNumber) && value.Sign() == 0 {
+			utils.SSCLogger().Error().Msgf("precompiles for shard %d not found", vm.Context.ShardID)
 			return nil, gas, nil
 		}
 		vm.StateDB.CreateAccount(addr)
@@ -348,6 +354,12 @@ func (vm *SSCVM) CallFromOtherShard(fromShard uint32, caller ContractRef, addr c
 	// The contract is a scoped environment for this execution context only.
 	contract := NewContract(caller, to, value, gas)
 	contract.SetCallCode(&addr, codeHash, code)
+
+	utils.SSCLogger().Debug().Str("txHash", vm.Context.TxHash.Hex()).Str("callIndex", vm.Context.CrossCallIndex.ToString()).
+		Str("fromShard", strconv.Itoa(int(fromShard))).Str("toShard", strconv.Itoa(int(targetShardId))).
+		Str("from", caller.Address().Hex()).Str("to", addr.Hex()).
+		Uint64("gas", gas).Str("value", value.String()).
+		Msgf("callFromOtherShard, code_size: %d", len(code))
 
 	ret, err = vm.run(contract, input, false)
 
@@ -381,7 +393,7 @@ func (vm *SSCVM) CallCode(caller ContractRef, addr common.Address, input []byte,
 	}
 
 	if SSCAddrsApplyOnChain[addr] != nil {
-		utils.SSCLogger().Info().
+		utils.SSCLogger().Debug().
 			Str("ExecutionType", vm.ExecutionType.String()).
 			Str("txHash", vm.Context.TxHash.Hex()).
 			Str("callIndex", vm.Context.CrossCallIndex.ToString()).
@@ -573,7 +585,7 @@ func (vm *SSCVM) run(contract *Contract, input []byte, readOnly bool) ([]byte, e
 		// it's used to cross-call for harmony, we don't need to RunWriteCapablePrecompiledContract
 		if len(writeCapablePrecompiles) > 0 {
 			if p := writeCapablePrecompiles[*contract.CodeAddr]; p != nil {
-				utils.SSCLogger().Info().Str("txHash", vm.Context.TxHash.Hex()).
+				utils.SSCLogger().Debug().Str("txHash", vm.Context.TxHash.Hex()).
 					Str("executionType", vm.ExecutionType.String()).
 					Msgf("RunWriteCapablePrecompiledContract: %s", contract.CodeAddr.Hex())
 				if readOnly {
@@ -767,4 +779,8 @@ func (vm *SSCVM) canTransfer_RV(from common.Address, amount *big.Int, transferTy
 
 func (vm *SSCVM) canTransfer_EV(from common.Address, amount *big.Int, transferType TransferType) bool {
 	return true
+}
+
+func IsLockedByOtherTxErr(err string) bool {
+	return strings.Contains(err, api.ErrLockedByOtherTx.Error())
 }
