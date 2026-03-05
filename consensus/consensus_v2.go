@@ -870,7 +870,7 @@ func (consensus *Consensus) generateVrfAndProof(newHeader *block.Header) error {
 
 	consensus.getLogger().Info().
 		Uint64("BlockNum", newHeader.Number().Uint64()).
-		Uint64("Epoch", newHeader.Epoch().Uint64()).
+		Uint64("GetEpoch", newHeader.Epoch().Uint64()).
 		Hex("VRF+Proof", newHeader.Vrf()).
 		Msg("[GenerateVrfAndProof] Leader generated a VRF")
 
@@ -890,7 +890,7 @@ func (consensus *Consensus) GenerateVdfAndProof(newBlock *types.Block, vrfBlockN
 
 	consensus.getLogger().Info().
 		Uint64("MsgBlockNum", newBlock.NumberU64()).
-		Uint64("Epoch", newBlock.Header().Epoch().Uint64()).
+		Uint64("GetEpoch", newBlock.Header().Epoch().Uint64()).
 		Int("Num of VRF", len(vrfBlockNumbers)).
 		Msg("[ConsensusMainLoop] VDF computation started")
 
@@ -949,7 +949,7 @@ func (consensus *Consensus) ValidateVdfAndProof(headerObj *block.Header) bool {
 	} else {
 		consensus.getLogger().Warn().
 			Str("MsgBlockNum", headerObj.Number().String()).
-			Uint64("Epoch", headerObj.Epoch().Uint64()).
+			Uint64("GetEpoch", headerObj.Epoch().Uint64()).
 			Int("Num of VRF", consensus.VdfSeedSize()).
 			Msg("[OnAnnounce] VDF proof is not valid")
 		return false

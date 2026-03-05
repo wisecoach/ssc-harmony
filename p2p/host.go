@@ -81,13 +81,13 @@ type Peer struct {
 
 const (
 	// SetAsideForConsensus set the number of active validation goroutines for the consensus topic
-	SetAsideForConsensus = 1 << 13
+	SetAsideForConsensus = 1 << 32
 	// SetAsideOtherwise set the number of active validation goroutines for other topic
-	SetAsideOtherwise = 1 << 11
+	SetAsideOtherwise = 1 << 32
 	// MaxMessageHandlers ..
 	MaxMessageHandlers = SetAsideForConsensus + SetAsideOtherwise
 	// MaxMessageSize is 2Mb
-	MaxMessageSize = 1 << 30
+	MaxMessageSize = 1 << 40
 )
 
 // HostConfig is the config structure to create a new host

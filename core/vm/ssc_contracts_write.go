@@ -5,19 +5,28 @@ import (
 )
 
 var (
-	SimulationCommitAddr    = common.Address([20]byte{249})
-	CxtCommitOrRollbackAddr = common.Address([20]byte{250})
-	EmptyAddr               = common.Address([20]byte{251})
+	SimulationCommitAddr    = common.Address([20]byte{255, 0})
+	CxtCommitOrRollbackAddr = common.Address([20]byte{255, 1})
+	EmptyAddr               = common.Address([20]byte{255, 2})
+	NewEpochAddr            = common.Address([20]byte{255, 3})
+	SLOpinionAddr           = common.Address([20]byte{255, 4})
 )
 
+// WriteCapablePrecompiledSSCContracts for every ssc precompiled contract, we need to register it here
 var WriteCapablePrecompiledSSCContracts = map[common.Address]WriteCapablePrecompiledSSCContract{
 	SimulationCommitAddr:    &simulationCommit{},
 	CxtCommitOrRollbackAddr: &cxtCommitOrRollback{},
+	EmptyAddr:               &empty{},
+	NewEpochAddr:            &newEpoch{},
+	SLOpinionAddr:           &slOpinion{},
 }
 
+// SSCAddrsApplyOnChain for simulate and verify cross shard tx, or other precompiled contracts no need to be simulate off-chain and verify on-chain
 var SSCAddrsApplyOnChain = map[common.Address]interface{}{
 	SimulationCommitAddr:    struct{}{},
 	CxtCommitOrRollbackAddr: struct{}{},
+	EmptyAddr:               struct{}{},
+	SLOpinionAddr:           struct{}{},
 }
 
 type WriteCapablePrecompiledSSCContract interface {
@@ -55,7 +64,53 @@ func (c *cxtCommitOrRollback) RunWriteCapable(vm *SSCVM, contract *Contract, inp
 	return nil, nil
 }
 
-func IsWriteCapableSSCContract(addr common.Address) bool {
+type empty struct {
+}
+
+func (e *empty) RequiredGas(vm *SSCVM, contract *Contract, input []byte) (uint64, error) {
+	return 0, nil
+}
+
+func (e *empty) RunWriteCapable(vm *SSCVM, contract *Contract, input []byte) ([]byte, error) {
+	return nil, nil
+}
+
+type newEpoch struct {
+}
+
+func (n *newEpoch) RequiredGas(vm *SSCVM, contract *Contract, input []byte) (uint64, error) {
+	return 0, nil
+}
+
+func (n *newEpoch) RunWriteCapable(vm *SSCVM, contract *Contract, input []byte) ([]byte, error) {
+	blockNum := vm.Context.BlockNumber.Uint64()
+	err := vm.SSCService.NewEpoch(input, vm, vm.StateDB, blockNum)
+	if err != nil {
+		return nil, err
+	}
+	return nil, nil
+}
+
+type slOpinion struct {
+}
+
+func (s *slOpinion) RequiredGas(vm *SSCVM, contract *Contract, input []byte) (uint64, error) {
+	return 0, nil
+}
+func (s *slOpinion) RunWriteCapable(vm *SSCVM, contract *Contract, input []byte) ([]byte, error) {
+	err := vm.SSCService.UploadSLOpinion(input, vm.StateDB)
+	if err != nil {
+		return nil, err
+	}
+	return nil, nil
+}
+
+func IsSSCAddrApplyOnChain(addr common.Address) bool {
+	_, ok := SSCAddrsApplyOnChain[addr]
+	return ok
+}
+
+func IsWriteCapablePrecompiledSSCContract(addr common.Address) bool {
 	_, ok := WriteCapablePrecompiledSSCContracts[addr]
 	return ok
 }

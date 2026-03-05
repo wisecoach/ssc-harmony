@@ -129,7 +129,7 @@ func DefaultStages(ctx context.Context,
 		},
 		{
 			ID:                 SyncEpoch,
-			Description:        "Sync only Last Block of Epoch",
+			Description:        "Sync only Last Block of GetEpoch",
 			Handler:            handlerStageEpochSync,
 			RangeMode:          OnlyShortRange,
 			ChainExecutionMode: OnlyEpochChain,

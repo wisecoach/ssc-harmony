@@ -1006,9 +1006,9 @@ func (pool *TxPool) add(tx types.PoolTransaction, local bool) (replaced bool, er
 	if tx.CrossShard() {
 		from, _ := tx.SenderAddress()
 		utils.SSCLogger().Info().Str("txHash", tx.Hash().Hex()).
-			Bool("isPreCompiled", vm.IsWriteCapableSSCContract(*tx.To())).
+			Bool("isPreCompiled", vm.IsSSCAddrApplyOnChain(*tx.To())).
 			Str("from", from.Hex()).
-			Msgf("add a cross shard Tx, preCompiled: %v, nonce=%d, simulation: %v", vm.IsWriteCapableSSCContract(*tx.To()), tx.Nonce(), tx.To().Hex() == vm.SimulationCommitAddr.Hex())
+			Msgf("add a cross shard Tx, preCompiled: %v, nonce=%d, simulation: %v", vm.IsSSCAddrApplyOnChain(*tx.To()), tx.Nonce(), tx.To().Hex() == vm.SimulationCommitAddr.Hex())
 	}
 
 	logger := utils.Logger().With().Stack().Logger()
@@ -1024,7 +1024,8 @@ func (pool *TxPool) add(tx types.PoolTransaction, local bool) (replaced bool, er
 	}
 	// If the transaction fails basic validation, discard it
 	if err := pool.validateTx(tx, local); err != nil {
-		logger.Debug().Err(err).Str("hash", hash.Hex()).Msg("Discarding invalid transaction")
+		sender, _ := tx.SenderAddress()
+		logger.Debug().Err(err).Str("hash", hash.Hex()).Str("sender", sender.Hex()).Msg("Discarding invalid transaction")
 		invalidTxCounter.Inc(1)
 		return false, err
 	}

@@ -24,12 +24,15 @@ func (s *sscService) GetCallState(txHash common.Hash) *api.SimulationCallState {
 	}
 	simulationCallState := state.SimulationCallStates[state.SimulationNum]
 	if simulationCallState == nil {
-		utils.SSCLogger().Error().Str("txHash", txHash.Hex()).Msgf("get nil callstate")
+		utils.SSCLogger().Error().Str("txHash", txHash.Hex()).Msgf("get nil simulationCallState")
 		return nil
 	}
 	callState := state.SimulationCallStates[state.SimulationNum].Get(state.CurrentCallFrame.CallIndex)
 	if callState == nil {
-		utils.SSCLogger().Error().Str("txHash", txHash.Hex()).Msgf("get nil callstate")
+		utils.SSCLogger().Error().Str("txHash", txHash.Hex()).
+			Interface("callStates", state.SimulationCallStates[state.SimulationNum]).
+			Interface("currentFrame", state.CurrentCallFrame).
+			Msgf("get nil callstate")
 		return nil
 	}
 	return callState
@@ -125,7 +128,7 @@ func (s *sscService) GetState(db api.StateDB, txHash common.Hash, address common
 		rwset.CurrentState.State[address] = make(map[common.Hash]common.Hash)
 	}
 	if value, exists := rwset.CurrentState.State[address][key]; !exists {
-		val, err := db.GetState(address, key)
+		val, err := db.GetState(txHash, address, key)
 		if err != nil {
 			if errors.Is(err, api.ErrLockedByOtherTx) {
 				callState.LockedByOtherTx = err
@@ -159,7 +162,7 @@ func (s *sscService) SetState(db api.StateDB, txHash common.Hash, address common
 		rwset.ReadState.State[address] = make(map[common.Hash]common.Hash)
 	}
 	if _, exists := rwset.ReadState.State[address][key]; !exists {
-		val, err := db.GetState(address, key)
+		val, err := db.GetState(txHash, address, key)
 		if err != nil {
 			utils.SSCLogger().Error().Err(err).Str("txHash", txHash.Hex()).
 				Msgf("failed to set state: get conflict state [%s:%s]", address.Hex(), key.Hex())
@@ -180,8 +183,8 @@ func (s *sscService) SetState(db api.StateDB, txHash common.Hash, address common
 }
 
 func (s *sscService) SubSimuBalance(txHash common.Hash, address common.Address, amount *big.Int) error {
-	s.stateLock.Lock()
-	defer s.stateLock.Unlock()
+	s.verifyCtxLock.Lock()
+	defer s.verifyCtxLock.Unlock()
 
 	verifyContext := s.executionVerifyContexts[txHash]
 	if verifyContext == nil {
@@ -203,8 +206,8 @@ func (s *sscService) SubSimuBalance(txHash common.Hash, address common.Address, 
 }
 
 func (s *sscService) AddSimuBalance(txHash common.Hash, address common.Address, balance *big.Int) error {
-	s.stateLock.Lock()
-	defer s.stateLock.Unlock()
+	s.verifyCtxLock.Lock()
+	defer s.verifyCtxLock.Unlock()
 
 	verifyContext := s.executionVerifyContexts[txHash]
 	if verifyContext == nil {
@@ -225,8 +228,8 @@ func (s *sscService) AddSimuBalance(txHash common.Hash, address common.Address, 
 }
 
 func (s *sscService) GetSimuBalance(txHash common.Hash, address common.Address) (*big.Int, error) {
-	s.stateLock.RLock()
-	defer s.stateLock.RUnlock()
+	s.verifyCtxLock.RLock()
+	defer s.verifyCtxLock.RUnlock()
 
 	verifyContext := s.executionVerifyContexts[txHash]
 	if verifyContext == nil {
@@ -246,8 +249,8 @@ func (s *sscService) GetSimuBalance(txHash common.Hash, address common.Address) 
 }
 
 func (s *sscService) GetSimuState(txHash common.Hash, address common.Address, key common.Hash) (common.Hash, error) {
-	s.stateLock.RLock()
-	defer s.stateLock.RUnlock()
+	s.verifyCtxLock.RLock()
+	defer s.verifyCtxLock.RUnlock()
 
 	verifyContext := s.executionVerifyContexts[txHash]
 	if verifyContext == nil {
@@ -260,12 +263,15 @@ func (s *sscService) GetSimuState(txHash common.Hash, address common.Address, ke
 	if !exists {
 		return common.Hash{}, api.ErrInvalidExecution
 	}
+	utils.SSCLogger().Debug().Str("txHash", txHash.Hex()).
+		Interface("callFrame", verifyContext.CallFrame).
+		Msgf("get simu state [%s:%s] = %s", address.Hex(), key.Hex(), state[key].Hex())
 	return state[key], nil
 }
 
 func (s *sscService) SetSimuState(txHash common.Hash, address common.Address, key common.Hash, value common.Hash) error {
-	s.stateLock.Lock()
-	defer s.stateLock.Unlock()
+	s.verifyCtxLock.Lock()
+	defer s.verifyCtxLock.Unlock()
 
 	verifyContext := s.executionVerifyContexts[txHash]
 	if verifyContext == nil {
@@ -282,8 +288,8 @@ func (s *sscService) SetSimuState(txHash common.Hash, address common.Address, ke
 }
 
 func (s *sscService) GetResult(txHash common.Hash) (result []byte, leftOverGas uint64, err error) {
-	s.stateLock.Lock()
-	defer s.stateLock.Unlock()
+	s.verifyCtxLock.Lock()
+	defer s.verifyCtxLock.Unlock()
 
 	verifyContext := s.executionVerifyContexts[txHash]
 	if verifyContext == nil {
@@ -291,7 +297,8 @@ func (s *sscService) GetResult(txHash common.Hash) (result []byte, leftOverGas u
 	}
 	if len(verifyContext.DependentResults) <= verifyContext.CallFrame.PC {
 		utils.SSCLogger().Error().Str("txHash", txHash.Hex()).
-			Int("verifyContextIndex", verifyContext.CallFrame.PC).
+			Interface("verifyContext", verifyContext).
+			Interface("callFrame", verifyContext.CallFrame).
 			Int("dependentResultsLength", len(verifyContext.DependentResults)).
 			Msg("get result failed, index out of range")
 		return nil, 0, api.ErrInvalidExecution
@@ -300,6 +307,7 @@ func (s *sscService) GetResult(txHash common.Hash) (result []byte, leftOverGas u
 	if ret == nil {
 		utils.SSCLogger().Error().Str("txHash", txHash.Hex()).
 			Int("verifyContextIndex", verifyContext.CallFrame.PC).
+			Interface("dependentResults", verifyContext.DependentResults).
 			Msg("get result failed, result is nil")
 		return nil, 0, api.ErrInvalidExecution
 	}

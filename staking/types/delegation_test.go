@@ -25,7 +25,7 @@ func TestUndelegate(t *testing.T) {
 	if delegation.Undelegations[0].Amount.Cmp(amount1) != 0 {
 		t.Errorf("undelegate failed, amount does not match")
 	}
-	// check the undelegation's Epoch
+	// check the undelegation's GetEpoch
 	if delegation.Undelegations[0].Epoch.Cmp(epoch1) != 0 {
 		t.Errorf("undelegate failed, epoch does not match")
 	}

@@ -12,6 +12,7 @@ import (
 	"os"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/crypto"
@@ -59,7 +60,6 @@ func build_client_keys() {
 }
 
 func build_validators() {
-
 	blsOutput := ".hmy/validator_bls"
 	ecdsaOutput := ".hmy/validator_ecdsa"
 	os.MkdirAll(blsOutput, fs.ModeDir)
@@ -164,11 +164,12 @@ func newKeyFromECDSA(privateKeyECDSA *ecdsa.PrivateKey) *keystore.Key {
 // }
 
 type ShardConfig struct {
-	name      string // test name
-	shard     uint32 // shard num
-	validator int    // validator num per shard
-	ssc       int    // ssc member num per shard
-	delay     uint64
+	name             string // test name
+	shard            uint32 // shard num
+	validator        int    // validator num per shard
+	ssc              int    // ssc member num per shard
+	delay            uint64
+	validatorPerNode int
 }
 
 func buildConfig(config ShardConfig) {
@@ -190,79 +191,119 @@ func buildConfig(config ShardConfig) {
 	defer file.Close()
 	json.NewDecoder(file).Decode(&devServers)
 
+	nodeCnt := 0
 	local_launch_config_lines := make([]string, 0)
 	dev_launch_config_lines := make([]string, 0)
 	for i := uint32(0); i < config.shard; i++ {
 		for j := 0; j < config.validator; j++ {
 			v := shard2validators[i][j]
-			local_launch_config_lines = append(local_launch_config_lines, fmt.Sprintf("%s %s %s %d %s %d",
-				v.Address, v.EthAddr, v.BLSKeyPATH, v.ShardID, "127.0.0.1", 9000+40*int(i)+j*2))
-			dev_launch_config_lines = append(dev_launch_config_lines, fmt.Sprintf("%s %s %s %d %s %d",
-				v.Address, v.EthAddr, v.BLSKeyPATH, v.ShardID, devServers.IPs[i], 9000+40*int(i)+j*2))
+			local_launch_config_lines = append(local_launch_config_lines, fmt.Sprintf("%s %s %s %d %s %d %s",
+				v.Address, v.EthAddr, v.BLSKeyPATH, v.ShardID, "127.0.0.1", 9000+40*int(i)+j*2, v.EcdsaKeyPath))
+			dev_launch_config_lines = append(dev_launch_config_lines, fmt.Sprintf("%s %s %s %d %s %d %s",
+				v.Address, v.EthAddr, v.BLSKeyPATH, v.ShardID, devServers.IPs[nodeCnt/config.validatorPerNode], 9000+40*int(i)+j*2, v.EcdsaKeyPath))
+			nodeCnt++
 		}
 	}
 	os.WriteFile(local_path+"/"+"launch_config_local.txt", []byte(strings.Join(local_launch_config_lines, "\n")), 0644)
 	os.WriteFile(dev_path+"/"+"launch_config_dev.txt", []byte(strings.Join(dev_launch_config_lines, "\n")), 0644)
 
+	nodeCnt = 0
 	localConfig := &api.ShardSimulateCommitteeConfig{}
 	devConfig := &api.ShardSimulateCommitteeConfig{}
 	localSSC := make([]*api.ShardSimulateCommittee, 0)
 	devSSC := make([]*api.ShardSimulateCommittee, 0)
 	for i := uint32(0); i < config.shard; i++ {
+		localValidators := make([]*api.Member, 0)
+		devValidators := make([]*api.Member, 0)
 		localSSCMembers := make([]*api.Member, 0)
 		devSSCMembers := make([]*api.Member, 0)
 		timeout := &api.TimeoutConfig{
 			Sp1:         config.delay,
 			PoolTimeout: config.delay,
 		}
-		for j := 0; j < config.ssc; j++ {
-			s := shard2validators[i][j]
-			localSSCMembers = append(localSSCMembers, &api.Member{
-				Address:   common.HexToAddress(s.EthAddr),
-				Stake:     new(big.Int).SetUint64(1000000000000000000),
+		for j := 0; j < config.validator; j++ {
+			v := shard2validators[i][j]
+			key := &keystore.Key{}
+			err := common.LoadJSON(v.EcdsaKeyPath, key)
+			if err != nil {
+				fmt.Printf("Failed to load private key: %v", err)
+				return
+			}
+			pub := crypto.FromECDSAPub(&key.PrivateKey.PublicKey)
+			pubHex := common.Bytes2Hex(pub)
+			localValidators = append(localValidators, &api.Member{
+				Address:   common.HexToAddress(v.EthAddr),
 				Endpoint:  fmt.Sprintf("http://127.0.0.1:%d", 9500+40*int(i)+j*2),
-				BLSPubKey: s.BLSPublicKey,
+				BLSPubKey: v.BLSPublicKey,
+				PubKey:    pubHex,
 			})
-			devSSCMembers = append(devSSCMembers, &api.Member{
-				Address:   common.HexToAddress(s.EthAddr),
-				Stake:     new(big.Int).SetUint64(1000000000000000000),
-				Endpoint:  fmt.Sprintf("http://%s:%d", devServers.IPs[i], 9500+40*int(i)+j*2),
-				BLSPubKey: s.BLSPublicKey,
+			devValidators = append(devValidators, &api.Member{
+				Address:   common.HexToAddress(v.EthAddr),
+				PubKey:    pubHex,
+				Endpoint:  fmt.Sprintf("http://%s:%d", devServers.IPs[nodeCnt/config.validatorPerNode], 9500+40*int(i)+j*2),
+				BLSPubKey: v.BLSPublicKey,
 			})
+			nodeCnt++
 		}
+		localSSCMembers = localValidators[:config.ssc]
+		devSSCMembers = devValidators[:config.ssc]
 		localSSC = append(localSSC, &api.ShardSimulateCommittee{
-			ShardID:   i,
-			Epoch:     0,
-			Members:   localSSCMembers,
-			Number:    len(localSSCMembers),
-			Threshold: int(math.Ceil(float64((2*len(localSSCMembers) + 1) / 3))),
+			ShardID:    i,
+			Epoch:      0,
+			Members:    localSSCMembers,
+			Validators: localValidators,
+			Number:     len(localSSCMembers),
+			Threshold:  int(math.Ceil(float64((2*len(localSSCMembers) + 1) / 3))),
 		})
 		devSSC = append(devSSC, &api.ShardSimulateCommittee{
-			ShardID:   i,
-			Epoch:     0,
-			Members:   devSSCMembers,
-			Number:    len(devSSCMembers),
-			Threshold: int(math.Ceil(float64((2*len(devSSCMembers) + 1) / 3))),
+			ShardID:    i,
+			Epoch:      0,
+			Members:    devSSCMembers,
+			Validators: devValidators,
+			Number:     len(devSSCMembers),
+			Threshold:  int(math.Ceil(float64((2*len(devSSCMembers) + 1) / 3))),
 		})
 		localConfig.Timeout = timeout
 		devConfig.Timeout = timeout
 	}
 	localConfig.Committees = localSSC
 	devConfig.Committees = devSSC
+	repuConfig := &api.ReputationConfig{
+		SLFileSize:    10000,
+		SLDifficulty:  5,
+		SLTimeout:     time.Millisecond * 200,
+		SLPeriod:      time.Second * 3,
+		A:             0.5,
+		C:             2,
+		W1:            0.33,
+		W2:            0.33,
+		W3:            0.34,
+		RewardPrice:   new(big.Int).SetInt64(10000),
+		RB:            1,
+		RS:            2,
+		BlockPerEpoch: 10,
+		Theta:         1,
+		T:             5,
+	}
+	localConfig.Reputation = repuConfig
+	devConfig.Reputation = repuConfig
 	type GenesisConfig struct {
 		SSCConfig           *api.ShardSimulateCommitteeConfig `json:"ssc_config" yaml:"ssc_config"`
 		GenesisAccountsDir  string                            `json:"genesis_accounts_dir" yaml:"genesis_accounts_dir"`
 		ContractDeployerDir string                            `json:"contract_deployer_dir" yaml:"contract_deployer_dir"`
+		ValidatorKeyDir     string                            `json:"validator_key_dir" yaml:"validator_key_dir"`
 	}
 	local_genesis := &GenesisConfig{
 		SSCConfig:           localConfig,
 		GenesisAccountsDir:  ".hmy/expr_accounts",
 		ContractDeployerDir: ".hmy/contract_deploy_accounts",
+		ValidatorKeyDir:     ".hmy/validator_ecdsa",
 	}
 	dev_genesis := &GenesisConfig{
 		SSCConfig:           devConfig,
 		GenesisAccountsDir:  ".hmy/expr_accounts",
 		ContractDeployerDir: ".hmy/contract_deploy_accounts",
+		ValidatorKeyDir:     ".hmy/validator_ecdsa",
 	}
 	writeYaml(local_path+"/"+"genesis_config_local.yaml", local_genesis)
 	writeYaml(dev_path+"/"+"genesis_config_dev.yaml", dev_genesis)
@@ -284,60 +325,84 @@ func buildConfig(config ShardConfig) {
 func main() {
 	configs := []ShardConfig{
 		{
-			name:      "基准测试",
-			shard:     4,
-			validator: 4,
-			ssc:       1,
-			delay:     10,
+			name:             "基准测试",
+			shard:            4,
+			validator:        4,
+			ssc:              1,
+			delay:            10,
+			validatorPerNode: 4,
 		},
 		{
-			name:      "基准测试，时延5",
-			shard:     4,
-			validator: 4,
-			ssc:       1,
-			delay:     5,
+			name:             "基准测试，时延5",
+			shard:            4,
+			validator:        4,
+			ssc:              1,
+			delay:            5,
+			validatorPerNode: 4,
 		},
 		{
-			name:      "基准测试，时延20",
-			shard:     4,
-			validator: 4,
-			ssc:       1,
-			delay:     20,
+			name:             "基准测试，时延20",
+			shard:            4,
+			validator:        4,
+			ssc:              1,
+			delay:            20,
+			validatorPerNode: 4,
 		},
 		{
-			name:      "不同分片数_2",
-			shard:     2,
-			validator: 4,
-			ssc:       1,
-			delay:     10,
+			name:             "不同分片数_2",
+			shard:            2,
+			validator:        4,
+			ssc:              1,
+			delay:            10,
+			validatorPerNode: 4,
 		},
 		{
-			name:      "不同分片数_8",
-			shard:     8,
-			validator: 4,
-			ssc:       1,
-			delay:     10,
+			name:             "不同分片数_8",
+			shard:            8,
+			validator:        4,
+			ssc:              1,
+			delay:            10,
+			validatorPerNode: 4,
 		},
 		{
-			name:      "不同分片数_16",
-			shard:     16,
-			validator: 4,
-			ssc:       1,
-			delay:     10,
+			name:             "不同分片数_16",
+			shard:            16,
+			validator:        4,
+			ssc:              1,
+			delay:            10,
+			validatorPerNode: 4,
 		},
 		{
-			name:      "不同分片数_32",
-			shard:     32,
-			validator: 4,
-			ssc:       1,
-			delay:     10,
+			name:             "不同分片数_32",
+			shard:            32,
+			validator:        4,
+			ssc:              1,
+			delay:            10,
+			validatorPerNode: 4,
 		},
 		{
-			name:      "安全性测试",
-			shard:     2,
-			validator: 10,
-			ssc:       4,
-			delay:     10,
+			name:             "安全性测试",
+			shard:            2,
+			validator:        10,
+			ssc:              10,
+			delay:            10,
+			validatorPerNode: 1,
+		},
+		{
+			name:             "安全性本地测试",
+			shard:            2,
+			validator:        4,
+			ssc:              4,
+			delay:            10,
+			validatorPerNode: 1,
+		},
+		{
+			name:             "安全性本地测试2",
+			shard:            2,
+			validator:        4,
+			ssc:              1,
+			delay:            10,
+			validatorPerNode: 1,
 		},
 	}
 	for _, config := range configs {
@@ -346,5 +411,6 @@ func main() {
 }
 
 func main1() {
+	dxs
 	build_client_keys()
 }

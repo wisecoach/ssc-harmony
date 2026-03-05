@@ -228,7 +228,7 @@ func TestEVMStaking(t *testing.T) {
 	// delegation.Undelegations = []staking.Undelegation{
 	//	staking.Undelegation{
 	//		Amount: new(big.Int).Mul(big.NewInt(denominations.One), big.NewInt(100)),
-	//		Epoch:  common.Big0,
+	//		GetEpoch:  common.Big0,
 	//	},
 	// }
 	// wrapper.Delegations[0].Undelegate(
@@ -251,7 +251,7 @@ func TestEVMStaking(t *testing.T) {
 	//		Undelegations: []staking.Undelegation{
 	//			staking.Undelegation{
 	//				Amount: new(big.Int).Mul(big.NewInt(denominations.One), big.NewInt(200)),
-	//				Epoch:  common.Big0,
+	//				GetEpoch:  common.Big0,
 	//			},
 	//		},
 	//	},

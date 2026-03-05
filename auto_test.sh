@@ -65,4 +65,8 @@ function download() {
 }
 
 # test_delay
-test_shard
+#test_shard
+. test/debug.sh
+test/test.sh
+sleep 30
+test/kill_node.sh

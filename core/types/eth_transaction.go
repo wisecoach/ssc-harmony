@@ -335,7 +335,7 @@ func (tx *EthTransaction) Cost() (*big.Int, error) {
 }
 
 // SenderAddress returns the address of transaction sender
-// Note that mainnet has unprotected transactions prior to Epoch 28
+// Note that mainnet has unprotected transactions prior to GetEpoch 28
 func (tx *EthTransaction) SenderAddress() (common.Address, error) {
 	var signer Signer
 	if !tx.Protected() {

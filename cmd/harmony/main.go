@@ -17,18 +17,11 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/ethereum/go-ethereum/log"
-	"github.com/harmony-one/harmony/crypto/bls"
-	"github.com/harmony-one/harmony/internal/blsgen"
-	rpc_common "github.com/harmony-one/harmony/rpc/common"
-	"github.com/harmony-one/harmony/shard/committee"
-	"github.com/harmony-one/harmony/ssc"
-	"github.com/harmony-one/harmony/ssc/api"
-	"github.com/harmony-one/harmony/ssc/lm"
-
 	ethCommon "github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/common/hexutil"
+	"github.com/ethereum/go-ethereum/log"
 	ffi_bls "github.com/harmony-one/bls/ffi/go/bls"
+	"github.com/harmony-one/harmony/accounts/keystore"
 	"github.com/harmony-one/harmony/api/service"
 	"github.com/harmony-one/harmony/api/service/crosslink_sending"
 	"github.com/harmony-one/harmony/api/service/pprof"
@@ -40,7 +33,9 @@ import (
 	"github.com/harmony-one/harmony/consensus"
 	"github.com/harmony-one/harmony/consensus/quorum"
 	"github.com/harmony-one/harmony/core"
+	"github.com/harmony-one/harmony/crypto/bls"
 	"github.com/harmony-one/harmony/hmy/downloader"
+	"github.com/harmony-one/harmony/internal/blsgen"
 	"github.com/harmony-one/harmony/internal/chain"
 	"github.com/harmony-one/harmony/internal/cli"
 	"github.com/harmony-one/harmony/internal/common"
@@ -60,7 +55,10 @@ import (
 	"github.com/harmony-one/harmony/numeric"
 	"github.com/harmony-one/harmony/p2p"
 	rosetta_common "github.com/harmony-one/harmony/rosetta/common"
+	rpc_common "github.com/harmony-one/harmony/rpc/common"
 	"github.com/harmony-one/harmony/shard"
+	"github.com/harmony-one/harmony/ssc"
+	"github.com/harmony-one/harmony/ssc/api"
 	"github.com/harmony-one/harmony/webhooks"
 	"github.com/pkg/errors"
 	"github.com/spf13/cobra"
@@ -308,7 +306,7 @@ func setupNodeAndRun(hc harmonyconfig.HarmonyConfig) {
 	nodeconfigSetShardSchedule(hc)
 	nodeconfig.SetShardingSchedule(shard.Schedule)
 	nodeconfig.SetVersion(getHarmonyVersion())
-	lm.DisableMonitor()
+	// lm.DisableMonitor()
 
 	go func() {
 		for {
@@ -393,11 +391,9 @@ func setupNodeAndRun(hc harmonyconfig.HarmonyConfig) {
 		HTTPPort:    hc.HTTP.RosettaPort,
 	}
 
-	if (hc.HTTP.Port-9500)%40 == 0 {
-		go func() {
-			ol.Println(http.ListenAndServe(":6060", nil))
-		}()
-	}
+	go func() {
+		ol.Println(http.ListenAndServe(fmt.Sprintf(":%d", hc.HTTP.Port-3000), nil))
+	}()
 
 	fmt.Printf("node: %v, rpc address %v:%v\n", hc.General.DataDir, nodeConfig.IP, nodeConfig.RPCServer.HTTPPort)
 
@@ -893,11 +889,21 @@ func setupConsensusAndNode(hc harmonyconfig.HarmonyConfig, nodeConfig *nodeconfi
 		utils.Logger().Error().Err(err).Msg("cannot load BLS key")
 		return nil
 	}
+	submitterKey := new(keystore.Key)
+	keyBytes, err := os.ReadFile(hc.SSC.SubmitterKeyPath)
+	if err != nil {
+		utils.Logger().Error().Err(err).Msg("cannot load submitter key")
+		return nil
+	}
+	err = submitterKey.UnmarshalJSON(keyBytes)
+	if err != nil {
+		utils.Logger().Error().Err(err).Msg("cannot unmarshal submitter key")
+		return nil
+	}
 	blsKey := bls.WrapperFromPrivateKey(blsSecretKey)
 	chainId := registry.GetBlockchain().Config().ChainID
-	txSigner := ssc.NewTxSigner(chainId)
+	txSigner := ssc.NewTxSigner(chainId, submitterKey.PrivateKey)
 	signerMgr := ssc.NewBLSSignerMgr(nodeConfig.ShardID, ethCommon.Address(sscSelfAddr), &blsKey)
-	cm := ssc.NewCommitteeMechanism(ethCommon.Address(sscSelfAddr), nodeConfig.ShardID, sscOnChainConfig, signerMgr)
 	sscConfig := &api.Config{
 		CallTimeout:              hc.SSC.CallTimeout,
 		CXTTimeout:               hc.SSC.CXTTimeout,
@@ -905,22 +911,12 @@ func setupConsensusAndNode(hc harmonyconfig.HarmonyConfig, nodeConfig *nodeconfi
 		SimulationCommitGasPrice: hc.SSC.SimulationCommitGasPrice,
 		LockExecutionOnce:        hc.SSC.LockExecutionOnce,
 	}
-	sscService := ssc.NewService(context.Background(), sscConfig, cm, sscOnChainConfig, signerMgr, currentNode, bc, txSigner)
+	ctx := context.Background()
+	comm := ssc.NewComm()
+	txSub := ssc.NewTxSubmitter(nodeConfig.ShardID, txSigner, currentNode, sscConfig)
+	cm := ssc.NewCommitteeMechanism(ctx, ethCommon.Address(sscSelfAddr), nodeConfig.ShardID, sscOnChainConfig, signerMgr, txSub, comm)
+	sscService := ssc.NewService(ctx, sscConfig, cm, sscOnChainConfig, signerMgr, currentNode, bc, txSigner, comm, txSub)
 	currentNode.SetSSCService(sscService)
-	shardState, _ := committee.WithStakingEnabled.Compute(
-		new(big.Int), registry.GetBlockchain(),
-	)
-	for _, c := range shardState.Shards {
-		validators := make([]*api.Validator, 0)
-		shardId := c.ShardID
-		for _, slot := range c.Slots {
-			validators = append(validators, &api.Validator{
-				Address: slot.EcdsaAddress,
-				PubKey:  slot.BLSPublicKey.Hex(),
-			})
-		}
-		cm.UpdateValidators(shardId, validators)
-	}
 
 	if hc.Legacy != nil && hc.Legacy.TPBroadcastInvalidTxn != nil {
 		currentNode.BroadcastInvalidTx = *hc.Legacy.TPBroadcastInvalidTxn

@@ -5,11 +5,11 @@ import (
 	"crypto/ecdsa"
 	"math/big"
 	"runtime/debug"
+	"strings"
 
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/crypto"
 	blslib "github.com/harmony-one/bls/ffi/go/bls"
-	"github.com/harmony-one/harmony/core/genesis"
 	"github.com/harmony-one/harmony/core/types"
 	"github.com/harmony-one/harmony/crypto/bls"
 	"github.com/harmony-one/harmony/internal/utils"
@@ -37,26 +37,30 @@ func (b *blsSignerMgr) GetValidatorSigner() api.BLSSigner {
 	return b.validatorSigner
 }
 
-func (b *blsSignerMgr) UpdateSSCPubKeys(shardID uint32, addr2Index map[common.Address]int, pubKeys []bls.PublicKeyWrapper) {
-	b.sscSigner.UpdatePubKeys(shardID, addr2Index, pubKeys)
+func (b *blsSignerMgr) UpdateSSCPubKeys(shardID uint32, epoch api.Epoch, addr2Index map[common.Address]int, pubKeys []bls.PublicKeyWrapper) {
+	b.sscSigner.UpdatePubKeys(shardID, epoch, addr2Index, pubKeys)
 }
 
-func (b *blsSignerMgr) UpdateValidatorPubKeys(shardID uint32, addr2Index map[common.Address]int, pubKeys []bls.PublicKeyWrapper) {
-	b.validatorSigner.UpdatePubKeys(shardID, addr2Index, pubKeys)
+func (b *blsSignerMgr) UpdateValidatorPubKeys(shardID uint32, epoch api.Epoch, addr2Index map[common.Address]int, pubKeys []bls.PublicKeyWrapper) {
+	b.validatorSigner.UpdatePubKeys(shardID, epoch, addr2Index, pubKeys)
 }
 
 func newBLSSigner(shardId uint32, selfAddr common.Address, key *bls.PrivateKeyWrapper) api.BLSSigner {
 	// return &fakeBLSSigner{} for testing
 	return &blsSigner{
-		addr2Index:       make(map[uint32]map[common.Address]int),
-		shard2PublicKeys: make(map[uint32][]bls.PublicKeyWrapper),
+		addr2Index:       make(map[uint32]map[api.Epoch]map[common.Address]int),
+		shard2PublicKeys: make(map[uint32]map[api.Epoch][]bls.PublicKeyWrapper),
 		privateKey:       key,
-		selfAddr:         selfAddr,
 		selfShardId:      shardId,
+		selfAddr:         selfAddr,
 	}
 }
 
 type fakeBLSSigner struct {
+}
+
+func (f *fakeBLSSigner) Address() common.Address {
+	return common.Address{}
 }
 
 func (f *fakeBLSSigner) Sign(msg api.MessageToSign) ([]byte, error) {
@@ -71,15 +75,19 @@ func (f *fakeBLSSigner) Verify(msg api.BLSSignedMessage) error {
 	return nil
 }
 
-func (f *fakeBLSSigner) UpdatePubKeys(shardID uint32, addr2Index map[common.Address]int, pubKeys []bls.PublicKeyWrapper) {
+func (f *fakeBLSSigner) UpdatePubKeys(shardID uint32, epoch api.Epoch, addr2Index map[common.Address]int, pubKeys []bls.PublicKeyWrapper) {
 }
 
 type blsSigner struct {
-	addr2Index       map[uint32]map[common.Address]int
-	shard2PublicKeys map[uint32][]bls.PublicKeyWrapper
+	addr2Index       map[uint32]map[api.Epoch]map[common.Address]int
+	shard2PublicKeys map[uint32]map[api.Epoch][]bls.PublicKeyWrapper
 	privateKey       *bls.PrivateKeyWrapper
 	selfShardId      uint32
 	selfAddr         common.Address
+}
+
+func (s *blsSigner) Address() common.Address {
+	return s.selfAddr
 }
 
 func (s *blsSigner) Sign(msg api.MessageToSign) ([]byte, error) {
@@ -95,16 +103,25 @@ func (s *blsSigner) Aggregate(msgs []api.SSCMessage) (signatures []byte, bitmap 
 	if len(msgs) == 0 {
 		return nil, nil, errors.New("empty msg")
 	}
-	utils.SSCLogger().Debug().Interface("msgs", msgs).Msgf("aggregating BLS signatures, num=%d", len(msgs))
+	utils.SSCLogger().Debug().Msgf("aggregating BLS signatures, num=%d", len(msgs))
 	msg := msgs[0]
 	// check if message is identical
 	for i := 1; i < len(msgs); i++ {
 		if !bytes.Equal(msg.Bytes(), msgs[i].Bytes()) {
-			utils.SSCLogger().Error().Interface("msg", msg).Msg("messages are not identical")
+			utils.SSCLogger().Error().Interface("msg", msg).Interface("msg_i", msgs[i]).Msg("messages are not identical")
 			return nil, nil, errors.New("messages are not identical")
 		}
 	}
-	mask := bls.NewMask(s.shard2PublicKeys[s.selfShardId])
+	pubKeys := s.shard2PublicKeys[s.selfShardId][msg.GetEpoch()]
+	addr2Index := s.addr2Index[s.selfShardId][msg.GetEpoch()]
+	if len(pubKeys) == 0 {
+		stack := debug.Stack()
+		utils.SSCLogger().Error().Interface("msg", msg).Msgf(""+
+			"d %d, epoch %d, stack=%s", s.selfShardId, msg.GetEpoch(), string(stack))
+		return nil, nil, errors.New("no public keys")
+	}
+	mask := bls.NewMask(pubKeys)
+	usedIndexes := make([]int, 0)
 	signs := make([]*blslib.Sign, 0)
 	for _, msg := range msgs {
 		sign := blslib.Sign{}
@@ -119,44 +136,45 @@ func (s *blsSigner) Aggregate(msgs []api.SSCMessage) (signatures []byte, bitmap 
 			return nil, nil, err
 		}
 		signs = append(signs, &sign)
-		index := s.addr2Index[s.selfShardId][msg.GetSenderAddr()]
+		index, exists := addr2Index[msg.GetSenderAddr()]
+		if !exists {
+			stack := debug.Stack()
+			utils.SSCLogger().Error().Err(err).Interface("msg", msg).Msgf("failed to find address %s in shard %d, %s", msg.GetSenderAddr(), s.selfShardId, string(stack))
+		}
+		usedIndexes = append(usedIndexes, index)
 		err = mask.SetBit(index, true)
 		if err != nil {
 			utils.SSCLogger().Error().Err(err).Interface("msg", msg).Msgf("failed to set bit %d in BLS mask, %d", index, mask.Len())
 			return nil, nil, err
 		}
-		singleMask := bls.NewMask(s.shard2PublicKeys[s.selfShardId])
-		err = singleMask.SetBit(index, true)
-		verify := sign.Verify(singleMask.AggregatePublic, common.Bytes2Hex(msg.Bytes()))
-		if !verify {
-			stack := debug.Stack()
-			utils.SSCLogger().Error().Err(err).Interface("msg", msg).Msgf("failed to verify single BLS signature, stack=%s", string(stack))
-			return nil, nil, err
-		} else {
-			utils.SSCLogger().Debug().Interface("msg", msg).Msg("single BLS signature verified")
-		}
 	}
+	keys := mask.GetPubKeyFromMask(true)
+	keyHexes := make([]string, 0, len(keys))
+	for _, key := range keys {
+		keyHexes = append(keyHexes, key.SerializeToHexStr())
+	}
+	utils.SSCLogger().Debug().Interface("usedIndexes", usedIndexes).Msgf("aggregating BLS signatures, len=%d, msgLen=%d, epoch=%d", len(keys), len(msgs), msg.GetEpoch())
 	aggregateSig := bls.AggregateSig(signs)
 	return aggregateSig.Serialize(), mask.Bitmap, nil
 }
 
 func (s *blsSigner) Verify(msg api.BLSSignedMessage) error {
-	mask := bls.NewMask(s.shard2PublicKeys[msg.GetShardId()])
+	if msg == nil {
+		return errors.New("message is nil")
+	}
+	pubKeys := s.shard2PublicKeys[msg.GetShardId()][msg.GetEpoch()]
+	if len(pubKeys) == 0 {
+		return errors.New("no public keys")
+	}
+	mask := bls.NewMask(pubKeys)
+	if len(msg.GetBLSBitMap()) == 0 {
+		stack := debug.Stack()
+		utils.SSCLogger().Error().Interface("msg", msg).Msgf("empty bitmap, stack=%s", string(stack))
+	}
 	err := mask.SetMask(msg.GetBLSBitMap())
 	if err != nil {
 		return err
 	}
-	// keys, err := mask.GetSignedPubKeysFromBitmap(msg.GetBLSBitMap())
-	// if err != nil {
-	// 	return err
-	// }
-	// mergedKey := &blslib.PublicKey{}
-	// for _, key := range keys {
-	// 	mergedKey.Add(key.Object)
-	// }
-	// if !bytes.Equal(mask.AggregatePublic.Serialize(), mergedKey.Serialize()) {
-	// 	utils.SSCLogger().Error().Msg("aggregate public key mismatch")
-	// }
 	sign := blslib.Sign{}
 	err = sign.Deserialize(msg.GetSignatures())
 	if err != nil {
@@ -167,50 +185,25 @@ func (s *blsSigner) Verify(msg api.BLSSignedMessage) error {
 	if valid {
 		return nil
 	} else {
+		keys := mask.GetPubKeyFromMask(true)
+		keyHexes := make([]string, 0, len(keys))
+		for _, key := range keys {
+			keyHexes = append(keyHexes, key.SerializeToHexStr())
+		}
+		keysStr := strings.Join(keyHexes, ", ")
 		stack := debug.Stack()
-		utils.SSCLogger().Error().Msgf("BLS signature verification failed for msg: %s", string(stack))
+		utils.SSCLogger().Error().Msgf("BLS signature verification failed for msg: [%s], stack=%s", keysStr, string(stack))
 		return errors.New("verify bls signature failed")
 	}
 }
 
-func (s *blsSigner) UpdatePubKeys(shardID uint32, addr2Index map[common.Address]int, pubKeys []bls.PublicKeyWrapper) {
-	s.shard2PublicKeys[shardID] = pubKeys
-	s.addr2Index[shardID] = addr2Index
-
-	if _, exist := addr2Index[s.selfAddr]; exist && shardID == s.selfShardId {
-		msg := &api.CXTCommitVote{}
-		sign, err := s.Sign(msg)
-		if err != nil {
-			utils.SSCLogger().Error().Err(err).Msg("failed to sign self-signed CXTCommitVote message after updating pub keys")
-			return
-		}
-		msg.BaseSSCMessage = api.BaseSSCMessage{
-			Signature:  sign,
-			SenderAddr: s.selfAddr,
-		}
-		aggregate, bitMap, err := s.Aggregate([]api.SSCMessage{msg})
-		if err != nil {
-			utils.SSCLogger().Error().Err(err).Msg("failed to aggregate self-signed CXTCommitVote message after updating pub keys")
-			return
-		}
-		sscMsg := &api.CXTCommitSSCVote{}
-		sscMsg.BaseBLSSignedMessage = api.BaseBLSSignedMessage{
-			Signatures: aggregate,
-			BLSBitMap:  bitMap,
-			ShardId:    s.selfShardId,
-		}
-
-		if !bytes.Equal(sscMsg.Bytes(), msg.Bytes()) {
-			utils.SSCLogger().Error().Interface("msg", msg).Interface("sscMsg", sscMsg).Msg("ssc msg is not equal to original msg")
-		}
-
-		err = s.Verify(sscMsg)
-		if err != nil {
-			utils.SSCLogger().Error().Err(err).Msg("failed to verify self-signed CXTCommitVote message after updating pub keys")
-			return
-		}
-		utils.SSCLogger().Info().Msg("successfully updated BLS public keys and verified self-signed CXTCommitVote message")
+func (s *blsSigner) UpdatePubKeys(shardID uint32, epoch api.Epoch, addr2Index map[common.Address]int, pubKeys []bls.PublicKeyWrapper) {
+	if _, exists := s.shard2PublicKeys[shardID]; !exists {
+		s.shard2PublicKeys[shardID] = make(map[api.Epoch][]bls.PublicKeyWrapper)
+		s.addr2Index[shardID] = make(map[api.Epoch]map[common.Address]int)
 	}
+	s.shard2PublicKeys[shardID][epoch] = pubKeys
+	s.addr2Index[shardID][epoch] = addr2Index
 }
 
 type txSigner struct {
@@ -219,11 +212,10 @@ type txSigner struct {
 	chainId *big.Int
 }
 
-func NewTxSigner(chainId *big.Int) api.TxSigner {
-	key := genesis.SSCSubmitterKey
-	addr := crypto.PubkeyToAddress(key.PublicKey)
+func NewTxSigner(chainId *big.Int, privateKey *ecdsa.PrivateKey) api.TxSigner {
+	addr := crypto.PubkeyToAddress(privateKey.PublicKey)
 	return &txSigner{
-		key:     key,
+		key:     privateKey,
 		chainId: chainId,
 		addr:    addr,
 	}

@@ -82,6 +82,11 @@ func (s HeaderFieldSetter) GasUsed(newGasUsed uint64) HeaderFieldSetter {
 	return s
 }
 
+func (s HeaderFieldSetter) CrossGasUsed(newGasUsed uint64) HeaderFieldSetter {
+	s.h.SetCrossGasUsed(newGasUsed)
+	return s
+}
+
 // Time sets the UNIX timestamp of this block.
 //
 // It stores a copy; the caller may freely modify the original.

@@ -2,10 +2,11 @@ package vm
 
 import (
 	"fmt"
+	"sync/atomic"
+
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/harmony-one/harmony/common/math"
 	"github.com/harmony-one/harmony/internal/utils"
-	"sync/atomic"
 )
 
 // SSCVMInterpreter represents an SSCVM interpreter
@@ -192,6 +193,8 @@ func (in *SSCVMInterpreter) Run(contract *Contract, input []byte, readOnly bool)
 			pc++
 		}
 	}
+	utils.SSCLogger().Debug().Str("txHash", in.vm.Context.TxHash.Hex()).
+		Uint64("pc", pc).Str("opcode", op.String()).Msg("finished execution")
 	return nil, nil
 }
 

@@ -50,6 +50,7 @@ func (consensus *Consensus) announce(block *types.Block) {
 		Str("MsgBlockHash", FPBTMsg.BlockHash.Hex()).
 		Uint64("MsgViewID", FPBTMsg.ViewID).
 		Uint64("MsgBlockNum", FPBTMsg.BlockNum).
+		Int("msgSize", len(msgToSend)).
 		Msg("[Announce] Added Announce message in FPBT")
 	consensus.fBFTLog.AddBlock(block)
 

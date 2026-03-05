@@ -5,7 +5,7 @@ import (
 )
 
 const (
-	// VLBPE is a Very Large Block Per Epoch
+	// VLBPE is a Very Large Block Per GetEpoch
 	VLBPE = 1000000000000
 )
 

@@ -1,6 +1,7 @@
 package shardingconfig
 
 import (
+	"fmt"
 	"math/big"
 
 	ethCommon "github.com/ethereum/go-ethereum/common"
@@ -233,6 +234,7 @@ func (sc instance) FnAccounts() []genesis.DeployAccount {
 // or not in the bootstrapping process.
 func (sc instance) FindAccount(blsPubKey string) (bool, *genesis.DeployAccount) {
 	for _, item := range sc.hmyAccounts {
+		fmt.Printf("item.BLSPublicKey: %s, blsKey: %s\n", item.BLSPublicKey, blsPubKey)
 		if item.BLSPublicKey == blsPubKey {
 			// TODO if the account should be leader
 			return false, &item

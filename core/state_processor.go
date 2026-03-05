@@ -19,11 +19,15 @@ package core
 import (
 	"encoding/binary"
 	"fmt"
+	"math/big"
+	"time"
+
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/crypto"
 	"github.com/ethereum/go-ethereum/rlp"
 	"github.com/harmony-one/harmony/block"
 	"github.com/harmony-one/harmony/consensus/reward"
+	"github.com/harmony-one/harmony/core/genesis"
 	"github.com/harmony-one/harmony/core/rawdb"
 	"github.com/harmony-one/harmony/core/state"
 	"github.com/harmony-one/harmony/core/types"
@@ -38,8 +42,6 @@ import (
 	staking "github.com/harmony-one/harmony/staking/types"
 	lru "github.com/hashicorp/golang-lru"
 	"github.com/pkg/errors"
-	"math/big"
-	"time"
 )
 
 var (
@@ -123,6 +125,7 @@ func (p *StateProcessor) Process(
 		outcxs         types.CXReceipts
 		incxs          = block.IncomingReceipts()
 		usedGas        = new(uint64)
+		crossGasUsed   = new(uint64)
 		header         = block.Header()
 		allLogs        []*types.Log
 		gp             = new(GasPool).AddGas(block.GasLimit())
@@ -163,7 +166,9 @@ func (p *StateProcessor) Process(
 				stakeMsgs []staking.StakeMsg
 			)
 			if tx.CrossShard() {
+				originGasUsed := *usedGas
 				receipt, cxReceipt, stakeMsgs, _, err = ApplyCXTTransaction(p.sscService, p.bc, &beneficiary, gp, statedb, header, tx, usedGas, cfg)
+				*crossGasUsed += *usedGas - originGasUsed
 			} else {
 				receipt, cxReceipt, stakeMsgs, _, err = ApplyTransaction(
 					p.bc, &beneficiary, gp, statedb, header, tx, usedGas, cfg,
@@ -250,7 +255,7 @@ func (p *StateProcessor) Process(
 		State:      statedb,
 	}
 	p.resultCache.Add(cacheKey, result)
-	utils.SSCLogger().Debug().Str("block num", block.Number().String()).Uint64("gasUsed", *usedGas).Msg("processor commit block")
+	utils.SSCLogger().Debug().Str("block num", block.Number().String()).Uint64("gasUsed", *usedGas).Uint64("submitterNonce", statedb.GetNonce(genesis.SSCSubmitterAddr)).Msg("processor commit block")
 	return receipts, outcxs, blockStakeMsgs, allLogs, *usedGas, payout, statedb, nil
 }
 
@@ -270,7 +275,7 @@ func getTransactionType(
 	} else {
 		return types.CXTransaction
 	}
-	// numShards := shard.Schedule.InstanceForEpoch(header.Epoch()).NumShards()
+	// numShards := shard.Schedule.InstanceForEpoch(header.GetEpoch()).NumShards()
 	// // Assuming here all the shards are consecutive from 0 to n-1, n is total number of shards
 	// if tx.ShardID() != tx.ToShardID() &&
 	// 	header.ShardID() == tx.ShardID() &&
@@ -413,11 +418,12 @@ func ApplyCXTTransaction(service api.Service, bc ChainContext, author *common.Ad
 		return nil, nil, nil, 0, err
 	}
 	// if the transaction is a transaction need to be executed on chain
-	if vm.IsWriteCapableSSCContract(*tx.To()) {
+	if vm.IsSSCAddrApplyOnChain(*tx.To()) {
 		vmCtx := NewSSCVMContext(msg.From(), tx.Hash(), api.CallIndex{}, tx.GasPrice(), header, bc, author)
 		sscvm := vm.NewSSCVM(vmCtx, statedb, config, cfg, service, vm.Precompiled)
 		result, err := NewSSCStateTransition(sscvm, msg, gp).TransitionDb()
 		if err != nil {
+			utils.SSCLogger().Debug().Str("txHash", tx.Hash().Hex()).Msgf("ApplyTransaction failed: err=%s", err.Error())
 			return nil, nil, nil, 0, err
 		}
 		root := statedb.IntermediateRoot(config.IsS3(header.Epoch())).Bytes()
@@ -465,7 +471,7 @@ func SimulateCXTransaction(service api.Service, bc ChainContext, author *common.
 		return nil, nil, nil, 0, err
 	}
 	// SimulationCommit and CxtCommitOrRollback needs to be executed for every validator
-	if vm.IsWriteCapableSSCContract(*tx.To()) {
+	if vm.IsSSCAddrApplyOnChain(*tx.To()) {
 		vmCtx := NewSSCVMContext(msg.From(), tx.Hash(), api.CallIndex{}, tx.GasPrice(), header, bc, author)
 		sscvm := vm.NewSSCVM(vmCtx, statedb, config, cfg, service, vm.Precompiled)
 		result, err := NewSSCStateTransition(sscvm, msg, gp).TransitionDb()
@@ -479,7 +485,7 @@ func SimulateCXTransaction(service api.Service, bc ChainContext, author *common.
 		receipt.Bloom = types.CreateBloom(types.Receipts{receipt})
 		receipt.TxHash = tx.Hash()
 		receipt.GasUsed = result.UsedGas
-		utils.SSCLogger().Debug().Str("txHash", tx.Hash().Hex()).Msgf("SimulateCXTransaction receipt, root=%s, gasUsed=%d, bloom=%s", common.Bytes2Hex(root), result.UsedGas, common.Bytes2Hex(receipt.Bloom.Bytes()))
+		utils.SSCLogger().Debug().Str("txHash", tx.Hash().Hex()).Msgf("SimulateCXTransaction receipt, root=%s, gasUsed=%d", common.Bytes2Hex(root), result.UsedGas)
 		return receipt, nil, nil, result.UsedGas, nil
 	} else {
 		statedb.SetNonce(msg.From(), statedb.GetNonce(msg.From())+1)

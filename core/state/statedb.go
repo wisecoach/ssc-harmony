@@ -20,10 +20,11 @@ package state
 import (
 	"encoding/json"
 	"fmt"
-	"github.com/harmony-one/harmony/ssc/api"
 	"math/big"
 	"sort"
 	"time"
+
+	"github.com/harmony-one/harmony/ssc/api"
 
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/core/types"
@@ -179,7 +180,7 @@ func New(root common.Hash, db Database, snaps *snapshot.Tree, locker api.StateLo
 		}
 	}
 	if locker != nil {
-		locker.BindStateDB(sdb)
+		locker.BindStateDB(root, sdb)
 	}
 	return sdb, nil
 }
@@ -375,9 +376,9 @@ func (db *DB) GetCodeHash(addr common.Address) common.Hash {
 }
 
 // GetState retrieves a value from the given account's storage trie.
-func (db *DB) GetState(addr common.Address, hash common.Hash) (common.Hash, error) {
+func (db *DB) GetState(txHash common.Hash, addr common.Address, hash common.Hash) (common.Hash, error) {
 	if db.locker != nil {
-		err := db.locker.Locked(api.FormKey(addr, hash))
+		err := db.locker.Lockable(api.FormKey(addr, hash), txHash)
 		if err != nil {
 			state, _ := db.GetStateWithoutLock(addr, hash)
 			return state, err
@@ -501,9 +502,9 @@ func (db *DB) SetCode(addr common.Address, code []byte, isValidatorCode bool) {
 	}
 }
 
-func (db *DB) SetState(addr common.Address, key, value common.Hash) error {
+func (db *DB) SetState(txHash common.Hash, addr common.Address, key, value common.Hash) error {
 	if db.locker != nil {
-		err := db.locker.Locked(api.FormKey(addr, key))
+		err := db.locker.Lockable(api.FormKey(addr, key), txHash)
 		if err != nil {
 			return err
 		}
@@ -521,7 +522,7 @@ func (db *DB) SetStateWithoutLock(addr common.Address, key, value common.Hash) e
 
 func (db *DB) GetAndLockState(txHash common.Hash, callIndex api.CallIndex, address common.Address, key common.Hash) (common.Hash, error) {
 	stateKey := api.FormKey(address, key)
-	err := db.locker.CheckLockable(stateKey, txHash, api.SharedLock)
+	err := db.locker.RLockable(stateKey, txHash)
 	if err != nil {
 		return common.Hash{}, err
 	}
@@ -529,7 +530,7 @@ func (db *DB) GetAndLockState(txHash common.Hash, callIndex api.CallIndex, addre
 	if err != nil {
 		return common.Hash{}, err
 	}
-	err = db.locker.Lock(txHash, callIndex, stateKey, value, api.SharedLock)
+	err = db.locker.Lock(txHash, callIndex, stateKey, value)
 	if err != nil {
 		return common.Hash{}, err
 	}
@@ -538,7 +539,7 @@ func (db *DB) GetAndLockState(txHash common.Hash, callIndex api.CallIndex, addre
 
 func (db *DB) SetAndLockState(txHash common.Hash, callIndex api.CallIndex, address common.Address, key common.Hash, value common.Hash) error {
 	stateKey := api.FormKey(address, key)
-	err := db.locker.CheckLockable(stateKey, txHash, api.ExclusiveLock)
+	err := db.locker.Lockable(stateKey, txHash)
 	if err != nil {
 		return err
 	}
@@ -546,7 +547,7 @@ func (db *DB) SetAndLockState(txHash common.Hash, callIndex api.CallIndex, addre
 	if err != nil {
 		return err
 	}
-	err = db.locker.Lock(txHash, callIndex, stateKey, oldValue, api.ExclusiveLock)
+	err = db.locker.Lock(txHash, callIndex, stateKey, oldValue)
 	if err != nil {
 		return err
 	}

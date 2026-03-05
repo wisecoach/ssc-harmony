@@ -74,13 +74,10 @@ func (m *Mutex) Lock() {
 
 		utils.SSCLogger().Error().Msgf("\n\n⚠️ MUTEX LOCK TIMEOUT DETECTED ⚠️\n"+
 			"Waited longer than %s\n"+
-			"Requesting goroutine ID: %d\n"+
-			"Requesting goroutine stack:\n%s\n"+
 			"Lock holder goroutine ID: %d\n"+
 			"Lock holder stack:\n%s\n"+
 			"Lock held since: %s\n\n",
 			TimeoutThreshold,
-			currentGID, string(currentStack),
 			holderGID, string(holderStack),
 			time.Since(holderTime))
 		<-done // 仍然获取锁，但已记录问题

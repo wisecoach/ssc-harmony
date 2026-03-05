@@ -97,7 +97,7 @@ func gasSStore(vm VM, contract *Contract, stack *Stack, mem *Memory, memorySize 
 	evm := vm.(*EVM)
 	var (
 		y, x       = stack.Back(1), stack.Back(0)
-		current, _ = evm.StateDB.GetState(contract.Address(), common.BigToHash(x))
+		current, _ = evm.StateDB.GetState(evm.TxHash, contract.Address(), common.BigToHash(x))
 	)
 	// The legacy gas metering only takes into consideration the current state
 	// Legacy rules should be applied if we are in Petersburg (removal of EIP-1283)
@@ -185,7 +185,7 @@ func gasSStoreEIP2200(vm VM, contract *Contract, stack *Stack, mem *Memory, memo
 	// Gas sentry honoured, do the actual gas calculation based on the stored value
 	var (
 		y, x       = stack.Back(1), stack.Back(0)
-		current, _ = evm.StateDB.GetState(contract.Address(), common.BigToHash(x))
+		current, _ = evm.StateDB.GetState(evm.TxHash, contract.Address(), common.BigToHash(x))
 	)
 	value := common.BigToHash(y)
 

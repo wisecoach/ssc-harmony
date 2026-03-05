@@ -55,7 +55,7 @@ const (
 
 // 0x10 range - comparison ops.
 const (
-	LT OpCode = iota + 0x10
+	LT OpCode = 0x10 + iota
 	GT
 	SLT
 	SGT
@@ -284,8 +284,8 @@ var opCodeToString = map[OpCode]string{
 
 	// 0x50 range - 'storage' and execution.
 	POP: "POP",
-	//DUP:     "DUP",
-	//SWAP:    "SWAP",
+	// DUP:     "DUP",
+	// SWAP:    "SWAP",
 	MLOAD:    "MLOAD",
 	MSTORE:   "MSTORE",
 	MSTORE8:  "MSTORE8",

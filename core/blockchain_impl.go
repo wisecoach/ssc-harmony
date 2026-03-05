@@ -2111,7 +2111,7 @@ func (bc *BlockChainImpl) reportBlock(
 Chain config: %v
 
 Number: %v
-Epoch: %v
+GetEpoch: %v
 NumTxn: %v
 NumStkTxn: %v
 Hash: 0x%x
@@ -2769,7 +2769,7 @@ func UpdateValidatorVotingPower(
 			// NOTE Think carefully about when time comes to delete offchain things
 			// TODO Someone: collect and then delete every 30 epochs
 			// rawdb.DeleteValidatorSnapshot(
-			// 	bc.db, currentValidator, currentEpochSuperCommittee.Epoch,
+			// 	bc.db, currentValidator, currentEpochSuperCommittee.GetEpoch,
 			// )
 			// rawdb.DeleteValidatorStats(bc.db, currentValidator)
 			stats, err := rawdb.ReadValidatorStats(bc.ChainDb(), currentValidator)

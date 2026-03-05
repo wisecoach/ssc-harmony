@@ -2,12 +2,13 @@ package rpc
 
 import (
 	"context"
+	"sync"
+	"sync/atomic"
+
 	"github.com/ethereum/go-ethereum/common"
 	rpc2 "github.com/harmony-one/harmony/eth/rpc"
 	"github.com/harmony-one/harmony/ssc/api"
 	"golang.org/x/time/rate"
-	"sync"
-	"sync/atomic"
 )
 
 var lock = sync.Mutex{}
@@ -100,15 +101,9 @@ func (s *PublicSSCCrossService) HandleCXTCommitProof(
 
 func (s *PublicSSCCrossService) SignalReSimulation(
 	ctx context.Context,
-	signal *api.ReSimulationSignal) error {
-	s.internalService.SignalReSimulation(signal)
+	signals *api.ReSimulationSignals) error {
+	s.internalService.SignalReSimulation(signals)
 	return nil
-}
-
-func (s *PublicSSCCrossService) NotifyReSimulationStart(
-	ctx context.Context,
-	txHash common.Hash) {
-	s.internalService.NotifyReSimulationStart(txHash)
 }
 
 type PublicSSCShardService struct {
@@ -173,13 +168,19 @@ func (s *PublicSSCShardService) HandleCommitVote(
 	return nil, nil
 }
 
-// func (s *PublicSSCShardService) RequestSimulationResult(
-// 	ctx context.Context,
-// 	req *api.SimulationResultRequest,
-// ) (*api.CXTSimulationSSCResult, error) {
-// 	ret, err := s.internalService.RequestSimulationResult(req)
-// 	if err != nil {
-// 		return nil, err
-// 	}
-// 	return ret, nil
-// }
+func (s *PublicSSCShardService) SLTest(ctx context.Context, req *api.SLTestRequest) (*api.SLTestResult, error) {
+	return s.internalService.SLTest(req), nil
+}
+
+func (s *PublicSSCShardService) AddRetryTx(ctx context.Context, tx *api.RetryTx) error {
+	s.internalService.AddRetryTx(tx)
+	return nil
+}
+func (s *PublicSSCShardService) RetryCommit(ctx context.Context, txHash common.Hash) (*api.RetryCommitResp, error) {
+	return s.internalService.RetryCommit(txHash), nil
+}
+
+func (s *PublicSSCShardService) RetryCancel(ctx context.Context, txHash common.Hash) error {
+	s.internalService.RetryCancel(txHash)
+	return nil
+}

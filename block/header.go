@@ -40,22 +40,23 @@ var (
 // MarshalJSON ..
 func (h Header) MarshalJSON() ([]byte, error) {
 	return json.Marshal(struct {
-		ParentHash  common.Hash      `json:"parentHash"`
-		UncleHash   common.Hash      `json:"sha3Uncles"`
-		Nonce       types.BlockNonce `json:"nonce"`
-		Coinbase    common.Address   `json:"miner"`
-		Root        common.Hash      `json:"stateRoot"`
-		TxHash      common.Hash      `json:"transactionsRoot"`
-		ReceiptHash common.Hash      `json:"receiptsRoot"`
-		Bloom       types.Bloom      `json:"logsBloom"`
-		Difficulty  *hexutil.Big     `json:"difficulty"`
-		Number      *hexutil.Big     `json:"number"`
-		GasLimit    hexutil.Uint64   `json:"gasLimit"`
-		GasUsed     hexutil.Uint64   `json:"gasUsed"`
-		Time        *hexutil.Big     `json:"timestamp"`
-		Extra       hexutil.Bytes    `json:"extraData"`
-		MixDigest   common.Hash      `json:"mixHash"`
-		Hash        common.Hash      `json:"hash"`
+		ParentHash   common.Hash      `json:"parentHash"`
+		UncleHash    common.Hash      `json:"sha3Uncles"`
+		Nonce        types.BlockNonce `json:"nonce"`
+		Coinbase     common.Address   `json:"miner"`
+		Root         common.Hash      `json:"stateRoot"`
+		TxHash       common.Hash      `json:"transactionsRoot"`
+		ReceiptHash  common.Hash      `json:"receiptsRoot"`
+		Bloom        types.Bloom      `json:"logsBloom"`
+		Difficulty   *hexutil.Big     `json:"difficulty"`
+		Number       *hexutil.Big     `json:"number"`
+		GasLimit     hexutil.Uint64   `json:"gasLimit"`
+		GasUsed      hexutil.Uint64   `json:"gasUsed"`
+		CrossGasUsed hexutil.Uint64   `json:"crossGasUsed"`
+		Time         *hexutil.Big     `json:"timestamp"`
+		Extra        hexutil.Bytes    `json:"extraData"`
+		MixDigest    common.Hash      `json:"mixHash"`
+		Hash         common.Hash      `json:"hash"`
 		// Additional Fields
 		ViewID  *big.Int `json:"viewID"`
 		Epoch   *big.Int `json:"epoch"`
@@ -73,6 +74,7 @@ func (h Header) MarshalJSON() ([]byte, error) {
 		(*hexutil.Big)(h.Number()),
 		hexutil.Uint64(h.GasLimit()),
 		hexutil.Uint64(h.GasUsed()),
+		hexutil.Uint64(h.CrossGasUsed()),
 		(*hexutil.Big)(h.Time()),
 		h.Extra(),
 		h.MixDigest(),

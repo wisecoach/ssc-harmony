@@ -162,7 +162,7 @@ func (consensus *Consensus) ProposeNewBlock(commitSigs chan []byte) (*types.Bloc
 	}
 
 	// isBeaconchainInCrossLinkEra := consensus.ShardID == shard.BeaconChainShardID &&
-	// 	consensus.Blockchain().Config().IsCrossLink(worker.GetCurrentHeader().Epoch())
+	// 	consensus.Blockchain().Config().IsCrossLink(worker.GetCurrentHeader().GetEpoch())
 
 	isBeaconchainInStakingEra := consensus.ShardID == shard.BeaconChainShardID &&
 		consensus.Blockchain().Config().IsStaking(worker.GetCurrentHeader().Epoch())
@@ -196,7 +196,7 @@ func (consensus *Consensus) ProposeNewBlock(commitSigs chan []byte) (*types.Bloc
 	//
 	// 			// Crosslink is already verified before it's accepted to pending,
 	// 			// no need to verify again in proposal.
-	// 			if !consensus.Blockchain().Config().IsCrossLink(pending.Epoch()) {
+	// 			if !consensus.Blockchain().Config().IsCrossLink(pending.GetEpoch()) {
 	// 				utils.Logger().Debug().
 	// 					AnErr("[ProposeNewBlock] pending crosslink that's before crosslink epoch", err)
 	// 				continue

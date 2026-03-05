@@ -30,6 +30,6 @@ func TestEpochPrecompile(t *testing.T) {
 	}
 	resultingEpoch := new(big.Int).SetBytes(result)
 	if resultingEpoch.Cmp(targetEpoch) != 0 {
-		t.Error("Epoch did not match")
+		t.Error("GetEpoch did not match")
 	}
 }

@@ -27,6 +27,7 @@ import (
 	"path/filepath"
 	"strings"
 
+	common2 "github.com/harmony-one/harmony/internal/common"
 	"github.com/harmony-one/harmony/ssc/api"
 	"gopkg.in/yaml.v2"
 
@@ -92,6 +93,7 @@ type Genesis struct {
 	SSCConfig           *api.ShardSimulateCommitteeConfig `json:"ssc_config" yaml:"ssc_config"`
 	GenesisAccountsDir  string                            `json:"genesis_accounts_dir" yaml:"genesis_accounts_dir"`
 	ContractDeployerDir string                            `json:"contract_deployer_dir" yaml:"contract_deployer_dir"`
+	ValidatorKeyDir     string                            `json:"validator_key_dir" yaml:"validator_key_dir"`
 
 	// These fields are used for consensus tests. Please don't use them
 	// in actual genesis blocks.
@@ -190,7 +192,7 @@ func NewGenesisSpec(netType nodeconfig.NetworkType, shardID uint32, configPath s
 					for _, member := range committeeShard0.Members {
 						committee.Members = append(committee.Members, &api.Member{
 							Address:   member.Address,
-							Stake:     member.Stake,
+							PubKey:    member.PubKey,
 							Endpoint:  strings.Replace(member.Endpoint, "9500", fmt.Sprintf("%d", 9500+i*40), 1),
 							BLSPubKey: member.BLSPubKey,
 						})
@@ -218,6 +220,23 @@ func NewGenesisSpec(netType nodeconfig.NetworkType, shardID uint32, configPath s
 							Balance: big.NewInt(InitFreeFund).Mul(big.NewInt(InitFreeFund), big.NewInt(denominations.One)),
 						}
 						utils.Logger().Info().Msgf("genesis account: %s", path)
+					}
+					return nil
+				})
+			}
+			if len(gen.ValidatorKeyDir) > 0 {
+				_ = filepath.WalkDir(gen.ValidatorKeyDir, func(path string, d os.DirEntry, err error) error {
+					if strings.HasSuffix(d.Name(), ".key") {
+						bech32ToAddress, err := common2.Bech32ToAddress(strings.TrimSuffix(d.Name(), ".key"))
+						initBalance := big.NewInt(InitFreeFund).Mul(big.NewInt(InitFreeFund), big.NewInt(denominations.One))
+						utils.SSCLogger().Debug().Str("addr", bech32ToAddress.Hex()).Msgf("init validator account, balance: %s", initBalance.String())
+						if err != nil {
+							utils.Logger().Error().Msgf("genesis account: %s, bech32ToAddress: %s, err: %v", path, bech32ToAddress, err)
+							return err
+						}
+						gen.Alloc[bech32ToAddress] = GenesisAccount{
+							Balance: initBalance,
+						}
 					}
 					return nil
 				})
@@ -326,7 +345,7 @@ func (g *Genesis) ToBlock(db ethdb.Database) *types.Block {
 		statedb.SetCode(addr, account.Code, false)
 		statedb.SetNonce(addr, account.Nonce)
 		for key, value := range account.Storage {
-			statedb.SetState(addr, key, value)
+			statedb.SetStateWithoutLock(addr, key, value)
 		}
 		if err := rawdb.WritePreimages(
 			statedb.Database().DiskDB(), map[ethCommon.Hash][]byte{

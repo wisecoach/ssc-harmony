@@ -210,7 +210,7 @@ func (node *Node) chain(shardID uint32, options core.Options) core.BlockChain {
 	return bc
 }
 
-// EpochChain returns the epoch chain from node. Epoch chain is the same as BeaconChain,
+// EpochChain returns the epoch chain from node. GetEpoch chain is the same as BeaconChain,
 // but with differences in behaviour.
 func (node *Node) EpochChain() core.BlockChain {
 	return node.chain(shard.BeaconChainShardID, core.Options{
@@ -298,7 +298,7 @@ func (node *Node) addPendingTransactions(registry *registry.Registry, newTxs typ
 		for i, tx := range poolTxs {
 			if txErrs[i] == nil {
 				// if transaction is cross-shard tx and it is not the tx apply on chain
-				if tx.CrossShard() && !vm.IsWriteCapableSSCContract(*tx.To()) {
+				if tx.CrossShard() && !vm.IsSSCAddrApplyOnChain(*tx.To()) {
 					utils.Logger().Info().Str("txHash", tx.Hash().Hex()).Msg("Pre-Simulating cross shard transaction")
 					senderAddress, err := tx.SenderAddress()
 					if err != nil {
@@ -308,7 +308,7 @@ func (node *Node) addPendingTransactions(registry *registry.Registry, newTxs typ
 					req := &api.CXTSimulationRequest{
 						SimulationNum: 0,
 						Tx:            tx.(*types.Transaction),
-						TxHash:        tx.Hash().Bytes(),
+						TxHash:        tx.Hash(),
 						From:          senderAddress,
 						GasPool:       gasLimit,
 					}

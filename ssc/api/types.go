@@ -5,14 +5,15 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"github.com/ethereum/go-ethereum/common"
-	"github.com/ethereum/go-ethereum/crypto"
-	"github.com/harmony-one/harmony/core/types"
 	"math/big"
 	"strconv"
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/ethereum/go-ethereum/common"
+	"github.com/ethereum/go-ethereum/crypto"
+	"github.com/harmony-one/harmony/core/types"
 )
 
 const (
@@ -133,6 +134,14 @@ func (r RelatedShards) Add(shard uint32) RelatedShards {
 	return append(r, shard)
 }
 
+func (r RelatedShards) Merge(shards RelatedShards) RelatedShards {
+	newRS := r
+	for _, s := range shards {
+		newRS = newRS.Add(s)
+	}
+	return newRS
+}
+
 // CallIndex is the index of the cross-shard call
 type CallIndex []int
 
@@ -168,6 +177,12 @@ func (c CallIndex) Compare(other CallIndex) int {
 	return len(other) - len(c)
 }
 
+type CallNodeData struct {
+	CallIndex CallIndex       `json:"call_index"`
+	ShardId   uint32          `json:"shard_id"`
+	Children  []*CallNodeData `json:"children,omitempty"`
+}
+
 type Config struct {
 	CallTimeout              time.Duration
 	CXTTimeout               time.Duration
@@ -186,33 +201,48 @@ type Candidate struct {
 // Member is the member of the committee
 type Member struct {
 	Address   common.Address
-	Stake     *big.Int `json:"stake" gencodec:"required"`
+	PubKey    string
 	Endpoint  string
 	BLSPubKey string
-}
-
-type Validator struct {
-	Address common.Address
-	PubKey  string
 }
 
 type ShardSimulateCommitteeConfig struct {
 	Committees []*ShardSimulateCommittee `json:"committees" yaml:"committees"`
 	Timeout    *TimeoutConfig            `json:"timeout" yaml:"timeout"`
+	Reputation *ReputationConfig         `json:"reputation" yaml:"reputation"`
 }
 
 // ShardSimulateCommittee (SSC) is the committee of the shard simulation
 type ShardSimulateCommittee struct {
-	ShardID   uint32
-	Epoch     Epoch
-	Members   []*Member
-	Number    int
-	Threshold int
+	ShardID    uint32
+	Epoch      Epoch
+	Members    []*Member
+	Validators []*Member
+	Number     int
+	Threshold  int
 }
 
 type TimeoutConfig struct {
 	Sp1         uint64 `json:"sp1" yaml:"sp1"`                   // source phase 1, used to notify origin shard to rollback cxt for timeout
 	PoolTimeout uint64 `json:"pool_timeout" yaml:"pool_timeout"` // the timeout to remove cxt from pool
+}
+
+type ReputationConfig struct {
+	SLFileSize    int           `json:"sl_file_size" yaml:"sl_file_size"`       // the file size of the subjective logic test
+	SLDifficulty  int           `json:"sl_difficulty" yaml:"sl_difficulty"`     // the difficulty of the subjective logic test
+	SLTimeout     time.Duration `json:"sl_timeout" yaml:"sl_timeout"`           // the timeout to subjective logic test
+	SLPeriod      time.Duration `json:"sl_period" yaml:"sl_period"`             // the period to subjective logic test
+	A             float64       `json:"a" yaml:"a"`                             // base rate of Omega for SL
+	C             float64       `json:"c" yaml:"c"`                             // the uncertainty constant
+	W1            float64       `json:"w1" yaml:"w1"`                           // the weight of A
+	W2            float64       `json:"w2" yaml:"w2"`                           // the weight of S
+	W3            float64       `json:"w3" yaml:"w3"`                           // the weight of P
+	RewardPrice   *big.Int      `json:"reward_price" yaml:"reward_price"`       // reward gas price
+	RB            float64       `json:"rb" yaml:"rb"`                           // reward base coefficient
+	RS            float64       `json:"rs" yaml:"rs"`                           // reward simulation coefficient
+	BlockPerEpoch uint64        `json:"block_per_epoch" yaml:"block_per_epoch"` // blocks per epoch
+	Theta         float64       `json:"theta" yaml:"theta"`                     // coefficient of cost
+	T             uint64        `json:"t" yaml:"t"`                             // epochs for reward to be redeemable
 }
 
 type MessageToSign interface {
@@ -224,11 +254,13 @@ type SSCMessage interface {
 	MessageToSign
 	GetSenderAddr() common.Address
 	GetSignature() []byte
+	GetEpoch() Epoch
 }
 
 type BaseSSCMessage struct {
 	Signature  []byte
 	SenderAddr common.Address
+	Epoch      Epoch
 }
 
 func (s BaseSSCMessage) GetSenderAddr() common.Address {
@@ -237,6 +269,10 @@ func (s BaseSSCMessage) GetSenderAddr() common.Address {
 
 func (s BaseSSCMessage) GetSignature() []byte {
 	return s.Signature
+}
+
+func (s BaseSSCMessage) GetEpoch() Epoch {
+	return s.Epoch
 }
 
 func (s BaseSSCMessage) Bytes() []byte {
@@ -248,12 +284,14 @@ type BLSSignedMessage interface {
 	GetShardId() uint32
 	GetSignatures() []byte
 	GetBLSBitMap() []byte
+	GetEpoch() Epoch
 }
 
 type BaseBLSSignedMessage struct {
 	ShardId    uint32
 	Signatures []byte
 	BLSBitMap  []byte
+	Epoch      Epoch
 }
 
 func (m BaseBLSSignedMessage) GetShardId() uint32 {
@@ -268,12 +306,17 @@ func (m BaseBLSSignedMessage) GetBLSBitMap() []byte {
 	return m.BLSBitMap
 }
 
+func (m BaseBLSSignedMessage) GetEpoch() Epoch {
+	return m.Epoch
+}
+
 // CXTSimulationRequest is the request of the cross-shard transaction simulation
 type CXTSimulationRequest struct {
-	TxHash        []byte
+	Epoch         Epoch
+	TxHash        common.Hash
 	SimulationNum int
 	Author        *common.Address
-	BlockHash     []byte
+	BlockHash     common.Hash
 	Tx            *types.Transaction
 	From          common.Address
 	GasPool       uint64
@@ -282,20 +325,22 @@ type CXTSimulationRequest struct {
 // CXTSimulationResult is the result of the cross-shard transaction simulation
 type CXTSimulationResult struct {
 	BaseSSCMessage
-	RelatedShards []uint32
+	RelatedShards RelatedShards
 	Result        []byte
 	Receipt       *types.Receipt
 	UsedGas       uint64
 	Err           string
+	TreeNode      *CallNodeData
 }
 
 func (m *CXTSimulationResult) Bytes() []byte {
 	type CXTSimulationResultWithoutSignature struct {
-		RelatedShards []uint32
+		RelatedShards RelatedShards
 		Result        []byte
 		Receipt       *types.Receipt
 		UsedGas       uint64
 		Err           string
+		TreeNode      *CallNodeData
 	}
 	msg := CXTSimulationResultWithoutSignature{
 		RelatedShards: m.RelatedShards,
@@ -303,6 +348,7 @@ func (m *CXTSimulationResult) Bytes() []byte {
 		Receipt:       m.Receipt,
 		UsedGas:       m.UsedGas,
 		Err:           m.Err,
+		TreeNode:      m.TreeNode,
 	}
 	bytes, err := json.Marshal(msg)
 	if err != nil {
@@ -313,21 +359,23 @@ func (m *CXTSimulationResult) Bytes() []byte {
 
 // CXTSimulationSSCResult is CXTSimulationResult with the signature of SSC
 type CXTSimulationSSCResult struct {
-	RelatedShards []uint32
+	RelatedShards RelatedShards
 	Result        []byte
 	Receipt       *types.Receipt
 	UsedGas       uint64
 	Err           string
+	TreeNode      *CallNodeData
 	BaseBLSSignedMessage
 }
 
 func (m *CXTSimulationSSCResult) Bytes() []byte {
 	type CXTSimulationSSCResultWithoutSignature struct {
-		RelatedShards []uint32
+		RelatedShards RelatedShards
 		Result        []byte
 		Receipt       *types.Receipt
 		UsedGas       uint64
 		Err           string
+		TreeNode      *CallNodeData
 	}
 	msg := CXTSimulationSSCResultWithoutSignature{
 		RelatedShards: m.RelatedShards,
@@ -335,6 +383,7 @@ func (m *CXTSimulationSSCResult) Bytes() []byte {
 		Receipt:       m.Receipt,
 		UsedGas:       m.UsedGas,
 		Err:           m.Err,
+		TreeNode:      m.TreeNode,
 	}
 	bytes, err := json.Marshal(msg)
 	if err != nil {
@@ -347,13 +396,13 @@ func (m *CXTSimulationSSCResult) Bytes() []byte {
 type CXTReSimulationRequest struct {
 	BaseSSCMessage
 	SimulationNum int
-	TxHash        []byte
+	TxHash        common.Hash
 }
 
 func (m *CXTReSimulationRequest) Bytes() []byte {
 	type CXTReSimulationRequestWithoutSignature struct {
 		SimulationNum int
-		TxHash        []byte
+		TxHash        common.Hash
 	}
 	msg := CXTReSimulationRequestWithoutSignature{
 		SimulationNum: m.SimulationNum,
@@ -369,22 +418,24 @@ func (m *CXTReSimulationRequest) Bytes() []byte {
 // CXTReSimulationSSCResult is CXTSimulationResult with the signature of SSC
 type CXTReSimulationSSCResult struct {
 	SimulationNum int
-	RelatedShards []uint32
+	RelatedShards RelatedShards
 	Result        []byte
 	Receipt       *types.Receipt
 	UsedGas       uint64
 	Err           error
+	TreeNode      *CallNodeData
 	BaseBLSSignedMessage
 }
 
 func (m *CXTReSimulationSSCResult) Bytes() []byte {
 	type CXTReSimulationSSCResultWithoutSignature struct {
 		SimulationNum int
-		RelatedShards []uint32
+		RelatedShards RelatedShards
 		Result        []byte
 		Receipt       *types.Receipt
 		UsedGas       uint64
 		Err           error
+		TreeNode      *CallNodeData
 	}
 	msg := CXTReSimulationSSCResultWithoutSignature{
 		SimulationNum: m.SimulationNum,
@@ -393,6 +444,7 @@ func (m *CXTReSimulationSSCResult) Bytes() []byte {
 		Receipt:       m.Receipt,
 		UsedGas:       m.UsedGas,
 		Err:           m.Err,
+		TreeNode:      m.TreeNode,
 	}
 	bytes, err := json.Marshal(msg)
 	if err != nil {
@@ -404,12 +456,12 @@ func (m *CXTReSimulationSSCResult) Bytes() []byte {
 // CXTSimulation is the simulation of the cross-shard transaction
 type CXTSimulation struct {
 	SimulationNum int
-	TxHash        []byte
+	TxHash        common.Hash
 	Nonce         uint64
-	Sender        []byte
+	Sender        common.Address
 	ShardId       uint32
 	OriginShardId uint32
-	RelatedShards []uint32
+	RelatedShards RelatedShards
 	CallStates    []*CXTCallState // all cross-shard call of cxt related to this shard
 	BaseBLSSignedMessage
 }
@@ -417,12 +469,12 @@ type CXTSimulation struct {
 func (m *CXTSimulation) Bytes() []byte {
 	type CXTSimulationWithoutSignature struct {
 		SimulationNum int
-		TxHash        []byte
+		TxHash        common.Hash
 		Nonce         uint64
-		Sender        []byte
+		Sender        common.Address
 		ShardId       uint32
 		OriginShardId uint32
-		RelatedShards []uint32
+		RelatedShards RelatedShards
 		CallStates    []*CXTCallState
 	}
 	msg := CXTSimulationWithoutSignature{
@@ -444,16 +496,16 @@ func (m *CXTSimulation) Bytes() []byte {
 
 func (m *CXTSimulation) String() string {
 	callStatesStr := ""
-	return fmt.Sprintf("simulation_%s_%d: {%s}", m.TxHash, m.SimulationNum, callStatesStr)
+	return fmt.Sprintf("simulation_%s_%d: {%S}", m.TxHash, m.SimulationNum, callStatesStr)
 }
 
 // CXTReSimulation is the simulation of the cross-shard transaction
 type CXTReSimulation struct {
 	SimulationNum int
-	TxHash        []byte
+	TxHash        common.Hash
 	ShardId       uint32
 	OriginShardId uint32
-	RelatedShards []uint32
+	RelatedShards RelatedShards
 	RecallStates  []*CXTRecallState // all cross-shard call of cxt related to this shard
 	BaseBLSSignedMessage
 }
@@ -461,10 +513,10 @@ type CXTReSimulation struct {
 func (m *CXTReSimulation) Bytes() []byte {
 	type CXTReSimulationWithoutSignature struct {
 		SimulationNum int
-		TxHash        []byte
+		TxHash        common.Hash
 		ShardId       uint32
 		OriginShardId uint32
-		RelatedShards []uint32
+		RelatedShards RelatedShards
 		RecallStates  []*CXTRecallState
 	}
 	msg := CXTReSimulationWithoutSignature{
@@ -485,8 +537,8 @@ func (m *CXTReSimulation) Bytes() []byte {
 // CXTCallState is the state of cross-shard call
 type CXTCallState struct {
 	CallIndex        CallIndex
-	TopRequest       *CXTSimulationRequest // the start request of the simulation, nil if it's not the top request
-	CallRequest      *CXTCallSSCRequest    // the request of the cross-shard call, nil if it's the top request
+	TopRequest       *CXTSimulationRequest // the start request of the simulation, nil if it'S not the top request
+	CallRequest      *CXTCallSSCRequest    // the request of the cross-shard call, nil if it'S the top request
 	RWSet            *RWSet                // Read and write set generated by the simulation
 	DependentResults []*CXTCallSSCResult
 	CallResult       *CXTCallSSCResult
@@ -510,8 +562,8 @@ type CXTCallRequest struct {
 	FromShardId   uint32
 	TargetShardId uint32
 	SimulationNum int
-	RelatedShards []uint32
-	TxHash        []byte
+	RelatedShards RelatedShards
+	TxHash        common.Hash
 	Nonce         uint64
 	TxSender      []byte
 	CallIndex     CallIndex
@@ -530,8 +582,8 @@ func (m *CXTCallRequest) Bytes() []byte {
 		FromShardId   uint32
 		TargetShardId uint32
 		SimulationNum int
-		RelatedShards []uint32
-		TxHash        []byte
+		RelatedShards RelatedShards
+		TxHash        common.Hash
 		Nonce         uint64
 		TxSender      []byte
 		CallIndex     CallIndex
@@ -572,8 +624,8 @@ type CXTCallSSCRequest struct {
 	FromShardId   uint32
 	TargetShardId uint32
 	SimulationNum int
-	RelatedShards []uint32
-	TxHash        []byte
+	RelatedShards RelatedShards
+	TxHash        common.Hash
 	Nonce         uint64
 	TxSender      []byte
 	CallIndex     CallIndex
@@ -585,8 +637,8 @@ type CXTCallSSCRequest struct {
 	Value         *big.Int `json:"value" gencodec:"required"`
 	BaseBLSSignedMessage
 
-	// the SSC set the block hash of the simulation, used to sync the state, note: it's not included in the signature
-	BlockHash []byte
+	// the SSC set the block hash of the simulation, used to sync the state, note: it'S not included in the signature
+	BlockHash common.Hash
 }
 
 func (m *CXTCallSSCRequest) Bytes() []byte {
@@ -595,8 +647,8 @@ func (m *CXTCallSSCRequest) Bytes() []byte {
 		FromShardId   uint32
 		TargetShardId uint32
 		SimulationNum int
-		RelatedShards []uint32
-		TxHash        []byte
+		RelatedShards RelatedShards
+		TxHash        common.Hash
 		Nonce         uint64
 		TxSender      []byte
 		CallIndex     CallIndex
@@ -633,31 +685,37 @@ func (m *CXTCallSSCRequest) Bytes() []byte {
 
 // CXTCallResult is the result of cross-shard call
 type CXTCallResult struct {
+	TxHash        common.Hash
 	CallIndex     CallIndex
-	RelatedShards []uint32
+	RelatedShards RelatedShards
 	Result        []byte
 	LeftOverGas   uint64
-	BlockHash     []byte // the state of block hash of simulation
+	BlockHash     common.Hash // the state of block hash of simulation
 	Err           string
+	TreeNode      *CallNodeData
 	BaseSSCMessage
 }
 
 func (m *CXTCallResult) Bytes() []byte {
 	type CXTCallResultWithoutSignature struct {
+		TxHash        common.Hash
 		CallIndex     CallIndex
-		RelatedShards []uint32
+		RelatedShards RelatedShards
 		Result        []byte
 		LeftOverGas   uint64
-		BlockHash     []byte
+		BlockHash     common.Hash
 		Err           string
+		TreeNode      *CallNodeData
 	}
 	msg := CXTCallResultWithoutSignature{
+		TxHash:        m.TxHash,
 		CallIndex:     m.CallIndex,
 		RelatedShards: m.RelatedShards,
 		Result:        m.Result,
 		LeftOverGas:   m.LeftOverGas,
 		BlockHash:     m.BlockHash,
 		Err:           m.Err,
+		TreeNode:      m.TreeNode,
 	}
 	bytes, err := json.Marshal(msg)
 	if err != nil {
@@ -668,31 +726,37 @@ func (m *CXTCallResult) Bytes() []byte {
 
 // CXTCallSSCResult is the result of cross-shard call with the signature of SSC
 type CXTCallSSCResult struct {
+	TxHash        common.Hash
 	CallIndex     CallIndex
-	RelatedShards []uint32
+	RelatedShards RelatedShards
 	Result        []byte
 	LeftOverGas   uint64
-	BlockHash     []byte // the state of block hash of simulation
+	BlockHash     common.Hash // the state of block hash of simulation
 	Err           string
+	TreeNode      *CallNodeData
 	BaseBLSSignedMessage
 }
 
 func (m *CXTCallSSCResult) Bytes() []byte {
 	type CXTCallSSCResultWithoutSignature struct {
+		TxHash        common.Hash
 		CallIndex     CallIndex
-		RelatedShards []uint32
+		RelatedShards RelatedShards
 		Result        []byte
 		LeftOverGas   uint64
-		BlockHash     []byte
+		BlockHash     common.Hash
 		Err           string
+		TreeNode      *CallNodeData
 	}
 	msg := CXTCallSSCResultWithoutSignature{
+		TxHash:        m.TxHash,
 		CallIndex:     m.CallIndex,
 		RelatedShards: m.RelatedShards,
 		Result:        m.Result,
 		LeftOverGas:   m.LeftOverGas,
 		BlockHash:     m.BlockHash,
 		Err:           m.Err,
+		TreeNode:      m.TreeNode,
 	}
 	bytes, err := json.Marshal(msg)
 	if err != nil {
@@ -708,8 +772,8 @@ type CXTRecallRequest struct {
 	FromShardId   uint32
 	OriginShardId uint32
 	TargetShardId uint32
-	RelatedShards []uint32
-	TxHash        []byte
+	RelatedShards RelatedShards
+	TxHash        common.Hash
 	CallIndex     CallIndex
 	Caller        common.Address
 	Addr          common.Address
@@ -725,8 +789,8 @@ func (m *CXTRecallRequest) Bytes() []byte {
 		FromShardId   uint32
 		OriginShardId uint32
 		TargetShardId uint32
-		RelatedShards []uint32
-		TxHash        []byte
+		RelatedShards RelatedShards
+		TxHash        common.Hash
 		CallIndex     CallIndex
 		Caller        common.Address
 		Addr          common.Address
@@ -763,8 +827,8 @@ type CXTRecallSSCRequest struct {
 	OriginShardId uint32
 	FromShardId   uint32
 	TargetShardId uint32
-	RelatedShards []uint32
-	TxHash        []byte
+	RelatedShards RelatedShards
+	TxHash        common.Hash
 	CallIndex     CallIndex
 	Caller        common.Address
 	Addr          common.Address
@@ -781,8 +845,8 @@ func (m *CXTRecallSSCRequest) Bytes() []byte {
 		OriginShardId uint32
 		FromShardId   uint32
 		TargetShardId uint32
-		RelatedShards []uint32
-		TxHash        []byte
+		RelatedShards RelatedShards
+		TxHash        common.Hash
 		CallIndex     CallIndex
 		Caller        common.Address
 		Addr          common.Address
@@ -817,23 +881,25 @@ func (m *CXTRecallSSCRequest) Bytes() []byte {
 type CXTRecallResult struct {
 	BaseSSCMessage
 	SimulationNum int
-	RelatedShards []uint32
+	RelatedShards RelatedShards
 	Locked        bool // if the recall lock the state on-chain or re-simulate with rwset
 	Result        []byte
 	LeftOverGas   uint64
 	BlockHash     []byte // block hash of simulation
 	Err           error
+	TreeNode      *CallNodeData
 }
 
 func (m *CXTRecallResult) Bytes() []byte {
 	type CXTRecallResultWithoutSignature struct {
 		SimulationNum int
-		RelatedShards []uint32
+		RelatedShards RelatedShards
 		Locked        bool
 		Result        []byte
 		LeftOverGas   uint64
 		BlockHash     []byte
 		Err           error
+		TreeNode      *CallNodeData
 	}
 	msg := CXTRecallResultWithoutSignature{
 		SimulationNum: m.SimulationNum,
@@ -843,6 +909,7 @@ func (m *CXTRecallResult) Bytes() []byte {
 		LeftOverGas:   m.LeftOverGas,
 		BlockHash:     m.BlockHash,
 		Err:           m.Err,
+		TreeNode:      m.TreeNode,
 	}
 	bytes, err := json.Marshal(msg)
 	if err != nil {
@@ -854,24 +921,26 @@ func (m *CXTRecallResult) Bytes() []byte {
 // CXTRecallSSCResult is the result of cross-shard recall with the signature of SSC
 type CXTRecallSSCResult struct {
 	SimulationNum int
-	RelatedShards []uint32
+	RelatedShards RelatedShards
 	Locked        bool // if the recall lock the state on-chain or re-simulate with rwset
 	Result        []byte
 	LeftOverGas   uint64
 	BlockHash     []byte // block hash of simulation
 	Err           error
+	TreeNode      *CallNodeData
 	BaseBLSSignedMessage
 }
 
 func (m *CXTRecallSSCResult) Bytes() []byte {
 	type CXTRecallSSCResultWithoutSignature struct {
 		SimulationNum int
-		RelatedShards []uint32
+		RelatedShards RelatedShards
 		Locked        bool
 		Result        []byte
 		LeftOverGas   uint64
 		BlockHash     []byte
 		Err           error
+		TreeNode      *CallNodeData
 	}
 	msg := CXTRecallSSCResultWithoutSignature{
 		SimulationNum: m.SimulationNum,
@@ -881,6 +950,7 @@ func (m *CXTRecallSSCResult) Bytes() []byte {
 		LeftOverGas:   m.LeftOverGas,
 		BlockHash:     m.BlockHash,
 		Err:           m.Err,
+		TreeNode:      m.TreeNode,
 	}
 	bytes, err := json.Marshal(msg)
 	if err != nil {
@@ -891,7 +961,7 @@ func (m *CXTRecallSSCResult) Bytes() []byte {
 
 type SimulationResultRequest struct {
 	SimulationNum int
-	TxHash        []byte
+	TxHash        common.Hash
 }
 
 func (m *SimulationResultRequest) Bytes() []byte {
@@ -905,10 +975,10 @@ func (m *SimulationResultRequest) Bytes() []byte {
 // SimulationCommit is the used to notify SSC to commit the simulation
 type SimulationCommit struct {
 	SimulationNum int // the number of the simulation
-	TxHash        []byte
+	TxHash        common.Hash
 	Nonce         uint64
-	Sender        []byte
-	RelatedShards []uint32
+	Sender        common.Address
+	RelatedShards RelatedShards
 	Commit        bool
 	Status        SimulationCommitStatus
 	BaseBLSSignedMessage
@@ -917,10 +987,10 @@ type SimulationCommit struct {
 func (m *SimulationCommit) Bytes() []byte {
 	type SimulationCommitWithoutSignature struct {
 		SimulationNum int
-		TxHash        []byte
+		TxHash        common.Hash
 		Nonce         uint64
-		Sender        []byte
-		RelatedShards []uint32
+		Sender        common.Address
+		RelatedShards RelatedShards
 		Commit        bool
 		Status        SimulationCommitStatus
 	}
@@ -943,7 +1013,7 @@ func (m *SimulationCommit) Bytes() []byte {
 // CXTCommitVote is the vote of the cross-shard transaction commit
 type CXTCommitVote struct {
 	BaseSSCMessage
-	TxHash        []byte
+	TxHash        common.Hash
 	SimulationNum int // the number of the simulation
 	ShardId       uint32
 	OriginShardId uint32
@@ -954,7 +1024,7 @@ type CXTCommitVote struct {
 
 func (m *CXTCommitVote) Bytes() []byte {
 	type CXTCommitVoteWithoutSignature struct {
-		TxHash        []byte
+		TxHash        common.Hash
 		SimulationNum int
 		ShardId       uint32
 		OriginShardId uint32
@@ -1001,7 +1071,7 @@ type CXTExecutionFailedPayload struct {
 
 // CXTCommitSSCVote is the vote of the cross-shard transaction commit with the signatures of SSC or all nodes
 type CXTCommitSSCVote struct {
-	TxHash        []byte
+	TxHash        common.Hash
 	SimulationNum int // the number of the simulation
 	ShardId       uint32
 	OriginShardId uint32
@@ -1013,7 +1083,7 @@ type CXTCommitSSCVote struct {
 
 func (m *CXTCommitSSCVote) Bytes() []byte {
 	type CXTCommitSSCVoteWithoutSignature struct {
-		TxHash        []byte
+		TxHash        common.Hash
 		SimulationNum int
 		ShardId       uint32
 		OriginShardId uint32
@@ -1039,23 +1109,23 @@ func (m *CXTCommitSSCVote) Bytes() []byte {
 
 type CXTCommitProof struct {
 	BaseSSCMessage
-	TxHash        []byte
+	TxHash        common.Hash
 	SimulationNum int
 	Type          CXTCommitType
 	Reason        CXTCommitReason
 	OriginShard   uint32
-	RelatedShards []uint32
+	RelatedShards RelatedShards
 	Votes         []*CXTCommitSSCVote
 }
 
 func (m *CXTCommitProof) Bytes() []byte {
 	type CXTCommitProofWithoutSignature struct {
-		TxHash        []byte
+		TxHash        common.Hash
 		SimulationNum int
 		Type          CXTCommitType
 		Reason        CXTCommitReason
 		OriginShard   uint32
-		RelatedShards []uint32
+		RelatedShards RelatedShards
 		Votes         []*CXTCommitSSCVote
 	}
 	msg := CXTCommitProofWithoutSignature{
@@ -1076,18 +1146,18 @@ func (m *CXTCommitProof) Bytes() []byte {
 
 type CXTRecallProof struct {
 	BaseSSCMessage
-	TxHash        []byte
+	TxHash        common.Hash
 	SimulationNum int // the number of the simulation
-	RelatedShards []uint32
+	RelatedShards RelatedShards
 	Votes         []*CXTCommitSSCVote
 	RecallShards  []uint32
 }
 
 func (m *CXTRecallProof) Bytes() []byte {
 	type CXTRecallProofWithoutSignature struct {
-		TxHash        []byte
+		TxHash        common.Hash
 		SimulationNum int
-		RelatedShards []uint32
+		RelatedShards RelatedShards
 		Votes         []*CXTCommitSSCVote
 		RecallShards  []uint32
 	}
@@ -1105,14 +1175,25 @@ func (m *CXTRecallProof) Bytes() []byte {
 	return bytes
 }
 
+type ConflictCondition int
+
+const (
+	Simulate ConflictCondition = iota
+	Verify
+)
+
+type ReSimulationSignals struct {
+	OriginShard uint32
+	FromShard   uint32
+	Signals     []*ReSimulationSignal
+}
+
 type ReSimulationSignal struct {
-	TxHash           []byte
-	ShardId          uint32
-	OriginShardId    uint32
-	SimulationNum    int
-	Ready            bool
-	NeedResimulate   bool
-	SimulateOrVerify bool
+	TxHash        common.Hash
+	Epoch         Epoch
+	SimulationNum int
+	Ready         bool
+	Condition     ConflictCondition
 }
 
 func NewCallStack() *CallStack {
@@ -1156,20 +1237,23 @@ func (c *CallStack) Pop() *CallFrame {
 }
 
 type CXTSimulationState struct {
-	Nonce                uint64
-	TxSender             common.Address
-	CurrentCallFrame     *CallFrame
-	CallStack            *CallStack
-	SimulationRequest    *CXTSimulationRequest // the simulation request, only origin member has this
-	SimulationResult     *CXTSimulationSSCResult
-	SimulationCallStates map[int]SimulationCallStates
-	SimulationNum        int       // the number of the simulation used to identify the recall
-	LockedCallIndex      CallIndex // the locked call index, only the recall after this call index need to be executed
-	OriginShardId        uint32
-	RelatedShards        RelatedShards
-	ReSimulationSignals  map[int]map[uint32]*ReSimulationSignal
-	Ctx                  context.Context    `json:"-"`
-	CtxCancel            context.CancelFunc `json:"-"`
+	Nonce                 uint64
+	TxSender              common.Address
+	CurrentCallFrame      *CallFrame
+	CallStack             *CallStack
+	SimulationRequest     *CXTSimulationRequest // the simulation request, only origin member has this
+	SimulationResult      *CXTSimulationSSCResult
+	SimulationCallStates  map[int]SimulationCallStates
+	SimulationNum         int       // the number of the simulation used to identify the recall
+	LockedCallIndex       CallIndex // the locked call index, only the recall after this call index need to be executed
+	OriginShardId         uint32
+	RelatedShards         RelatedShards
+	ReSimulationSignals   map[int]map[uint32]*ReSimulationSignal
+	CallForest            *CallForest
+	SimulateCh            chan struct{}      `json:"-"`
+	SimulationReentryLock sync.Mutex         `json:"-"`
+	Ctx                   context.Context    `json:"-"`
+	CtxCancel             context.CancelFunc `json:"-"`
 }
 
 type SimulationCallStates []*SimulationCallState
@@ -1215,11 +1299,11 @@ type SimulationCallState struct {
 	CallSSCResult     *CXTCallSSCResult
 	TopSSCResult      *CXTSimulationSSCResult
 	LockedByOtherTx   error
-
-	DB       StateDB       `json:"-"` // the state db of the simulation
-	SyncedCh chan struct{} `json:"-"` // used to notify the state is synced
-	Lock     sync.Mutex    `json:"-"`
-	Executed bool
+	CallForest        *CallForest
+	DB                StateDB       `json:"-"` // the state db of the simulation
+	SyncedCh          chan struct{} `json:"-"` // used to notify the state is synced
+	Lock              sync.Mutex    `json:"-"`
+	Executed          bool
 }
 
 func (s *SimulationCallState) Compare(other *SimulationCallState) int {
@@ -1245,41 +1329,6 @@ type ExecutionVerifyCall struct {
 	LeftOverGas      uint64
 	CurrentState     *StateSet
 	DependentResults []*CXTCallSSCResult
-}
-
-type SimulationRecallStates []*SimulationRecallState
-
-func (s SimulationRecallStates) Get(index CallIndex) *SimulationRecallState {
-	for _, state := range s {
-		if state.CallIndex.ToString() == index.ToString() {
-			return state
-		}
-	}
-	return nil
-}
-
-func (s SimulationRecallStates) Add(state *SimulationRecallState) {
-	for i := len(s) - 1; i >= 0; i-- {
-		if state.CallIndex.Compare(s[i].CallIndex) >= 0 {
-			s = append(s, nil)
-			copy(s[i+1:], s[i:])
-			s[i] = state
-			return
-		}
-	}
-}
-
-type SimulationRecallState struct {
-	CallIndex        CallIndex
-	Locked           bool // if the recall lock the state on-chain or re-simulate with rwset
-	Requests         []*CXTRecallRequest
-	SSCRequest       *CXTRecallSSCRequest
-	DependentResults []*CXTRecallSSCResult
-	RWSet            *RWSet
-	Result           *CXTRecallResult    // the result of simulation self performed
-	SSCResult        *CXTRecallSSCResult // the result of simulation from SSC
-	Executed         bool
-	WaitingChs       []chan *CXTRecallSSCResult
 }
 
 type ExecutionVerifyContext struct {
@@ -1331,4 +1380,52 @@ type CommitState struct {
 	CommitSSCVotes  map[int]map[uint32]*CXTCommitSSCVote // simulationNum -> shardId -> sscVote
 	RollbackVotes   map[uint32][]*CXTCommitVote          // shardId -> votes
 	RollbackSSCVote *CXTCommitSSCVote
+}
+
+type NewEpoch struct {
+	Committee *ShardSimulateCommittee `json:"Committee"`
+}
+
+type SLTestRequest struct {
+	TestFile   []byte `json:"TestFile"`
+	Difficulty int    `json:"Difficulty"`
+}
+
+type SLTestResult struct {
+	Result uint64 `json:"Result"`
+	Error  string `json:"Error"`
+}
+
+type SelfOpinions struct {
+	From     common.Address `json:"From"`
+	Opinions []*SLOpinion   `json:"Opinions"`
+}
+
+type SLOpinion struct {
+	From  common.Address `json:"From"`
+	To    common.Address `json:"To"`
+	S     int            `json:"S"`
+	F     int            `json:"F"`
+	Beta  float64        `json:"Beta"`
+	Delta float64        `json:"Delta"`
+	Omega float64        `json:"Omega"`
+}
+
+type RetryTx struct {
+	TxHash        common.Hash
+	Epoch         Epoch
+	Sender        common.Address
+	Nonce         uint64
+	GasPrice      uint64
+	OriginShardID uint32
+	ReadSet       []LockKey
+	WriteSet      []LockKey
+	RelatedShards RelatedShards
+	SimulationNum int
+	Condition     ConflictCondition
+}
+
+type RetryCommitResp struct {
+	TxHash common.Hash
+	Locked bool
 }

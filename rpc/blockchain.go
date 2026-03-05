@@ -4,10 +4,11 @@ import (
 	"context"
 	"encoding/hex"
 	"fmt"
-	"github.com/ethereum/go-ethereum/common"
 	"math/big"
 	"reflect"
 	"time"
+
+	"github.com/ethereum/go-ethereum/common"
 
 	"github.com/ethereum/go-ethereum/common/hexutil"
 	"github.com/ethereum/go-ethereum/crypto"
@@ -835,7 +836,7 @@ func (s *PublicBlockchainService) GetProof(
 				err = storageError
 				return
 			}
-			getState, _ := state.GetState(address, common.HexToHash(key))
+			getState, _ := state.GetStateWithoutLock(address, common.HexToHash(key))
 			storageProof[i] = StorageResult{key, (*hexutil.Big)(getState.Big()), toHexSlice(proof)}
 		} else {
 			storageProof[i] = StorageResult{key, &hexutil.Big{}, []string{}}

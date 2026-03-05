@@ -12,6 +12,7 @@ import (
 )
 
 func NewExprnetSchedule(shardNum int, shardSize int) Schedule {
+	fmt.Printf("NewExprnetSchedule: shardNum: %d, shardSize: %d, accounts: %d\n", shardNum, shardSize, len(genesis.ExprHarmonyAccounts))
 	exprnet := MustNewInstance(false,
 		uint32(shardNum), shardSize,
 		shardSize, 0,

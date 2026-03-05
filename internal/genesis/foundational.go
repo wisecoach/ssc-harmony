@@ -156,7 +156,7 @@ var FoundationalNodeAccounts = []DeployAccount{
 	{Index: "151", Address: "one1lmqycl6wezcdf7nqxj34slstamt0hlhp4s0rj4", BLSPublicKey: "764cec13fff061afecd226e167ac0452e2f16e5e8faa9c2152ba060243e6c29220850c9acae6f13612c842d277d5118b"},
 }
 
-// FoundationalNodeAccountsV0_1 are the accounts for the foundational nodes from Epoch 1.
+// FoundationalNodeAccountsV0_1 are the accounts for the foundational nodes from GetEpoch 1.
 var FoundationalNodeAccountsV0_1 = []DeployAccount{
 	{Index: "0", Address: "one1y0xcf40fg65n2ehm8fx5vda4thrkymhpg45ecj", BLSPublicKey: "9e70e8d76851f6e8dc648255acdd57bb5c49cdae7571aed43f86e9f140a6343caed2ffa860919d03e0912411fee4850a"},
 	{Index: "1", Address: "one18lp2w7ghhuajdpzl8zqeddza97u92wtkfcwpjk", BLSPublicKey: "fce3097d9fc234d34d6eaef3eecd0365d435d1118f69f2da1ed2a69ba725270771572e40347c222aca784cb973307b11"},
@@ -320,7 +320,7 @@ var FoundationalNodeAccountsV0_1 = []DeployAccount{
 	{Index: "159", Address: "one1fzh923dkauvyye7w68nc38j2dw54gldu5mheaz", BLSPublicKey: "b5c94a5071f942c77f3599098430b8f2dbd6da70c5ef830192bdef5638908cd1fa188059d7aecc8b721116b946c4cc8e"},
 }
 
-// FoundationalNodeAccountsV0_2 are the accounts for the foundational nodes from Epoch 5.
+// FoundationalNodeAccountsV0_2 are the accounts for the foundational nodes from GetEpoch 5.
 var FoundationalNodeAccountsV0_2 = []DeployAccount{
 	{Index: "0", Address: "one1y0xcf40fg65n2ehm8fx5vda4thrkymhpg45ecj", BLSPublicKey: "9e70e8d76851f6e8dc648255acdd57bb5c49cdae7571aed43f86e9f140a6343caed2ffa860919d03e0912411fee4850a"},
 	{Index: "1", Address: "one18lp2w7ghhuajdpzl8zqeddza97u92wtkfcwpjk", BLSPublicKey: "fce3097d9fc234d34d6eaef3eecd0365d435d1118f69f2da1ed2a69ba725270771572e40347c222aca784cb973307b11"},
@@ -532,7 +532,7 @@ var FoundationalNodeAccountsV0_2 = []DeployAccount{
 	{Index: "207", Address: "one1zr57fc7txdwvcwd6w2rn4yg6tdy0j0tjhvyj8f", BLSPublicKey: "76ac6c7d29e5e47874619816d6a441645adb0138bd02aa71d5b654cfeb9bdc1d4dd66d4e493100d48aeb558824d63408"},
 }
 
-// FoundationalNodeAccountsV0_3 are the accounts for the foundational nodes from Epoch 8.
+// FoundationalNodeAccountsV0_3 are the accounts for the foundational nodes from GetEpoch 8.
 var FoundationalNodeAccountsV0_3 = []DeployAccount{
 	{Index: "0", Address: "one1y0xcf40fg65n2ehm8fx5vda4thrkymhpg45ecj", BLSPublicKey: "9e70e8d76851f6e8dc648255acdd57bb5c49cdae7571aed43f86e9f140a6343caed2ffa860919d03e0912411fee4850a"},
 	{Index: "1", Address: "one18lp2w7ghhuajdpzl8zqeddza97u92wtkfcwpjk", BLSPublicKey: "fce3097d9fc234d34d6eaef3eecd0365d435d1118f69f2da1ed2a69ba725270771572e40347c222aca784cb973307b11"},
@@ -784,7 +784,7 @@ var FoundationalNodeAccountsV0_3 = []DeployAccount{
 	{Index: "247", Address: "one12adq0qpa64fp9yrwemawetapsxyv5964553rz3", BLSPublicKey: "c46b4c64ca8a76d11d4dc1472a928949e973b46ab41e0e2abdb9fd42b58791874a70796b8b747717f4206dc3fe571912"},
 }
 
-// FoundationalNodeAccountsV0_4 are the accounts for the foundational nodes from Epoch 10.
+// FoundationalNodeAccountsV0_4 are the accounts for the foundational nodes from GetEpoch 10.
 var FoundationalNodeAccountsV0_4 = []DeployAccount{
 	{Index: "0", Address: "one1y0xcf40fg65n2ehm8fx5vda4thrkymhpg45ecj", BLSPublicKey: "9e70e8d76851f6e8dc648255acdd57bb5c49cdae7571aed43f86e9f140a6343caed2ffa860919d03e0912411fee4850a"},
 	{Index: "1", Address: "one18lp2w7ghhuajdpzl8zqeddza97u92wtkfcwpjk", BLSPublicKey: "fce3097d9fc234d34d6eaef3eecd0365d435d1118f69f2da1ed2a69ba725270771572e40347c222aca784cb973307b11"},
@@ -1060,7 +1060,7 @@ var FoundationalNodeAccountsV0_4 = []DeployAccount{
 	{Index: "271", Address: "one1lp4spvwyfk9xpnwvn6wk6s49edmysgwmkdy4tj", BLSPublicKey: "9bc2c7dc0ad6c6f0294a615018b386ce2c863a62e96de0f6000f6c05f307eeafb07e2a2b68c69e09367831f42171e589"},
 }
 
-// FoundationalNodeAccountsV1 are the accounts for the foundational nodes from Epoch 12.
+// FoundationalNodeAccountsV1 are the accounts for the foundational nodes from GetEpoch 12.
 var FoundationalNodeAccountsV1 = []DeployAccount{
 	{Index: "0", Address: "one1y0xcf40fg65n2ehm8fx5vda4thrkymhpg45ecj", BLSPublicKey: "9e70e8d76851f6e8dc648255acdd57bb5c49cdae7571aed43f86e9f140a6343caed2ffa860919d03e0912411fee4850a"},
 	{Index: "1", Address: "one18lp2w7ghhuajdpzl8zqeddza97u92wtkfcwpjk", BLSPublicKey: "fce3097d9fc234d34d6eaef3eecd0365d435d1118f69f2da1ed2a69ba725270771572e40347c222aca784cb973307b11"},
@@ -1384,7 +1384,7 @@ var FoundationalNodeAccountsV1 = []DeployAccount{
 	{Index: "319", Address: "one19c4uqfzezuws7e4ka4kvc5r09suks2ghpyg6xw", BLSPublicKey: "51b2019b222df63fc99d202b03834dee09f1ef11e25a03592a96c1d01bca2bedfc25e0f26d88dcbb8a7176e30e1ec116"},
 }
 
-// FoundationalNodeAccountsV1_1 are the accounts for the foundational nodes from Epoch 19.
+// FoundationalNodeAccountsV1_1 are the accounts for the foundational nodes from GetEpoch 19.
 var FoundationalNodeAccountsV1_1 = []DeployAccount{
 	{Index: "0", Address: "one1y0xcf40fg65n2ehm8fx5vda4thrkymhpg45ecj", BLSPublicKey: "9e70e8d76851f6e8dc648255acdd57bb5c49cdae7571aed43f86e9f140a6343caed2ffa860919d03e0912411fee4850a"},
 	{Index: "1", Address: "one18lp2w7ghhuajdpzl8zqeddza97u92wtkfcwpjk", BLSPublicKey: "fce3097d9fc234d34d6eaef3eecd0365d435d1118f69f2da1ed2a69ba725270771572e40347c222aca784cb973307b11"},
@@ -1708,7 +1708,7 @@ var FoundationalNodeAccountsV1_1 = []DeployAccount{
 	{Index: "319", Address: "one19c4uqfzezuws7e4ka4kvc5r09suks2ghpyg6xw", BLSPublicKey: "51b2019b222df63fc99d202b03834dee09f1ef11e25a03592a96c1d01bca2bedfc25e0f26d88dcbb8a7176e30e1ec116"},
 }
 
-// FoundationalNodeAccountsV1_2 are the accounts for the foundational nodes from Epoch 25.
+// FoundationalNodeAccountsV1_2 are the accounts for the foundational nodes from GetEpoch 25.
 var FoundationalNodeAccountsV1_2 = []DeployAccount{
 	{Index: "0", Address: "one1y0xcf40fg65n2ehm8fx5vda4thrkymhpg45ecj", BLSPublicKey: "9e70e8d76851f6e8dc648255acdd57bb5c49cdae7571aed43f86e9f140a6343caed2ffa860919d03e0912411fee4850a"},
 	{Index: "1", Address: "one18lp2w7ghhuajdpzl8zqeddza97u92wtkfcwpjk", BLSPublicKey: "fce3097d9fc234d34d6eaef3eecd0365d435d1118f69f2da1ed2a69ba725270771572e40347c222aca784cb973307b11"},
@@ -2032,7 +2032,7 @@ var FoundationalNodeAccountsV1_2 = []DeployAccount{
 	{Index: "319", Address: "one19c4uqfzezuws7e4ka4kvc5r09suks2ghpyg6xw", BLSPublicKey: "51b2019b222df63fc99d202b03834dee09f1ef11e25a03592a96c1d01bca2bedfc25e0f26d88dcbb8a7176e30e1ec116"},
 }
 
-// FoundationalNodeAccountsV1_3 are the accounts for the foundational nodes from Epoch 36.
+// FoundationalNodeAccountsV1_3 are the accounts for the foundational nodes from GetEpoch 36.
 var FoundationalNodeAccountsV1_3 = []DeployAccount{
 	{Index: "0", Address: "one1y0xcf40fg65n2ehm8fx5vda4thrkymhpg45ecj", BLSPublicKey: "9e70e8d76851f6e8dc648255acdd57bb5c49cdae7571aed43f86e9f140a6343caed2ffa860919d03e0912411fee4850a"},
 	{Index: "1", Address: "one18lp2w7ghhuajdpzl8zqeddza97u92wtkfcwpjk", BLSPublicKey: "fce3097d9fc234d34d6eaef3eecd0365d435d1118f69f2da1ed2a69ba725270771572e40347c222aca784cb973307b11"},
@@ -2356,7 +2356,7 @@ var FoundationalNodeAccountsV1_3 = []DeployAccount{
 	{Index: "319", Address: "one19c4uqfzezuws7e4ka4kvc5r09suks2ghpyg6xw", BLSPublicKey: "51b2019b222df63fc99d202b03834dee09f1ef11e25a03592a96c1d01bca2bedfc25e0f26d88dcbb8a7176e30e1ec116"},
 }
 
-// FoundationalNodeAccountsV1_4 are the accounts for the foundational nodes from Epoch 46.
+// FoundationalNodeAccountsV1_4 are the accounts for the foundational nodes from GetEpoch 46.
 var FoundationalNodeAccountsV1_4 = []DeployAccount{
 	{Index: "0", Address: "one1y0xcf40fg65n2ehm8fx5vda4thrkymhpg45ecj", BLSPublicKey: "9e70e8d76851f6e8dc648255acdd57bb5c49cdae7571aed43f86e9f140a6343caed2ffa860919d03e0912411fee4850a"},
 	{Index: "1", Address: "one18lp2w7ghhuajdpzl8zqeddza97u92wtkfcwpjk", BLSPublicKey: "fce3097d9fc234d34d6eaef3eecd0365d435d1118f69f2da1ed2a69ba725270771572e40347c222aca784cb973307b11"},
@@ -2680,7 +2680,7 @@ var FoundationalNodeAccountsV1_4 = []DeployAccount{
 	{Index: "319", Address: "one19c4uqfzezuws7e4ka4kvc5r09suks2ghpyg6xw", BLSPublicKey: "51b2019b222df63fc99d202b03834dee09f1ef11e25a03592a96c1d01bca2bedfc25e0f26d88dcbb8a7176e30e1ec116"},
 }
 
-// FoundationalNodeAccountsV1_5 are the accounts for the foundational nodes from Epoch 54.
+// FoundationalNodeAccountsV1_5 are the accounts for the foundational nodes from GetEpoch 54.
 var FoundationalNodeAccountsV1_5 = []DeployAccount{
 	{Index: "0", Address: "one1y0xcf40fg65n2ehm8fx5vda4thrkymhpg45ecj", BLSPublicKey: "9e70e8d76851f6e8dc648255acdd57bb5c49cdae7571aed43f86e9f140a6343caed2ffa860919d03e0912411fee4850a"},
 	{Index: "1", Address: "one18lp2w7ghhuajdpzl8zqeddza97u92wtkfcwpjk", BLSPublicKey: "fce3097d9fc234d34d6eaef3eecd0365d435d1118f69f2da1ed2a69ba725270771572e40347c222aca784cb973307b11"},

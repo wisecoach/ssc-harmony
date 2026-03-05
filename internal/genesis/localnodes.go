@@ -2,6 +2,7 @@ package genesis
 
 import (
 	"encoding/json"
+	"fmt"
 	"os"
 
 	"github.com/harmony-one/harmony/internal/utils"
@@ -145,8 +146,10 @@ func init() {
 			utils.Logger().Error().Msgf("Failed to open expr_deploy_accounts.json: %v", err)
 			return
 		}
+		fmt.Println("Successfully opened expr_deploy_accounts.json")
 		defer jsonFile.Close()
 		json.NewDecoder(jsonFile).Decode(&ExprHarmonyAccounts)
+		fmt.Printf("Loaded %d expr_deploy_accounts from .hmy/expr_deploy_accounts.json\n", len(ExprHarmonyAccounts))
 		utils.Logger().Info().Msgf("Loaded %d expr_deploy_accounts from .hmy/expr_deploy_accounts.json", len(ExprHarmonyAccounts))
 	}
 }

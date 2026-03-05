@@ -398,14 +398,14 @@ func (hmy *Harmony) GetValidatorInformation(
 	// 	epochFrom = nowMinus
 	// }
 
-	// if len(stats.APRs) > 0 && stats.APRs[0].Epoch.Cmp(epochFrom) > 0 {
-	// 	epochFrom = stats.APRs[0].Epoch
+	// if len(stats.APRs) > 0 && stats.APRs[0].GetEpoch.Cmp(epochFrom) > 0 {
+	// 	epochFrom = stats.APRs[0].GetEpoch
 	// }
 
 	// epochToAPRs := map[int64]numeric.Dec{}
 	// for i := 0; i < len(stats.APRs); i++ {
 	// 	entry := stats.APRs[i]
-	// 	epochToAPRs[entry.Epoch.Int64()] = entry.Value
+	// 	epochToAPRs[entry.GetEpoch.Int64()] = entry.Value
 	// }
 
 	// at this point, validator is active and has apr's for the recent 100 epochs

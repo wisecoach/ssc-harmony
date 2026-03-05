@@ -89,7 +89,7 @@ function simple_launch_shard() {
     sleep 2
 
     echo $PWD
-    while read -r addr ethAddrHex bls_key shard_id ip port; do
+    while read -r addr ethAddrHex bls_key shard_id ip port submitterKeyPath; do
         if [[ "$shard_id" -ge "${shard_num}" ]]; then
           echo "shard_num ${shard_num} is full, skipping node ${i}"
           continue
@@ -125,6 +125,7 @@ function simple_launch_shard() {
           args=("${args[@]}" --blskey_file "${PROJECT_ROOT}/${bls_key}")
           args=("${args[@]}" --ssc.bls-key-path "${PROJECT_ROOT}/${bls_key}")
           args=("${args[@]}" --ssc.self-addr-hex "${ethAddrHex}")
+          args=("${args[@]}" --ssc.submitter-key-path "${submitterKeyPath}")
         elif [[ -d "$bls_key" ]]; then
           args=("${args[@]}" --blsfolder "${PROJECT_ROOT}/${bls_key}")
         else
@@ -330,7 +331,7 @@ declare -a extra_args
 
 setup
 simple_launch_shard $shard $validator $ssc $delay
-monitor_with_wait
-generate_exit_report
+#monitor_with_wait
+#generate_exit_report
 
-cleanup || true
+#cleanup || true

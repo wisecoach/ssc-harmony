@@ -4,10 +4,11 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
-	"github.com/harmony-one/harmony/ssc/api"
 	"math/big"
 	"sort"
 	"time"
+
+	"github.com/harmony-one/harmony/ssc/api"
 
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/rlp"
@@ -134,7 +135,7 @@ func (w *Worker) CommitSSCTransactions(
 		if bytes.Compare(vm.SimulationCommitAddr.Bytes(), tx.To().Bytes()) == 0 {
 			simulation := &api.SimulationCommit{}
 			json.Unmarshal(tx.Data(), simulation)
-			utils.SSCLogger().Info().Str("txHash", tx.Hash().Hex()).Msgf("commit simulation tx, nonce=%d, originTxHash=%s", tx.Nonce(), common.BytesToHash(simulation.TxHash).Hex())
+			utils.SSCLogger().Info().Str("txHash", tx.Hash().Hex()).Msgf("commit simulation tx, nonce=%d, originTxHash=%s", tx.Nonce(), simulation.TxHash.Hex())
 		}
 
 		w.current.state.Prepare(tx.Hash(), common.Hash{}, len(w.current.txs))
@@ -375,6 +376,7 @@ func (w *Worker) commitTransaction(
 ) error {
 	snap := w.current.state.Snapshot()
 	gasUsed := w.current.header.GasUsed()
+	crossGasUsed := w.current.header.CrossGasUsed()
 	var err error
 	var receipt *types.Receipt
 	var cx *types.CXReceipt
@@ -395,7 +397,9 @@ func (w *Worker) commitTransaction(
 			Uint64("blockNum", w.current.header.NumberU64()).
 			Str("txHash", tx.Hash().Hex()).Msgf("Cross shard transaction")
 		// simulate cross-shard transaction with SSCService, use the blockchain current header, and state is not needed
+		originGasUsed := w.current.header.GasUsed()
 		receipt, cx, stakeMsgs, _, err = core.SimulateCXTransaction(w.sscService, w.chain, &coinbase, w.current.gasPool, w.current.state, w.chain.CurrentHeader(), tx, &gasUsed, vm.Config{})
+		w.current.header.SetCrossGasUsed(crossGasUsed + gasUsed - originGasUsed)
 	}
 	w.current.header.SetGasUsed(gasUsed)
 	if err != nil {
@@ -415,7 +419,11 @@ func (w *Worker) commitTransaction(
 	w.current.logs = append(w.current.logs, receipt.Logs...)
 	w.current.stakeMsgs = append(w.current.stakeMsgs, stakeMsgs...)
 
-	utils.SSCLogger().Info().Str("txHash", tx.Hash().Hex()).Uint64("blockNum", w.current.header.NumberU64()).Uint64("gasUsed", gasUsed).Msgf("commit transaction %d, nonce=%d, crossShard=%v", len(w.current.txs)-1, tx.Nonce(), tx.CrossShard())
+	if tx.To() != nil {
+		utils.SSCLogger().Info().Str("txHash", tx.Hash().Hex()).Uint64("blockNum", w.current.header.NumberU64()).Uint64("gasUsed", gasUsed).
+			Msgf("commit transaction %d, nonce=%d, crossShard=%v, addr=%s",
+				len(w.current.txs)-1, tx.Nonce(), tx.CrossShard(), tx.To().Hex()[:20])
+	}
 
 	if cx != nil {
 		w.current.outcxs = append(w.current.outcxs, cx)

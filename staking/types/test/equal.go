@@ -124,7 +124,7 @@ func checkUndelegationEqual(ud1, ud2 staking.Undelegation) error {
 		return fmt.Errorf(".Amount %v", err)
 	}
 	if err := checkBigIntEqual(ud1.Epoch, ud2.Epoch); err != nil {
-		return fmt.Errorf(".Epoch %v", err)
+		return fmt.Errorf(".GetEpoch %v", err)
 	}
 	return nil
 }

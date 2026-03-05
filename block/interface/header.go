@@ -85,6 +85,12 @@ type Header interface {
 	// SetGasUsed sets the amount of gas used by transactions in this block.
 	SetGasUsed(newGasUsed uint64)
 
+	// CrossGasUsed is the amount of gas used by transactions in this block.
+	CrossGasUsed() uint64
+
+	// SetCrossGasUsed sets the amount of gas used by transactions in this block.
+	SetCrossGasUsed(newGasUsed uint64)
+
 	// Time is the UNIX timestamp of this block.
 	//
 	// The returned instance is a copy; the caller may do anything with it.

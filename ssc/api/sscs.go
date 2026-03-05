@@ -25,10 +25,11 @@ const (
 	Method_CommitSimulation           = "ssc_commitSimulation"
 	Method_HandleCXTCommitSSCVote     = "ssc_handleCXTCommitSSCVote"
 	Method_HandleCXTCommitProof       = "ssc_handleCXTCommitProof"
-	// Method_BroadcastCXTRecallProof    = "ssc_broadcastCXTRecallProof"
-	// Method_RequestSimulationResult    = "ssc_requestSimulationResult"
-	Method_SignalReSimulation      = "ssc_signalReSimulation"
-	Method_NotifyReSimulationStart = "ssc_notifyReSimulationStart"
+	Method_SignalReSimulation         = "ssc_signalReSimulation"
+	Method_AddRetryTx                 = "ssc_addRetryTx"
+	Method_RetryCommit                = "ssc_retryCommit"
+	Method_RetryCancel                = "ssc_retryCancel"
+	Method_SLTest                     = "ssc_sLTest"
 )
 
 type ShardLocator interface {
@@ -40,17 +41,18 @@ type ShardLocator interface {
 
 type BLSSignerMgr interface {
 	GetSSCSigner() BLSSigner
-	UpdateSSCPubKeys(shardID uint32, addr2Index map[common.Address]int, pubKeys []bls.PublicKeyWrapper)
+	UpdateSSCPubKeys(shardID uint32, epoch Epoch, addr2Index map[common.Address]int, pubKeys []bls.PublicKeyWrapper)
 	GetValidatorSigner() BLSSigner
-	UpdateValidatorPubKeys(shardID uint32, addr2Index map[common.Address]int, pubKeys []bls.PublicKeyWrapper)
+	UpdateValidatorPubKeys(shardID uint32, epoch Epoch, addr2Index map[common.Address]int, pubKeys []bls.PublicKeyWrapper)
 }
 
 type BLSSigner interface {
+	Address() common.Address
 	Sign(msg MessageToSign) ([]byte, error)
 	// Aggregate aggregate the signature of messages, and return aggregated signature, bitmap and error
 	Aggregate(msgs []SSCMessage) (signatures []byte, bitmap []byte, err error)
 	Verify(msg BLSSignedMessage) error
-	UpdatePubKeys(shardID uint32, addr2Index map[common.Address]int, pubKeys []bls.PublicKeyWrapper)
+	UpdatePubKeys(shardID uint32, epoch Epoch, addr2Index map[common.Address]int, pubKeys []bls.PublicKeyWrapper)
 }
 
 type TxSigner interface {
@@ -62,6 +64,8 @@ type TxSubmitter interface {
 	SubmitSimulationTx(simulation *CXTSimulation) error
 	SubmitCommitOrRollbackTx(proof *CXTCommitProof) error
 	SubmitEmptyTx() error
+	SubmitNewEpoch(newEpoch *NewEpoch) error
+	SubmitUploadOpinions(uploadOpinions *SelfOpinions) error
 }
 
 type StateDB interface {
@@ -85,8 +89,8 @@ type StateDB interface {
 	GetRefund() uint64
 
 	GetCommittedState(common.Address, common.Hash) common.Hash
-	GetState(common.Address, common.Hash) (common.Hash, error)
-	SetState(common.Address, common.Hash, common.Hash) error
+	GetState(common.Hash, common.Address, common.Hash) (common.Hash, error)
+	SetState(common.Hash, common.Address, common.Hash, common.Hash) error
 	GetStateWithoutLock(common.Address, common.Hash) (common.Hash, error)
 	SetStateWithoutLock(common.Address, common.Hash, common.Hash) error
 	GetAndLockState(txHash common.Hash, callIndex CallIndex, address common.Address, key common.Hash) (common.Hash, error)
@@ -127,6 +131,10 @@ type CXTStateSimulationDB interface {
 	GetResult(txHash common.Hash) (result []byte, leftOverGas uint64, err error)
 }
 
+type VM interface {
+	CrossCall(targetShardId uint32, caller common.Address, addr common.Address, input []byte, gas uint64, value *big.Int) (ret []byte, leftOverGas uint64, err error)
+}
+
 // InternalService
 //
 //	@Description: It provides functions for internal modules
@@ -146,17 +154,15 @@ type InternalService interface {
 	//	result
 	CallCXTContract(req *CXTCallRequest) *CXTCallSSCResult
 
-	// RecallCXContract
-	//
-	//	@Description: recall for cross-shard contract, send request to leader of CXTransaction, and wait for the simulation
-	//	result
-	// RecallCXContract(req *CXTRecallRequest) *CXTRecallSSCResult
-
 	// VerifySimulation
 	//	@Description: verify the simulation and vote for commit or rollback
 	VerifySimulation(simulationBytes []byte, stateDB StateDB, header *block.Header)
 
 	CommitOrRollbackWithProof(commitProofBytes []byte, stateDB StateDB) error
+
+	NewEpoch(newEpochBytes []byte, vm VM, stateDB StateDB, blockNum uint64) error
+
+	UploadSLOpinion(opinionsBytes []byte, stateDB StateDB) error
 
 	StateLockManager() StateLockManager
 
@@ -164,7 +170,7 @@ type InternalService interface {
 }
 
 // ShardService
-// @Description: It provides functions for the operation in the self's shard
+// @Description: It provides functions for the operation in the self'S shard
 type ShardService interface {
 	// StartSimulateCXTransaction
 	//  @Description: handle request from proposer, process the request as following:
@@ -175,20 +181,20 @@ type ShardService interface {
 	StartSimulateCXTransaction(req *CXTSimulationRequest) *CXTSimulationSSCResult
 
 	// HandleSimulateRequest
-	//  @Description: handle request from ssc's leader, process the request as following:
+	//  @Description: handle request from ssc'S leader, process the request as following:
 	//	1. simulate the contract execution, and save the read-write set to build the simulation result
-	//	2. once need to call cross-shard contract, then send request to leader of target shard's ssc
+	//	2. Once need to call cross-shard contract, then send request to leader of target shard'S ssc
 	//  3. after simulation completed, send the result to leader of ssc
 	HandleSimulateRequest(ctx context.Context, req *CXTSimulationRequest) *CXTSimulationResult
 
 	// HandleReSimulateRequest
-	//  @Description: handle request from ssc's leader
+	//  @Description: handle request from ssc'S leader
 	// HandleReSimulateRequest(req *CXTReSimulationRequest) *CXTReSimulationResult
 
 	// RequestCallCXT
 	//
-	//	 @Description: handle request from ssc's leader, aggregate signatures of request after reaching threshold, then send
-	//		signed request to leader of target shard's ssc
+	//	 @Description: handle request from ssc'S leader, aggregate signatures of request after reaching threshold, then send
+	//		signed request to leader of target shard'S ssc
 	RequestCallCXT(req *CXTCallRequest) *CXTCallSSCResult
 
 	// HandleCXTCall
@@ -197,18 +203,24 @@ type ShardService interface {
 	HandleCXTCall(req *CXTCallSSCRequest) *CXTCallResult
 
 	// SignSimulationCommit
-	//  @Description: sign the simulation commit from ssc's leader
+	//  @Description: sign the simulation commit from ssc'S leader
 	SignSimulationCommit(commit *SimulationCommit) []byte
 
 	// SignCXTSimulation
-	//  @Description: sign the cross-shard tx simulation from ssc's leader
+	//  @Description: sign the cross-shard tx simulation from ssc'S leader
 	SignCXTSimulation(simulation *CXTSimulation) []byte
 
 	// HandleCommitVote
-	//  @Description: handle the commit vote from ssc's member, aggregate the votes after reaching threshold, then send
+	//  @Description: handle the commit vote from ssc'S member, aggregate the votes after reaching threshold, then send
 	HandleCommitVote(vote *CXTCommitVote)
 
-	// RequestSimulationResult(req *SimulationResultRequest) (*CXTSimulationSSCResult, error)
+	SLTest(req *SLTestRequest) *SLTestResult
+
+	AddRetryTx(tx *RetryTx)
+
+	RetryCommit(txHash common.Hash) *RetryCommitResp
+
+	RetryCancel(txHash common.Hash)
 }
 
 // CrossService
@@ -225,7 +237,7 @@ type CrossService interface {
 	// HandleCXTSSCRecall(req *CXTRecallSSCRequest) *CXTRecallSSCResult
 
 	// CommitSimulation
-	//  @Description: handle the commit request from original shard's ssc, used to commit the simulation result as a
+	//  @Description: handle the commit request from original shard'S ssc, used to commit the simulation result as a
 	// 	special transaction to call precompiled contract
 	CommitSimulation(commit *SimulationCommit)
 
@@ -237,16 +249,14 @@ type CrossService interface {
 	//
 	//	@Description: handle the cross-shard transaction submit proof to commit or rollback for the reason
 	//					commit: 	1. all shards of cross-shard contract are successfully executed
-	//					rollback:	1. execution or simulation failed; 2. transaction timeout; 3. ssc's malicious behavior
+	//					rollback:	1. execution or simulation failed; 2. transaction timeout; 3. ssc'S malicious behavior
 	HandleCXTCommitProof(proof *CXTCommitProof)
 
 	// SignalReSimulation
 	//  @Description: handle the signal to re-simulate the cross-shard transaction
 	//  @param signal
 	//
-	SignalReSimulation(signal *ReSimulationSignal)
-
-	NotifyReSimulationStart(txHash common.Hash)
+	SignalReSimulation(signal *ReSimulationSignals)
 }
 
 type Service interface {

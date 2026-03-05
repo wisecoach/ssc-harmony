@@ -90,7 +90,7 @@ func (st *SSCStateTransition) buyGas() error {
 
 func (st *SSCStateTransition) preCheck() error {
 	// Make sure this transaction's nonce is correct.
-	if st.msg.CheckNonce() && vm.IsWriteCapableSSCContract(st.to()) {
+	if st.msg.CheckNonce() && vm.IsSSCAddrApplyOnChain(st.to()) {
 		// just check the nonce if is lower
 		nonce := st.state.GetNonce(st.msg.From())
 		if nonce > st.msg.Nonce() {
@@ -140,6 +140,7 @@ func (st *SSCStateTransition) TransitionDb() (ExecutionResult, error) {
 
 	st.state.SetNonce(msg.From(), st.state.GetNonce(sender.Address())+1)
 	ret, st.gas, vmErr = sscvm.Call(sender, st.to(), st.data, st.gas, st.value)
+	utils.SSCLogger().Debug().Msgf("TransitionDb, gas used: %d, gas left: %d, caller: %s", st.gasUsed(), st.gas, st.to())
 	if vmErr != nil {
 		// The only possible consensus-error would be if there wasn't
 		// sufficient balance to make the transfer happen. The first

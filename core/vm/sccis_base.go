@@ -1,6 +1,8 @@
 package vm
 
 import (
+	"math/big"
+
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/common/math"
 	"github.com/harmony-one/harmony/core/types"
@@ -8,7 +10,6 @@ import (
 	"github.com/harmony-one/harmony/shard"
 	"github.com/harmony-one/harmony/ssc/api"
 	"golang.org/x/crypto/sha3"
-	"math/big"
 )
 
 var (
@@ -1881,7 +1882,7 @@ func opBalance_SSC_Base(pc *uint64, inp Interpreter, contract *Contract, memory 
 func opSload_SSC_Base(pc *uint64, inp Interpreter, contract *Contract, memory *Memory, stack *Stack) ([]byte, error) {
 	interpreter := inp.(*SSCVMInterpreter)
 	loc := stack.peek()
-	val, _ := interpreter.vm.StateDB.GetState(contract.Address(), common.BigToHash(loc))
+	val, _ := interpreter.vm.StateDB.GetState(interpreter.vm.Context.TxHash, contract.Address(), common.BigToHash(loc))
 	loc.SetBytes(val.Bytes())
 	return nil, nil
 }
@@ -1890,7 +1891,7 @@ func opSstore_SSC_Base(pc *uint64, inp Interpreter, contract *Contract, memory *
 	interpreter := inp.(*SSCVMInterpreter)
 	loc := common.BigToHash(stack.pop())
 	val := stack.pop()
-	interpreter.vm.StateDB.SetState(contract.Address(), loc, common.BigToHash(val))
+	interpreter.vm.StateDB.SetState(interpreter.vm.Context.TxHash, contract.Address(), loc, common.BigToHash(val))
 
 	interpreter.intPool.put(val)
 	return nil, nil
@@ -2147,7 +2148,7 @@ func gasSStore_SSC(vm VM, contract *Contract, stack *Stack, mem *Memory, memoryS
 	sscvm := vm.(*SSCVM)
 	var (
 		y, x       = stack.Back(1), stack.Back(0)
-		current, _ = sscvm.StateDB.GetState(contract.Address(), common.BigToHash(x))
+		current, _ = sscvm.StateDB.GetState(sscvm.Context.TxHash, contract.Address(), common.BigToHash(x))
 	)
 	// The legacy gas metering only takes into consideration the current state
 	// Legacy rules should be applied if we are in Petersburg (removal of EIP-1283)

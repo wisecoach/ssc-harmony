@@ -42,18 +42,19 @@ func NewHeader() *Header {
 }
 
 type headerFields struct {
-	ParentHash  common.Hash    `json:"parentHash"       gencodec:"required"`
-	Coinbase    common.Address `json:"miner"            gencodec:"required"`
-	Root        common.Hash    `json:"stateRoot"        gencodec:"required"`
-	TxHash      common.Hash    `json:"transactionsRoot" gencodec:"required"`
-	ReceiptHash common.Hash    `json:"receiptsRoot"     gencodec:"required"`
-	Bloom       ethtypes.Bloom `json:"logsBloom"        gencodec:"required"`
-	Number      *big.Int       `json:"number"           gencodec:"required"`
-	GasLimit    uint64         `json:"gasLimit"         gencodec:"required"`
-	GasUsed     uint64         `json:"gasUsed"          gencodec:"required"`
-	Time        *big.Int       `json:"timestamp"        gencodec:"required"`
-	Extra       []byte         `json:"extraData"        gencodec:"required"`
-	MixDigest   common.Hash    `json:"mixHash"          gencodec:"required"`
+	ParentHash   common.Hash    `json:"parentHash"       gencodec:"required"`
+	Coinbase     common.Address `json:"miner"            gencodec:"required"`
+	Root         common.Hash    `json:"stateRoot"        gencodec:"required"`
+	TxHash       common.Hash    `json:"transactionsRoot" gencodec:"required"`
+	ReceiptHash  common.Hash    `json:"receiptsRoot"     gencodec:"required"`
+	Bloom        ethtypes.Bloom `json:"logsBloom"        gencodec:"required"`
+	Number       *big.Int       `json:"number"           gencodec:"required"`
+	GasLimit     uint64         `json:"gasLimit"         gencodec:"required"`
+	GasUsed      uint64         `json:"gasUsed"          gencodec:"required"`
+	CrossGasUsed uint64         `json:"CrossGasUsed"     gencodec:"required"`
+	Time         *big.Int       `json:"timestamp"        gencodec:"required"`
+	Extra        []byte         `json:"extraData"        gencodec:"required"`
+	MixDigest    common.Hash    `json:"mixHash"          gencodec:"required"`
 	// Additional Fields
 	ViewID              *big.Int    `json:"viewID"           gencodec:"required"`
 	Epoch               *big.Int    `json:"epoch"            gencodec:"required"`
@@ -187,6 +188,14 @@ func (h *Header) GasUsed() uint64 {
 // SetGasUsed sets the amount of gas used by transactions in this block.
 func (h *Header) SetGasUsed(newGasUsed uint64) {
 	h.fields.GasUsed = newGasUsed
+}
+
+func (h *Header) CrossGasUsed() uint64 {
+	return h.fields.CrossGasUsed
+}
+
+func (h *Header) SetCrossGasUsed(newGasUsed uint64) {
+	h.fields.CrossGasUsed = newGasUsed
 }
 
 // Time is the UNIX timestamp of this block.

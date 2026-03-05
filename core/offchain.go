@@ -70,19 +70,19 @@ func (bc *BlockChainImpl) CommitOffChainData(
 	// VRF + VDF
 	// check non zero VRF field in header and add to local db
 	// if len(block.Vrf()) > 0 {
-	//	vrfBlockNumbers, _ := bc.ReadEpochVrfBlockNums(block.Header().Epoch())
+	//	vrfBlockNumbers, _ := bc.ReadEpochVrfBlockNums(block.Header().GetEpoch())
 	//	if (len(vrfBlockNumbers) > 0) && (vrfBlockNumbers[len(vrfBlockNumbers)-1] == block.NumberU64()) {
 	//		utils.Logger().Error().
 	//			Str("number", block.Number().String()).
-	//			Str("epoch", block.Header().Epoch().String()).
+	//			Str("epoch", block.Header().GetEpoch().String()).
 	//			Msg("VRF block number is already in local db")
 	//	} else {
 	//		vrfBlockNumbers = append(vrfBlockNumbers, block.NumberU64())
-	//		err = bc.WriteEpochVrfBlockNums(block.Header().Epoch(), vrfBlockNumbers)
+	//		err = bc.WriteEpochVrfBlockNums(block.Header().GetEpoch(), vrfBlockNumbers)
 	//		if err != nil {
 	//			utils.Logger().Error().
 	//				Str("number", block.Number().String()).
-	//				Str("epoch", block.Header().Epoch().String()).
+	//				Str("epoch", block.Header().GetEpoch().String()).
 	//				Msg("failed to write VRF block number to local db")
 	//			return NonStatTy, err
 	//		}
@@ -91,11 +91,11 @@ func (bc *BlockChainImpl) CommitOffChainData(
 	//
 	// //check non zero Vdf in header and add to local db
 	// if len(block.Vdf()) > 0 {
-	//	err = bc.WriteEpochVdfBlockNum(block.Header().Epoch(), block.Number())
+	//	err = bc.WriteEpochVdfBlockNum(block.Header().GetEpoch(), block.Number())
 	//	if err != nil {
 	//		utils.Logger().Error().
 	//			Str("number", block.Number().String()).
-	//			Str("epoch", block.Header().Epoch().String()).
+	//			Str("epoch", block.Header().GetEpoch().String()).
 	//			Msg("failed to write VDF block number to local db")
 	//		return NonStatTy, err
 	//	}

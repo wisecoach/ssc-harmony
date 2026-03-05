@@ -9,6 +9,7 @@ import (
 
 type txInfo struct {
 	txHash        common.Hash
+	epoch         api.Epoch
 	blockNum      uint64
 	originShardId uint32
 	poolTimeout   uint64
@@ -84,7 +85,7 @@ func (c *CXTTimerManager) removePoolTx(txHash common.Hash) bool {
 	return false
 }
 
-func (c *CXTTimerManager) StartTimer(txHash common.Hash, blockNum uint64, originShardId uint32) {
+func (c *CXTTimerManager) StartTimer(txHash common.Hash, epoch api.Epoch, blockNum uint64, originShardId uint32) {
 	c.lock.Lock()
 	defer c.lock.Unlock()
 
@@ -101,6 +102,7 @@ func (c *CXTTimerManager) StartTimer(txHash common.Hash, blockNum uint64, origin
 			blockNum:      blockNum,
 			originShardId: originShardId,
 			sp1:           sp1,
+			epoch:         epoch,
 		}
 	}
 }
@@ -118,7 +120,7 @@ func (c *CXTTimerManager) BlockCommitted(blockNum uint64) {
 				continue
 			}
 			utils.SSCLogger().Debug().Str("txHash", hash.String()).Msgf("cxt timeout at block %d committed, start to resimulation", blockNum)
-			go c.service.handleTxSp1Timeout(txInfo.txHash)
+			go c.service.handleTxSp1Timeout(txInfo)
 			delete(c.txs, hash)
 		}
 		delete(c.bkNum2txForSp1, blockNum)
@@ -131,7 +133,7 @@ func (c *CXTTimerManager) BlockCommitted(blockNum uint64) {
 				continue
 			}
 			utils.SSCLogger().Debug().Str("txHash", hash.String()).Msgf("cxt pool timeout at block %d committed, close the transaction", blockNum)
-			go c.service.handleTxPoolTimeout(txInfo.txHash, blockNum)
+			go c.service.handleTxPoolTimeout(txInfo)
 			delete(c.txs, hash)
 		}
 		delete(c.bkNum2txForPoolTimeout, blockNum)

@@ -17,9 +17,10 @@
 package vm
 
 import (
+	"math/big"
+
 	"github.com/harmony-one/harmony/internal/params"
 	"github.com/harmony-one/harmony/ssc/api"
-	"math/big"
 
 	"github.com/harmony-one/harmony/numeric"
 
@@ -61,8 +62,8 @@ type StateDB interface {
 	GetRefund() uint64
 
 	GetCommittedState(common.Address, common.Hash) common.Hash
-	GetState(common.Address, common.Hash) (common.Hash, error)
-	SetState(common.Address, common.Hash, common.Hash) error
+	GetState(common.Hash, common.Address, common.Hash) (common.Hash, error)
+	SetState(common.Hash, common.Address, common.Hash, common.Hash) error
 	SetStateWithoutLock(common.Address, common.Hash, common.Hash) error
 	GetStateWithoutLock(common.Address, common.Hash) (common.Hash, error)
 

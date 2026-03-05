@@ -149,7 +149,7 @@ func (s *PublicContractService) GetStorageAt(
 		DoMetricRPCQueryInfo(GetStorageAt, FailedNumber)
 		return nil, err
 	}
-	res, _ := state.GetState(address, common.HexToHash(key))
+	res, _ := state.GetStateWithoutLock(address, common.HexToHash(key))
 
 	// Response output is the same for all versions
 	return res[:], state.Error()
