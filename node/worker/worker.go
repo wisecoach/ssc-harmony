@@ -2,13 +2,10 @@ package worker
 
 import (
 	"bytes"
-	"encoding/json"
 	"fmt"
 	"math/big"
 	"sort"
 	"time"
-
-	"github.com/harmony-one/harmony/ssc/api"
 
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/rlp"
@@ -25,6 +22,7 @@ import (
 	"github.com/harmony-one/harmony/internal/params"
 	"github.com/harmony-one/harmony/internal/utils"
 	"github.com/harmony-one/harmony/shard"
+	"github.com/harmony-one/harmony/ssc/api"
 	"github.com/harmony-one/harmony/staking/slash"
 	staking "github.com/harmony-one/harmony/staking/types"
 	"github.com/pkg/errors"
@@ -104,13 +102,18 @@ func (w *Worker) SetSSCService(sscService api.Service) {
 }
 
 func (w *Worker) CommitSSCTransactions(
-	txs types.Transactions,
+	txs *types.TransactionsByPriceAndNonce,
 	coinbase common.Address,
 ) {
-	for i, tx := range txs {
+	for {
 		// If we don't have enough gas for any further transactions then we're done
 		if w.current.gasPool.Gas() < params.TxGas {
 			utils.Logger().Info().Uint64("have", w.current.gasPool.Gas()).Uint64("want", params.TxGas).Msg("Not enough gas for further transactions")
+			break
+		}
+		// Retrieve the next transaction and abort if all done
+		tx := txs.Peek()
+		if tx == nil {
 			break
 		}
 		// Error may be ignored here. The error has already been checked
@@ -125,45 +128,44 @@ func (w *Worker) CommitSSCTransactions(
 		// phase, start ignoring the sender until we do.
 		if tx.Protected() && !w.chain.Config().IsEIP155(w.current.header.Epoch()) {
 			utils.Logger().Info().Str("hash", tx.Hash().Hex()).Str("eip155Epoch", w.config.EIP155Epoch.String()).Msg("Ignoring reply protected transaction")
+			txs.Pop()
 			continue
 		}
 
 		if tx.ShardID() != w.chain.ShardID() {
+			txs.Shift()
 			continue
-		}
-
-		if bytes.Compare(vm.SimulationCommitAddr.Bytes(), tx.To().Bytes()) == 0 {
-			simulation := &api.SimulationCommit{}
-			json.Unmarshal(tx.Data(), simulation)
-			utils.SSCLogger().Info().Str("txHash", tx.Hash().Hex()).Msgf("commit simulation tx, nonce=%d, originTxHash=%s", tx.Nonce(), simulation.TxHash.Hex())
 		}
 
 		w.current.state.Prepare(tx.Hash(), common.Hash{}, len(w.current.txs))
 		err := w.commitTransaction(tx, coinbase)
-		sender, _ := common2.AddressToBech32(from)
-
-		utils.Logger().Info().Err(err).Msgf("commit ssc transactions [%d/%d]", i+1, len(txs))
+		sender := from.Hex()
 
 		switch err {
 		case core.ErrGasLimitReached:
 			// Pop the current out-of-gas transaction without shifting in the next from the account
 			utils.Logger().Info().Str("sender", sender).Msg("Gas limit exceeded for current block")
+			txs.Pop()
 
 		case core.ErrNonceTooLow:
 			// New head notification data race between the transaction pool and miner, shift
 			utils.Logger().Info().Str("sender", sender).Uint64("nonce", tx.Nonce()).Msg("Skipping transaction with low nonce")
+			txs.Shift()
 
 		case core.ErrNonceTooHigh:
 			// Reorg notification data race between the transaction pool and miner, skip account =
 			utils.Logger().Info().Str("sender", sender).Uint64("nonce", tx.Nonce()).Msg("Skipping account with high nonce")
+			txs.Pop()
 
 		case nil:
 			// Everything ok, collect the logs and shift in the next transaction from the same account
+			txs.Shift()
 
 		default:
 			// Strange error, discard the transaction and get the next in line (note, the
 			// nonce-too-high clause will prevent us from executing in vain).
 			utils.Logger().Info().Str("hash", tx.Hash().Hex()).AnErr("err", err).Msg("Transaction failed, account skipped")
+			txs.Shift()
 		}
 	}
 }
@@ -241,7 +243,7 @@ func (w *Worker) CommitSortedTransactions(
 
 // CommitTransactions commits transactions for new block.
 func (w *Worker) CommitTransactions(
-	pendingSSCTxs types.Transactions,
+	pendingSSCTxs map[common.Address]types.Transactions,
 	pendingNormal map[common.Address]types.Transactions,
 	pendingStaking staking.StakingTransactions, coinbase common.Address,
 ) error {
@@ -282,46 +284,56 @@ func (w *Worker) CommitTransactions(
 	}
 
 	// HARMONY TXNS
+	sscTxns := types.NewTransactionsByPriceAndNonce(w.current.signer, w.current.ethSigner, pendingSSCTxs)
 	normalTxns := types.NewTransactionsByPriceAndNonce(w.current.signer, w.current.ethSigner, pendingNormal)
 
 	startTime := time.Now()
 
-	w.CommitSSCTransactions(pendingSSCTxs, coinbase)
+	sscTxAddrs := make([]common.Address, 0)
+	for address := range pendingSSCTxs {
+		sscTxAddrs = append(sscTxAddrs, address)
+	}
+	utils.Logger().Info().Uint64("blockNum", w.current.header.NumberU64()).Int("txn", len(pendingSSCTxs)).Interface("addrs", sscTxAddrs).Str("duration", time.Since(startTime).String()).Msg("Leader apply ssctxs for duration")
+	w.CommitSSCTransactions(sscTxns, coinbase)
+
+	normalTxAddrs := make([]common.Address, 0)
+	for address := range pendingNormal {
+		normalTxAddrs = append(normalTxAddrs, address)
+	}
+	utils.Logger().Info().Uint64("blockNum", w.current.header.NumberU64()).Int("txn", len(pendingNormal)).Interface("addrs", normalTxAddrs).Str("duration", time.Since(startTime).String()).Msg("Leader apply txs for duration")
 	w.CommitSortedTransactions(normalTxns, coinbase)
 
-	utils.Logger().Info().Str("duration", time.Since(startTime).String()).Msg("Leader apply transactions for duration")
-
 	// STAKING - only beaconchain process staking transaction
-	if w.chain.ShardID() == shard.BeaconChainShardID {
-		for _, tx := range pendingStaking {
-			// If we don't have enough gas for any further transactions then we're done
-			if w.current.gasPool.Gas() < params.TxGas {
-				utils.Logger().Info().Uint64("have", w.current.gasPool.Gas()).Uint64("want", params.TxGas).Msg("Not enough gas for further transactions")
-				break
-			}
-			// Check whether the tx is replay protected. If we're not in the EIP155 hf
-			// phase, start ignoring the sender until we do.
-			if tx.Protected() && !w.config.IsEIP155(w.current.header.Epoch()) {
-				utils.Logger().Info().Str("hash", tx.Hash().Hex()).Str("eip155Epoch", w.config.EIP155Epoch.String()).Msg("Ignoring reply protected transaction")
-				continue
-			}
-
-			// Start executing the transaction
-			w.current.state.Prepare(tx.Hash(), common.Hash{}, len(w.current.txs)+len(w.current.stakingTxs))
-			// THESE CODE ARE DUPLICATED AS ABOVE>>
-			if err := w.commitStakingTransaction(tx, coinbase); err != nil {
-				txID := tx.Hash().Hex()
-				utils.Logger().Error().Err(err).
-					Str("stakingTxID", txID).
-					Interface("stakingTx", tx).
-					Msg("Failed committing staking transaction")
-			} else {
-				utils.Logger().Info().Str("stakingTxId", tx.Hash().Hex()).
-					Uint64("txGasLimit", tx.GasLimit()).
-					Msg("Successfully committed staking transaction")
-			}
-		}
-	}
+	// if w.chain.ShardID() == shard.BeaconChainShardID {
+	//	for _, tx := range pendingStaking {
+	//		// If we don't have enough gas for any further transactions then we're done
+	//		if w.current.gasPool.Gas() < params.TxGas {
+	//			utils.Logger().Info().Uint64("have", w.current.gasPool.Gas()).Uint64("want", params.TxGas).Msg("Not enough gas for further transactions")
+	//			break
+	//		}
+	//		// Check whether the tx is replay protected. If we're not in the EIP155 hf
+	//		// phase, start ignoring the sender until we do.
+	//		if tx.Protected() && !w.config.IsEIP155(w.current.header.Epoch()) {
+	//			utils.Logger().Info().Str("hash", tx.Hash().Hex()).Str("eip155Epoch", w.config.EIP155Epoch.String()).Msg("Ignoring reply protected transaction")
+	//			continue
+	//		}
+	//
+	//		// Start executing the transaction
+	//		w.current.state.Prepare(tx.Hash(), common.Hash{}, len(w.current.txs)+len(w.current.stakingTxs))
+	//		// THESE CODE ARE DUPLICATED AS ABOVE>>
+	//		if err := w.commitStakingTransaction(tx, coinbase); err != nil {
+	//			txID := tx.Hash().Hex()
+	//			utils.Logger().Error().Err(err).
+	//				Str("stakingTxID", txID).
+	//				Interface("stakingTx", tx).
+	//				Msg("Failed committing staking transaction")
+	//		} else {
+	//			utils.Logger().Info().Str("stakingTxId", tx.Hash().Hex()).
+	//				Uint64("txGasLimit", tx.GasLimit()).
+	//				Msg("Successfully committed staking transaction")
+	//		}
+	//	}
+	// }
 
 	utils.SSCLogger().Info().
 		Int("newSSCTxns", len(pendingSSCTxs)).
@@ -330,6 +342,7 @@ func (w *Worker) CommitTransactions(
 		Uint64("blockGasLimit", w.current.header.GasLimit()).
 		Uint64("blockGasUsed", w.current.header.GasUsed()).
 		Uint64("blockNum", w.current.header.NumberU64()).
+		Uint64("0x40Nonce", w.current.state.GetNonce(common.HexToAddress("0x040C58C98df724d931475866aa8465bAe4E199d2"))).
 		Msg("Block gas limit and usage info")
 	return nil
 }
@@ -393,21 +406,34 @@ func (w *Worker) commitTransaction(
 			vm.Config{},
 		)
 	} else {
-		utils.SSCLogger().Info().
-			Uint64("blockNum", w.current.header.NumberU64()).
-			Str("txHash", tx.Hash().Hex()).Msgf("Cross shard transaction")
+		startTime := time.Now()
 		// simulate cross-shard transaction with SSCService, use the blockchain current header, and state is not needed
 		originGasUsed := w.current.header.GasUsed()
 		receipt, cx, stakeMsgs, _, err = core.SimulateCXTransaction(w.sscService, w.chain, &coinbase, w.current.gasPool, w.current.state, w.chain.CurrentHeader(), tx, &gasUsed, vm.Config{})
-		w.current.header.SetCrossGasUsed(crossGasUsed + gasUsed - originGasUsed)
+		newCrossGasUsed := crossGasUsed + gasUsed - originGasUsed
+		w.current.header.SetCrossGasUsed(newCrossGasUsed)
+		utils.SSCLogger().Info().
+			Uint64("blockNum", w.current.header.NumberU64()).
+			Dur("cost", time.Since(startTime)).
+			Uint64("crossGasUsed", newCrossGasUsed).
+			Str("txHash", tx.Hash().Hex()).Msgf("Cross shard transaction")
 	}
 	w.current.header.SetGasUsed(gasUsed)
 	if err != nil {
 		w.current.state.RevertToSnapshot(snap)
+		senderAddress, addrErr := tx.SenderAddress()
+		if addrErr != nil {
+			return addrErr
+		}
+		currentNonce := w.current.state.GetNonce(senderAddress)
 		utils.SSCLogger().Error().
-			Err(err).Str("txash", tx.Hash().Hex()).
+			Err(err).Str("txHash", tx.Hash().Hex()).
+			Uint64("blockNum", w.current.header.NumberU64()).
+			Str("senderAddress", senderAddress.String()).
+			Uint64("currentNonce", currentNonce).
+			Uint64("txNonce", tx.Nonce()).
 			Msg("Transaction failed commitment")
-		return errNilReceipt
+		return err
 	}
 	if receipt == nil {
 		utils.Logger().Warn().Interface("cx", cx).Msg("Receipt is Nil!")
@@ -690,14 +716,25 @@ func (w *Worker) FinalizeNewBlock(
 	state := w.current.state
 	copyHeader := types.CopyHeader(w.current.header)
 
+	utils.Logger().Debug().
+		Uint64("blockNum", copyHeader.Number().Uint64()).
+		Uint64("epoch", copyHeader.Epoch().Uint64()).
+		Uint64("viewID", viewID()).
+		Msg("[FinalizeNewBlock] wait for commit sigs to propose new block")
+
 	sigsReady := make(chan bool)
 	go func() {
+		utils.Logger().Info().
+			Uint64("blockNum", copyHeader.Number().Uint64()).
+			Msg("[FinalizeNewBlock] wait for commit sigs, and timeout after 8s")
 		select {
 		case sigs := <-commitSigs:
+			utils.Logger().Info().
+				Uint64("blockNum", copyHeader.Number().Uint64()).
+				Msg("[FinalizeNewBlock] received commit sigs")
 			sig, signers, err := bls.SeparateSigAndMask(sigs)
 			if err != nil {
-				utils.Logger().Error().Err(err).Msg("Failed to parse commit sigs")
-				sigsReady <- false
+				utils.Logger().Error().Err(err).Uint64("blockNum", copyHeader.Number().Uint64()).Interface("sigs", sigs).Msg("Failed to parse commit sigs")
 			}
 			// Put sig, signers, viewID, coinbase into header
 			if len(sig) > 0 && len(signers) > 0 {
@@ -709,10 +746,15 @@ func (w *Worker) FinalizeNewBlock(
 			}
 			sigsReady <- true
 		case <-time.After(CommitSigReceiverTimeout):
-			// Exit goroutine
 			utils.Logger().Warn().Msg("CallTimeout waiting for commit sigs")
+			sigsReady <- false
 		}
 	}()
+
+	utils.Logger().Info().
+		Uint64("blockNum", copyHeader.Number().Uint64()).
+		Uint64("view", viewID()).
+		Msg("[FinalizeNewBlock] begin to use chain engine to finalize new block")
 
 	block, payout, err := w.chain.Engine().Finalize(
 		w.chain,
@@ -729,10 +771,6 @@ func (w *Worker) FinalizeNewBlock(
 }
 
 func (w *Worker) GasFloor(epoch *big.Int) uint64 {
-	// if w.config.IsBlockGas30M(epoch) {
-	// 	return 30_000_000
-	// }
-
 	return w.gasFloor
 }
 

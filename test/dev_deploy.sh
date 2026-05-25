@@ -3,6 +3,7 @@
 WORK_DIR=$PWD
 PROJECT_ROOT=$WORK_DIR
 ORG_ROOT=$WORK_DIR/../
+REMOTE_BASE="/home/zjnu/go/src/github.com/harmony-one"
 
 if [ -f "$ORG_ROOT/.env" ] ; then
   source $ORG_ROOT/.env
@@ -11,26 +12,29 @@ else
   exit 1
 fi
 
-
 shard=${SHARD_NUM:-4}
 validator=${VALIDATOR:-4}
 ssc=${SSC:-1}
 delay=${DELAY:-5}
 rate=${RATE:-1}
-exam="shard=${shard}_validator=${validator}_ssc=${ssc}_delay=${delay}_rate=${rate}"
+cross_cnt=${CROSS_CNT:-1}
+[[ $cross_cnt -eq -1 ]] && cc_suffix="" || cc_suffix="_cc=$cross_cnt"
+validator_per_node=${VALIDATOR_PER_NODE:-4}
+exam="shard=${shard}_validator=${validator}_ssc=${ssc}_delay=${delay}_rate=${rate}${cc_suffix}_vpn=${validator_per_node}"
 log_folder="${PROJECT_ROOT}/tmp_log/$exam"
 LOG_FILE="$log_folder/r.log"
 RECOMPILE=true
 MIN=3
 NETWORK=exprnet
-selected_servers=$(jq -r --argjson n "$shard" '.servers[0:$n][]' $ORG_ROOT/dev_servers.json)
+needed_servers=$((shard * validator / validator_per_node))
+selected_servers=$(jq -r --argjson n "$needed_servers" '.servers[0:$n][]' $ORG_ROOT/dev_servers.json)
 readarray -t SERVERS <<< "$selected_servers"
 
 client_num=${CLIENT_NUM:-1}
 selected_clients=$(jq -r --argjson n "$client_num" '.servers[0:$n][]' $ORG_ROOT/dev_clients.json)
 readarray -t CLIENTS <<< "$selected_clients"
 
-function upload_for_shards() {
+function upload_for_servers() {
     file=$1
     for SERVER in "${SERVERS[@]}"; do
         echo "Upload to $SERVER: $file"
@@ -38,13 +42,7 @@ function upload_for_shards() {
     done
 }
 
-function call_for_shard() {
-    shard_id=$1
-    cmd=$2
-    ssh -p 10022 "${SERVERS[$shard_id]}" "cd $WORK_DIR && $cmd"
-}
-
-function call_for_shards() {
+function call_for_servers() {
     cmd=$1
     for SERVER in "${SERVERS[@]}"; do
         echo "Executing on $SERVER: $cmd"
@@ -52,8 +50,21 @@ function call_for_shards() {
     done
 }
 
+function call_for_server() {
+    index=$1
+    cmd=$2
+    ssh -p 10022 "${SERVERS[$index]}" "cd $WORK_DIR && $cmd"
+}
+
+function call_for_validator() {
+    index=$1
+    cmd=$2
+    server_index=$(($index / $validator_per_node))
+    ssh -p 10022 "${SERVERS[$server_index]}" "cd $WORK_DIR && $cmd"
+}
+
 function clean() {
-    call_for_shards "./test/kill_node.sh; rm -rf tmp_log* 2> /dev/null; rm *.rlp 2> /dev/null; rm -rf .dht* 2> /dev/null; mkdir -p ${log_folder}; touch $LOG_FILE"
+    call_for_servers "./test/kill_node.sh; rm -rf tmp_log* 2> /dev/null; rm *.rlp 2> /dev/null; rm -rf .dht* 2> /dev/null; mkdir -p ${log_folder}; touch $LOG_FILE"
 }
 
 function preset() {
@@ -88,7 +99,7 @@ function deploy() {
     delay=$4
     env="dev"
 
-    config="./test/configs/${env}/shard=${shard}_validator=${validator}_ssc=${ssc}_delay=${delay}/launch_config_${env}.txt"
+    config="./test/configs/${env}/shard=${shard}_validator=${validator}_ssc=${ssc}_delay=${delay}_vpn=${validator_per_node}/launch_config_${env}.txt"
     launch_bootnode
 
     unset -v base_args
@@ -107,6 +118,7 @@ function deploy() {
     base_args=(--log_folder "${log_folder}" --min_peers "${MIN}" "--network_type=$NETWORK" --blspass file:"${PROJECT_ROOT}/.hmy/blspass.txt" "--dns=false" "--p2p.security.max-conn-per-ip=100")
     sleep 2
 
+    validator_index=0
     echo "using launch config: "
     mapfile -t lines < "${config}"
     for line in "${lines[@]}"; do
@@ -130,9 +142,9 @@ function deploy() {
         echo "shard_id=$shard_id, cnt=${per_shard_cnt[$shard_id]}, num=${shard_num}"
 
         mode='validator'
-        node_config="test/configs/${env}/shard=${shard}_validator=${validator}_ssc=${ssc}_delay=${delay}/default_config_${env}.toml"
+        node_config="test/configs/${env}/shard=${shard}_validator=${validator}_ssc=${ssc}_delay=${delay}_vpn=${validator_per_node}/default_config_${env}.toml"
 
-        bootnode="/ip4/$ip/tcp/19875/p2p/Qmc1V6W7BwX8Ugb42Ti8RnXF1rY5PF7nnZ6bKBryCgi6cv"
+        bootnode="/ip4/10.7.95.200/tcp/19875/p2p/Qmc1V6W7BwX8Ugb42Ti8RnXF1rY5PF7nnZ6bKBryCgi6cv"
         args=("${base_args[@]}" --ip "${ip}" --port "${port}" --key "/tmp/${ip}-${port}.key" --db_dir "${PROJECT_ROOT}/db/db-${ip}-${port}" \
           "--broadcast_invalid_tx=false" --shard_num "${shard_num}" --shard_size "${shard_size}" --run.shard "${shard_id} --bootnodes=$bootnode")
         if [[ -z "$ip" || -z "$port" || "$ip" == "#" ]]; then
@@ -188,7 +200,9 @@ function deploy() {
 
         cmd="nohup ${PROJECT_ROOT}/bin/harmony ${args[@]} >> "${log_folder}/log-${port}.log" 2>&1 &"
         echo "begin to work: $cmd"
-        call_for_shard $shard_id "$cmd" < /dev/null &
+        call_for_validator $validator_index "$cmd" < /dev/null &
+
+        validator_index=$(($validator_index + 1))
     done
 }
 
@@ -197,13 +211,9 @@ function download_log() {
     mkdir -p "${log_folder}/logs"
     for SERVER in "${SERVERS[@]}"; do
         echo "Downloading logs from $SERVER"
-        scp -r -P 10022 "$SERVER:$WORK_DIR/tmp_log/*" "$ORG_ROOT/logs/ssc-harmony"
+        scp -r -P 10022 "$SERVER:$WORK_DIR/tmp_log/*" "$ORG_ROOT/logs/harmony-sscc"
     done
     echo "Logs downloaded to ${log_folder}/logs"
-    for CLIENT in "${CLIENTS[@]}"; do
-        echo "Download txs from client $CLIENT"
-        rsync -av -e "ssh -p 10022" "${CLIENT}:$ORG_ROOT/ssc-cli/data" "$ORG_ROOT/ssc-cli"
-    done
 }
 
 function test() {

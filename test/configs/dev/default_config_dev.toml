@@ -184,6 +184,7 @@ PrivateKey = "7472616374206b65e45ffeb29e933944f5027ef139f124f430641487e70ea9a1"
 SelfAddrHex = "one1pdv9lrdwl0rg5vglh4xtyrv3wjk3wsqket7zxy"
 SimulationCommitGasLimit = 5000000
 SimulationCommitGasPrice = 3000000000
+SimulationLimit = 25
 
 [Network]
 BootNodes = ["/ip4/10.7.95.200/tcp/19875/p2p/Qmc1V6W7BwX8Ugb42Ti8RnXF1rY5PF7nnZ6bKBryCgi6cv"]

@@ -27,7 +27,8 @@ func (l *lockEntry) revert(locker *stateLocker) {
 	locker.mu.Lock()
 	defer locker.mu.Unlock()
 
-	locker.lockedStates.deleteLockedState(l.txHash, l.callIndex.ToString(), l.key)
+	// Revert from pendingStates (isolated transaction state)
+	locker.pendingStates.deleteLockedState(l.txHash, l.callIndex.ToString(), l.key)
 }
 
 type rlockEntry struct {
@@ -40,7 +41,8 @@ func (l *rlockEntry) revert(locker *stateLocker) {
 	locker.mu.Lock()
 	defer locker.mu.Unlock()
 
-	locker.lockedStates.deleteRLockedState(l.txHash, l.callIndex.ToString(), l.key)
+	// Revert from pendingStates (isolated transaction state)
+	locker.pendingStates.deleteRLockedState(l.txHash, l.callIndex.ToString(), l.key)
 }
 
 type unlockEntry struct {
@@ -57,12 +59,13 @@ func (l *unlockEntry) revert(locker *stateLocker) {
 	func() {
 		locker.mu.Lock()
 		defer locker.mu.Unlock()
-		locker.lockedStates.addLockedState(l.txHash, l.callIndexStr, l.key, l.oldValue, l.state)
+		// Revert to pendingStates (isolated transaction state)
+		locker.pendingStates.addLockedState(l.txHash, l.callIndexStr, l.key, l.oldValue, l.state)
 	}()
 
 	if l.rollback {
 		locker.mu.Lock()
-		locker.lockedStates.setLockedValue(l.txHash, l.callIndexStr, l.key, l.oldValue)
+		locker.pendingStates.setLockedValue(l.txHash, l.callIndexStr, l.key, l.oldValue)
 		locker.mu.Unlock()
 
 		addr, key := l.key.Value()
@@ -80,7 +83,8 @@ type unlockRLockEntry struct {
 func (l *unlockRLockEntry) revert(locker *stateLocker) {
 	locker.mu.Lock()
 	defer locker.mu.Unlock()
-	locker.lockedStates.addRLockedState(l.txHash, l.callIndexStr, l.key, l.state)
+	// Revert to pendingStates (isolated transaction state)
+	locker.pendingStates.addRLockedState(l.txHash, l.callIndexStr, l.key, l.state)
 }
 
 type finishTxEntry struct {

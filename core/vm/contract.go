@@ -45,6 +45,7 @@ type Contract struct {
 	// CallerAddress is the result of the caller which initialised this
 	// contract. However when the "call method" is delegated this value
 	// needs to be initialised to that of the caller's caller.
+	TxHash        common.Hash
 	CallerAddress common.Address
 	caller        ContractRef
 	self          ContractRef
@@ -63,8 +64,8 @@ type Contract struct {
 }
 
 // NewContract returns a new contract environment for the execution of EVM.
-func NewContract(caller ContractRef, object ContractRef, value *big.Int, gas uint64) *Contract {
-	c := &Contract{CallerAddress: caller.Address(), caller: caller, self: object}
+func NewContract(txHash common.Hash, caller ContractRef, object ContractRef, value *big.Int, gas uint64) *Contract {
+	c := &Contract{TxHash: txHash, CallerAddress: caller.Address(), caller: caller, self: object}
 
 	if parent, ok := caller.(*Contract); ok {
 		// Reuse JUMPDEST analysis from parent context if available.

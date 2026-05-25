@@ -65,6 +65,7 @@ func (st *SSCStateTransition) useGas(amount uint64) error {
 		return vm.ErrOutOfGas
 	}
 	st.gas -= amount
+	// utils.SSCLogger().Info().Str("txHash", st.vm.Context.TxHash.Hex()).Uint64("gas", st.gas).Msg("currentGas, after use gas")
 
 	return nil
 }
@@ -131,16 +132,16 @@ func (st *SSCStateTransition) TransitionDb() (ExecutionResult, error) {
 	if err = st.useGas(gas); err != nil {
 		return ExecutionResult{}, fmt.Errorf("%w: have %d, want %d", ErrIntrinsicGas, st.gas, gas)
 	}
-
 	sscvm := st.vm
 
 	var ret []byte
 	// All VM errors are valid except for insufficient balance, therefore returned separately
 	var vmErr error
 
+	utils.SSCLogger().Info().Str("txHash", sscvm.Context.TxHash.Hex()).Str("from", msg.From().Hex()).Str("to", st.to().Hex()).Msgf("state set nonce: %d->%d", st.state.GetNonce(sender.Address()), st.state.GetNonce(sender.Address())+1)
 	st.state.SetNonce(msg.From(), st.state.GetNonce(sender.Address())+1)
+
 	ret, st.gas, vmErr = sscvm.Call(sender, st.to(), st.data, st.gas, st.value)
-	utils.SSCLogger().Debug().Msgf("TransitionDb, gas used: %d, gas left: %d, caller: %s", st.gasUsed(), st.gas, st.to())
 	if vmErr != nil {
 		// The only possible consensus-error would be if there wasn't
 		// sufficient balance to make the transfer happen. The first
@@ -167,6 +168,7 @@ func (st *SSCStateTransition) refundGas() {
 		refund = st.state.GetRefund()
 	}
 	st.gas += refund
+	// utils.SSCLogger().Info().Str("txHash", st.vm.Context.TxHash.Hex()).Uint64("gas", st.gas).Msg("currentGas， after add refund")
 
 	// Return ETH for remaining gas, exchanged at the original rate.
 	remaining := new(big.Int).Mul(new(big.Int).SetUint64(st.gas), st.gasPrice)
@@ -175,6 +177,7 @@ func (st *SSCStateTransition) refundGas() {
 	// Also return remaining gas to the block gas counter so it is
 	// available for the next transaction.
 	st.gp.AddGas(st.gas)
+	// utils.SSCLogger().Info().Str("txHash", st.vm.Context.TxHash.Hex()).Uint64("gas", st.gas).Msg("currentGas, use to add gasPool")
 }
 
 func (st *SSCStateTransition) collectGas() {

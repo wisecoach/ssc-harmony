@@ -110,6 +110,7 @@ type SSCConfig struct {
 	CXTTimeout               time.Duration
 	SimulationCommitGasLimit uint64
 	SimulationCommitGasPrice *big.Int
+	SimulationLimit          int
 	LockExecutionOnce        bool
 }
 

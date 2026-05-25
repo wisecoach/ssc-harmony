@@ -164,6 +164,7 @@ func (consensus *Consensus) onPrepare(recvMsg *FBFTMessage) {
 	}
 
 	consensus.getLogger().Debug().
+		Uint64("blockNum", consensus.getBlockNum()).
 		Str("validatorPubKey", signerPubKey.SerializeToHexStr()).
 		Int64("NumReceivedSoFar", signerCount).
 		Int64("PublicKeys", consensus.decider.ParticipantsCount()).

@@ -16,6 +16,7 @@ func NewCallNode(txHash common.Hash, callIndex CallIndex, shardId uint32) *CallN
 		ShardId:   shardId,
 		Children:  make([]*CallNode, 0),
 		DoneCh:    make(chan struct{}),
+		Once:      sync.Once{},
 	}
 }
 
@@ -40,15 +41,18 @@ func (n *CallNode) ToData() *CallNodeData {
 	}
 }
 
-func (n *CallNode) FromData(node *CallNodeData) {
+func (n *CallNode) FromData(txHash common.Hash, node *CallNodeData) {
 	n.DoneCh = make(chan struct{})
+	n.Once = sync.Once{}
+	n.TxHash = txHash
 	if node == nil {
+		utils.SSCLogger().Debug().Str("txHash", n.TxHash.Hex()).Msgf("[CallForest] nil node")
 		return
 	}
 	children := make([]*CallNode, 0, len(node.Children))
 	for _, child := range node.Children {
 		childNode := new(CallNode)
-		childNode.FromData(child)
+		childNode.FromData(txHash, child)
 		children = append(children, childNode)
 	}
 	n.CallIndex = node.CallIndex
@@ -57,30 +61,38 @@ func (n *CallNode) FromData(node *CallNodeData) {
 }
 
 func (n *CallNode) Done() {
+	utils.SSCLogger().Debug().Str("txHash", n.TxHash.Hex()).Str("callIndex", n.CallIndex.ToString()).Msgf("[CallForest] Done")
 	n.Once.Do(func() {
 		close(n.DoneCh)
 	})
 }
 
+// Wait 等待指定 shard 的所有子节点完成
+// FIX: 修复了 ShardId 检查错误（应该是 cn.ShardId 而不是 n.ShardId）
 func (n *CallNode) Wait(shardId uint32) {
 	var wg sync.WaitGroup
 	var walk func(*CallNode)
 	waitCnt := 0
+	// callIndexes := make([]string, 0, len(n.Children))
+
 	walk = func(cn *CallNode) {
-		if n.ShardId == shardId && cn != n { // 排除自己
+		if cn.ShardId == shardId && cn != n {
 			waitCnt++
+			// callIndexes = append(callIndexes, cn.CallIndex.ToString())
 			wg.Add(1)
-			go func(nn *CallNode) {
+			// ✅ 修复：将当前节点 cn 作为参数传递，避免闭包变量捕获问题
+			go func(node *CallNode) {
 				defer wg.Done()
-				<-nn.DoneCh
+				<-node.DoneCh
 			}(cn)
 		}
 		for _, child := range cn.Children {
 			walk(child)
 		}
 	}
+
 	walk(n)
-	utils.SSCLogger().Debug().Str("txHash", n.TxHash.Hex()).Msgf("Waiting for %d nodes", waitCnt)
+	// utils.SSCLogger().Debug().Str("txHash", n.TxHash.Hex()).Interface("callIndexes", callIndexes).Msgf("[CallForest] callNode %s waiting for %d nodes", n.CallIndex.ToString(), waitCnt)
 	wg.Wait()
 }
 
@@ -93,8 +105,9 @@ func NewCallForest() *CallForest {
 }
 
 type CallForest struct {
-	mu      sync.RWMutex
-	trees   []*CallNode          // 多棵树（无公共祖先）
+	mu    sync.RWMutex
+	trees []*CallNode // 多棵树（无公共祖先）
+
 	nodeMap map[string]*CallNode // key = CallIndex.String() → 快速查找
 }
 
@@ -102,7 +115,8 @@ func (f *CallForest) Insert(subtree *CallNode) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 
-	utils.SSCLogger().Debug().Str("txHash", subtree.TxHash.Hex()).Msgf("Inserting subtree: %v", subtree.ToData())
+	// ✅ 修复：使用深拷贝，避免外部修改影响内部状态
+	subtreeCopy := deepCopy(subtree)
 
 	// 递归插入所有节点到 nodeMap
 	var walk func(*CallNode)
@@ -118,10 +132,10 @@ func (f *CallForest) Insert(subtree *CallNode) {
 			walk(child)
 		}
 	}
-	walk(subtree)
+	walk(subtreeCopy)
 
 	// 尝试将新子树与现有树合并
-	f.tryMergeTrees(subtree)
+	f.tryMergeTrees(subtreeCopy)
 }
 
 func (f *CallForest) tryMergeTrees(newRoot *CallNode) {
@@ -169,6 +183,7 @@ func (f *CallForest) ExtractSubtree(ci CallIndex) *CallNode {
 }
 
 // isAncestor 判断 a 是否是 b 的祖先（前缀）
+// 注意：当 a == b 时返回 false，如果需要包含自身，使用 isAncestorOrSelf
 func isAncestor(a, b CallIndex) bool {
 	if len(a) >= len(b) {
 		return false
@@ -181,11 +196,33 @@ func isAncestor(a, b CallIndex) bool {
 	return true
 }
 
+// isAncestorOrSelf 判断 a 是否是 b 的祖先或相等
+func isAncestorOrSelf(a, b CallIndex) bool {
+	if len(a) > len(b) {
+		return false
+	}
+	for i := 0; i < len(a); i++ {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+	return true
+}
+
 // addChildByIndex 将 child 插入到 parent 的正确位置（按 CallIndex 路径）
+// ✅ 修复：添加了边界检查，避免空路径 panic
 func addChildByIndex(parent, child *CallNode) {
 	path := child.CallIndex[len(parent.CallIndex):] // 剩余路径
+
+	// ✅ 修复：边界检查，如果 path 为空，说明 child 就是 parent，无需插入
+	if len(path) == 0 {
+		return
+	}
+
 	current := parent
-	for _, idx := range path[:len(path)-1] {
+	// ✅ 修复：安全处理 path 切片，避免 len(path)-1 在 path 长度为 0 时 panic
+	for i := 0; i < len(path)-1; i++ {
+		idx := path[i]
 		// 找到或创建中间节点（可能缺失）
 		found := false
 		for _, c := range current.Children {
@@ -254,14 +291,17 @@ func mergeChildren(a, b []*CallNode) []*CallNode {
 }
 
 // deepCopy 深拷贝 CallNode（用于避免副作用）
+// ✅ 修复：复制 TxHash 和创建新的 DoneCh
 func deepCopy(node *CallNode) *CallNode {
 	if node == nil {
 		return nil
 	}
 	copy := &CallNode{
+		TxHash:    node.TxHash, // ✅ 修复：复制 TxHash
 		CallIndex: append([]int(nil), node.CallIndex...),
 		ShardId:   node.ShardId,
-		DoneCh:    nil, // 注意：不复制 DoneCh！每个 Forest 应有自己的同步机制
+		DoneCh:    make(chan struct{}), // ✅ 修复：创建新的 DoneCh，避免 nil
+		Once:      sync.Once{},         // ✅ 修复：初始化 Once
 	}
 	copy.Children = deepCopySlice(node.Children)
 	return copy
@@ -333,9 +373,11 @@ func cloneSubtreeForShard(root *CallNode, shardId uint32) *CallNode {
 
 		// 保留该节点
 		newNode := &CallNode{
+			TxHash:    n.TxHash,
 			CallIndex: append([]int(nil), n.CallIndex...),
 			ShardId:   n.ShardId,
-			// 注意：不复制 DoneCh，这是静态结构
+			DoneCh:    make(chan struct{}), // ✅ 创建新的 DoneCh
+			Once:      sync.Once{},
 		}
 
 		// 递归处理子节点

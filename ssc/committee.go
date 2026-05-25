@@ -4,9 +4,11 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	"math"
 	"math/big"
 	"sort"
+	"strings"
 	"sync"
 	"time"
 
@@ -28,16 +30,20 @@ type CommitteeMechanism struct {
 	lastEpochBlockNum uint64
 	CurrentEpoch      api.Epoch
 	cmLock            lm.RWMutex
+	epochWaitLock     lm.RWMutex
 
-	Committees       map[uint32]map[api.Epoch]*api.ShardSimulateCommittee
-	LatestCommittees map[uint32]*api.ShardSimulateCommittee
-	isMember         bool
-	state            *ReputationState
+	Committees         map[uint32]map[api.Epoch]*api.ShardSimulateCommittee
+	LatestCommittees   map[uint32]*api.ShardSimulateCommittee
+	currentShardEpochs []api.Epoch // snapshot of all shards' current epochs, indexed by shardID
+	isMember           map[api.Epoch]bool
+	state              *ReputationState
+	epochReadyCh       map[uint32]map[api.Epoch]chan struct{}
 
 	signerMgr   api.BLSSignerMgr
 	txSubmitter api.TxSubmitter
 	comm        *Comm
 	ctx         context.Context
+	parser      *StateDataParser // 独立的数据解析器
 }
 
 func NewCommitteeMechanism(ctx context.Context, selfAddr common.Address, selfShard uint32, config *api.ShardSimulateCommitteeConfig, signerMgr api.BLSSignerMgr, submitter api.TxSubmitter, comm *Comm) *CommitteeMechanism {
@@ -50,7 +56,7 @@ func NewCommitteeMechanism(ctx context.Context, selfAddr common.Address, selfSha
 		cmLock:           lm.NewRWMutex(),
 		Committees:       make(map[uint32]map[api.Epoch]*api.ShardSimulateCommittee),
 		LatestCommittees: make(map[uint32]*api.ShardSimulateCommittee),
-		isMember:         false,
+		isMember:         make(map[api.Epoch]bool),
 		signerMgr:        signerMgr,
 		txSubmitter:      submitter,
 		comm:             comm,
@@ -64,7 +70,9 @@ func NewCommitteeMechanism(ctx context.Context, selfAddr common.Address, selfSha
 		TxNum:        0,
 		TxNumSum:     0,
 	}
-	utils.SSCLogger().Info().Interface("config", config).Msgf("CommitteeMechanism initialized: SelfAddr: %s, SelfShard: %d, CurrentEpoch: %d, ShardNum: %d",
+	cm.parser = NewStateDataParser()
+	cm.epochReadyCh = make(map[uint32]map[api.Epoch]chan struct{})
+	utils.SSCLogger().Info().Msgf("COMMITTEE_INIT,SelfAddr=%s,SelfShard=%d,CurrentEpoch=%d,ShardNum=%d",
 		cm.SelfAddr.Hex(), cm.SelfShard, cm.CurrentEpoch, cm.ShardNum())
 	err := cm.loadFromConfig(config)
 	if err != nil {
@@ -73,6 +81,22 @@ func NewCommitteeMechanism(ctx context.Context, selfAddr common.Address, selfSha
 	}
 	go cm.workForSLTest()
 	return cm
+}
+
+func (cm *CommitteeMechanism) GetLatestCommittees() map[uint32]*api.ShardSimulateCommittee {
+	cm.cmLock.RLock()
+	defer cm.cmLock.RUnlock()
+
+	return cm.LatestCommittees
+}
+
+func (cm *CommitteeMechanism) CopyCurrentEpochs() []api.Epoch {
+	cm.cmLock.RLock()
+	defer cm.cmLock.RUnlock()
+
+	epochs := make([]api.Epoch, len(cm.currentShardEpochs))
+	copy(epochs, cm.currentShardEpochs)
+	return epochs
 }
 
 func (cm *CommitteeMechanism) GetShardID(address common.Address) uint32 {
@@ -99,6 +123,7 @@ func (cm *CommitteeMechanism) ShardNum() uint32 {
 func (cm *CommitteeMechanism) loadFromConfig(config *api.ShardSimulateCommitteeConfig) error {
 	cm.cmLock.Lock()
 	defer cm.cmLock.Unlock()
+	cm.currentShardEpochs = make([]api.Epoch, len(config.Committees))
 	for _, committee := range config.Committees {
 		err := cm.updateCommittee(committee.ShardID, committee)
 		if err != nil {
@@ -108,12 +133,63 @@ func (cm *CommitteeMechanism) loadFromConfig(config *api.ShardSimulateCommitteeC
 	return nil
 }
 
+// Note: it will get cmLock, don't call it after get cmLock
+func (cm *CommitteeMechanism) preCheckAndWait(epoch api.Epoch, shardId uint32) {
+	if !cm.epochExists(epoch, shardId) {
+		cm.waitForEpoch(epoch, shardId)
+	}
+}
+
+func (cm *CommitteeMechanism) epochExists(epoch api.Epoch, shardId uint32) bool {
+	cm.cmLock.RLock()
+	defer cm.cmLock.RUnlock()
+
+	if cm.Committees[shardId] == nil {
+		return false
+	}
+	return cm.Committees[shardId][epoch] != nil
+}
+
+func (cm *CommitteeMechanism) waitForEpoch(epoch api.Epoch, shardId uint32) {
+	startTime := time.Now()
+	var waitCh chan struct{}
+
+	cm.epochWaitLock.Lock()
+	if cm.epochReadyCh[shardId] == nil {
+		cm.epochReadyCh[shardId] = make(map[api.Epoch]chan struct{})
+	}
+	waitCh = cm.epochReadyCh[shardId][epoch]
+	if waitCh == nil {
+		waitCh = make(chan struct{})
+		cm.epochReadyCh[shardId][epoch] = waitCh
+	}
+	cm.epochWaitLock.Unlock()
+
+	if waitCh != nil {
+		utils.SSCLogger().Info().Msgf("waiting for epoch %d to be ready, shardId=%d", epoch, shardId)
+		select {
+		case <-waitCh:
+			utils.SSCLogger().Info().Msgf("epoch %d is ready, cost=%v", epoch, time.Since(startTime))
+		case <-time.After(time.Hour * 10):
+			utils.SSCLogger().Error().Msgf("timeout waiting for epoch %d, cost=%v", epoch, time.Since(startTime))
+		}
+	}
+}
+
 func (cm *CommitteeMechanism) getCommittee(epoch api.Epoch, shardId uint32) *api.ShardSimulateCommittee {
 	committee := cm.Committees[shardId][epoch]
+	if committee == nil {
+		currentCommittee := cm.LatestCommittees[shardId]
+		utils.SSCLogger().Error().Msgf("cannot find committee for (%d, %d), but current committee is (%d, %d)",
+			shardId, epoch, currentCommittee.ShardID, currentCommittee.Epoch)
+		return currentCommittee
+	}
 	return committee
 }
 
 func (cm *CommitteeMechanism) GetLeader(epoch api.Epoch, shardId uint32) *api.Member {
+	cm.preCheckAndWait(epoch, shardId)
+
 	cm.cmLock.RLock()
 	defer cm.cmLock.RUnlock()
 
@@ -125,26 +201,17 @@ func (cm *CommitteeMechanism) GetLeader(epoch api.Epoch, shardId uint32) *api.Me
 	return nil
 }
 
-func (cm *CommitteeMechanism) CurrentLeader(shardId uint32) *api.Member {
+func (cm *CommitteeMechanism) IsLeader(epoch api.Epoch) bool {
+	cm.preCheckAndWait(epoch, cm.SelfShard)
+
 	cm.cmLock.RLock()
 	defer cm.cmLock.RUnlock()
 
-	if committee := cm.LatestCommittees[shardId]; committee != nil {
-		index := 0
-		return committee.Members[index]
-	}
-
-	return nil
-}
-
-func (cm *CommitteeMechanism) IsLeader() bool {
-	cm.cmLock.RLock()
-	defer cm.cmLock.RUnlock()
-
-	if committee, ok := cm.Committees[cm.SelfShard][cm.CurrentEpoch]; ok {
+	if committee := cm.getCommittee(epoch, cm.SelfShard); committee != nil {
 		index := 0
 		isLeader := bytes.Compare(committee.Members[index].Address.Bytes(), cm.SelfAddr.Bytes()) == 0
-		utils.SSCLogger().Debug().Msgf("leader index: %d, self addr: %s, leader addr: %s, is leader: %v", index, cm.SelfAddr.Hex(), committee.Members[index].Address.Hex(), isLeader)
+		utils.SSCLogger().Debug().Msgf("LEADER_CHECK,Epoch=%d,ShardID=%d,LeaderAddr=%s,SelfAddr=%s,IsLeader=%v",
+			cm.CurrentEpoch, cm.SelfShard, committee.Members[index].Address.Hex(), cm.SelfAddr.Hex(), isLeader)
 		return isLeader
 	}
 
@@ -153,14 +220,18 @@ func (cm *CommitteeMechanism) IsLeader() bool {
 	return false
 }
 
-func (cm *CommitteeMechanism) IsMember() bool {
+func (cm *CommitteeMechanism) IsMember(epoch api.Epoch) bool {
+	cm.preCheckAndWait(epoch, cm.SelfShard)
+
 	cm.cmLock.RLock()
 	defer cm.cmLock.RUnlock()
 
-	return cm.isMember
+	return cm.isMember[epoch]
 }
 
 func (cm *CommitteeMechanism) GetCommittee(epoch api.Epoch, shardID uint32) *api.ShardSimulateCommittee {
+	cm.preCheckAndWait(epoch, shardID)
+
 	cm.cmLock.RLock()
 	defer cm.cmLock.RUnlock()
 
@@ -168,28 +239,30 @@ func (cm *CommitteeMechanism) GetCommittee(epoch api.Epoch, shardID uint32) *api
 }
 
 func (cm *CommitteeMechanism) updateCommittee(shardID uint32, committee *api.ShardSimulateCommittee) error {
-	utils.SSCLogger().Info().Interface("committee", committee).Msgf("updating committee for shard %d, epoch=%d", shardID, committee.Epoch)
 	if _, exists := cm.Committees[shardID][committee.Epoch]; exists {
-		utils.SSCLogger().Debug().Interface("committee", committee).Msgf("committee for shard %d already exists", shardID)
+		utils.SSCLogger().Info().Msgf("COMMITTEE_EXISTS,ShardID=%d,Epoch=%d", shardID, committee.Epoch)
 		return nil
 	}
 
-	validatorChanged := true
 	if cm.Committees[shardID] == nil {
 		cm.Committees[shardID] = make(map[api.Epoch]*api.ShardSimulateCommittee)
 	}
 	if committee.Validators == nil {
 		committee.Validators = cm.LatestCommittees[shardID].Validators
-		validatorChanged = false
 	}
 	cm.Committees[shardID][committee.Epoch] = committee
 	cm.LatestCommittees[shardID] = committee
+	cm.currentShardEpochs[int(shardID)] = committee.Epoch
 	cm.shardNum = uint32(len(cm.Committees))
+
+	// Update currentShardEpochs: ensure slice is large enough and update this shard's epoch
+	cm.updateShardEpochs(shardID, committee.Epoch)
+
 	if cm.SelfShard == shardID {
+		cm.CurrentEpoch = committee.Epoch
 		for _, member := range committee.Members {
-			if member.Address == cm.SelfAddr {
-				cm.isMember = true
-				cm.CurrentEpoch = committee.Epoch
+			if bytes.Compare(member.Address.Bytes(), cm.SelfAddr.Bytes()) == 0 {
+				cm.isMember[committee.Epoch] = true
 				break
 			}
 		}
@@ -203,18 +276,53 @@ func (cm *CommitteeMechanism) updateCommittee(shardID uint32, committee *api.Sha
 		}
 	}
 
-	addr2Index := make(map[common.Address]int)
-	pubKeys := make([]bls.PublicKeyWrapper, 0, len(committee.Members))
-	for i, member := range committee.Members {
-		addr2Index[member.Address] = i
-		pubKey, err := bls.WrapperPublicKeyFromString(member.BLSPubKey)
+	pubKeys := make([]bls.PublicKeyWrapper, 0, len(committee.Validators))
+	validatorAddr2Index := make(map[common.Address]int)
+	for i, validator := range committee.Validators {
+		validatorAddr2Index[validator.Address] = i
+		pubKey, err := bls.WrapperPublicKeyFromString(validator.BLSPubKey)
 		if err != nil {
-			utils.SSCLogger().Error().Err(err).Msg("failed to parse BLS public key")
+			utils.SSCLogger().Error().Msgf("BLS_KEY_PARSE_FAILED,Member=%s,Error=%v", validator.Address.Hex(), err)
 			return err
 		}
 		pubKeys = append(pubKeys, *pubKey)
 	}
-	cm.signerMgr.UpdateSSCPubKeys(shardID, committee.Epoch, addr2Index, pubKeys)
+	committee.ValidatorIndex = validatorAddr2Index
+
+	validatorPubKeys := make([]bls.PublicKeyWrapper, 0, len(committee.Validators))
+	for _, v := range committee.Validators {
+		validatorPubKey, err := bls.WrapperPublicKeyFromString(v.BLSPubKey)
+		if err != nil {
+			utils.SSCLogger().Error().Msgf("BLS_KEY_PARSE_FAILED,Validator=%s,Error=%v", v.Address.Hex(), err)
+			return err
+		}
+		validatorPubKeys = append(validatorPubKeys, *validatorPubKey)
+	}
+	cm.signerMgr.UpdateValidatorPubKeys(shardID, committee.Epoch, true, validatorAddr2Index, validatorPubKeys, committee.ValidatorThreshold)
+
+	sscAddr2Index := make(map[common.Address]int)
+	for _, member := range committee.Members {
+		sscAddr2Index[member.Address] = validatorAddr2Index[member.Address]
+	}
+	committee.MemberIndex = sscAddr2Index
+	cm.signerMgr.UpdateSSCPubKeys(shardID, committee.Epoch, true, sscAddr2Index, pubKeys, committee.Threshold)
+
+	// notify waiters for this epoch
+	cm.epochWaitLock.Lock()
+	if cm.epochReadyCh[shardID] == nil {
+		cm.epochReadyCh[shardID] = make(map[api.Epoch]chan struct{})
+	}
+	if readyCh, exists := cm.epochReadyCh[shardID][committee.Epoch]; exists {
+		close(readyCh)
+	} else {
+		readyCh = make(chan struct{})
+		cm.epochReadyCh[shardID][committee.Epoch] = readyCh
+		close(readyCh)
+	}
+	cm.epochWaitLock.Unlock()
+
+	utils.SSCLogger().Info().Interface("committee", committee).Interface("sscAddr2Index", sscAddr2Index).Msgf("COMMITTEE_UPDATE,ShardID=%d,Epoch=%d,MemberCount=%d,ValidatorCount=%d",
+		shardID, committee.Epoch, len(committee.Members), len(committee.Validators))
 
 	for _, u := range committee.Validators {
 		if _, exists := cm.state.Accounts[u.Address]; !exists {
@@ -234,25 +342,57 @@ func (cm *CommitteeMechanism) updateCommittee(shardID uint32, committee *api.Sha
 			}
 		}
 	}
-	if validatorChanged {
-		validatorPubKeys := make([]bls.PublicKeyWrapper, 0, len(committee.Validators))
-		validatorAddr2Index := make(map[common.Address]int)
-		for _, v := range committee.Validators {
-			validatorAddr2Index[v.Address] = len(validatorPubKeys)
-			validatorPubKey, err := bls.WrapperPublicKeyFromString(v.BLSPubKey)
-			if err != nil {
-				utils.SSCLogger().Error().Err(err).Msg("failed to parse BLS public key")
-				return err
-			}
-			validatorPubKeys = append(validatorPubKeys, *validatorPubKey)
-		}
-		cm.signerMgr.UpdateValidatorPubKeys(shardID, committee.Epoch, validatorAddr2Index, validatorPubKeys)
+	// Log committee member indices in validator list
+	memberIndices := make([]string, len(committee.Members))
+	for i, m := range committee.Members {
+		memberIndices[i] = fmt.Sprintf("%d", validatorAddr2Index[m.Address])
 	}
-	utils.SSCLogger().Info().Interface("committee", committee).Msgf("updated committee for shard %d", shardID)
+	utils.SSCLogger().Info().Msgf("COMMITTEE_UPDATED,ShardID=%d,Epoch=%d,MemberIndices=[%s]",
+		shardID, committee.Epoch, strings.Join(memberIndices, "|"))
 	return nil
 }
 
+// updateShardEpochs updates the currentShardEpochs slice with the given shard's epoch
+// Must be called with cmLock held
+func (cm *CommitteeMechanism) updateShardEpochs(shardID uint32, epoch api.Epoch) {
+	// Ensure slice is large enough
+	if int(shardID) >= len(cm.currentShardEpochs) {
+		newEpochs := make([]api.Epoch, shardID+1)
+		copy(newEpochs, cm.currentShardEpochs)
+		cm.currentShardEpochs = newEpochs
+	}
+	cm.currentShardEpochs[shardID] = epoch
+}
+
+// GetShardEpochs returns a copy of the current shard epochs snapshot
+// This is safe for concurrent use and prevents external modification
+func (cm *CommitteeMechanism) GetShardEpochs() []api.Epoch {
+	cm.cmLock.RLock()
+	defer cm.cmLock.RUnlock()
+
+	if cm.currentShardEpochs == nil {
+		return nil
+	}
+	// Return a copy to prevent external modification
+	shardEpochs := make([]api.Epoch, len(cm.currentShardEpochs))
+	copy(shardEpochs, cm.currentShardEpochs)
+	return shardEpochs
+}
+
+// GetCurrentEpoch returns the current epoch for the given shard
+func (cm *CommitteeMechanism) GetCurrentEpoch(shardID uint32) api.Epoch {
+	cm.cmLock.RLock()
+	defer cm.cmLock.RUnlock()
+
+	if int(shardID) >= len(cm.currentShardEpochs) {
+		return 0
+	}
+	return cm.currentShardEpochs[shardID]
+}
+
 func (cm *CommitteeMechanism) GetValidators(epoch api.Epoch, shardId uint32) []*api.Member {
+	cm.preCheckAndWait(epoch, shardId)
+
 	cm.cmLock.RLock()
 	defer cm.cmLock.RUnlock()
 
@@ -262,65 +402,93 @@ func (cm *CommitteeMechanism) GetValidators(epoch api.Epoch, shardId uint32) []*
 	return make([]*api.Member, 0)
 }
 
+func (cm *CommitteeMechanism) CurrentValidatorAddrs() []common.Address {
+	cm.cmLock.RLock()
+	defer cm.cmLock.RUnlock()
+
+	addrs := make([]common.Address, 0)
+	validators := cm.LatestCommittees[cm.SelfShard].Validators
+	for _, v := range validators {
+		addrs = append(addrs, v.Address)
+	}
+	return addrs
+}
+
+// BlockStateDelta 表示从区块解析出的状态变更数据
+// 解耦数据解析与状态写入
+type BlockStateDelta struct {
+	RewardIncrement    *big.Int    // 奖励增量
+	TxCount            int         // 跨分片交易数量
+	MemberTxCounts     map[int]int // 成员参与的交易计数 (memberIndex -> count)
+	MemberSignedCounts map[int]int // 签名计数 (memberIndex -> count)
+}
+
 // HandleBlockCommitted
-// 1. update $R$, |Tx|, |STx_u|
-// 2. check if need to start new epoch
-//
-//	@Description:
-//	@param block
-//	@return error
+// 1. 从区块解析数据 (解耦到 parser)
+// 2. 应用状态变更
+// 3. 检查是否需要启动新 epoch
 func (cm *CommitteeMechanism) HandleBlockCommitted(block *types.Block) error {
+	committee := cm.getCommittee(cm.CurrentEpoch, cm.SelfShard)
+
+	// Step 1: 解析区块数据，提取状态变更 (解耦：解析逻辑独立)
+	delta := cm.parser.ParseBlock(block, committee, cm.Config.Reputation.RewardPrice)
+
+	// Step 2: 应用状态变更 (解耦：写入逻辑独立)
 	err := func() error {
 		cm.cmLock.Lock()
 		defer cm.cmLock.Unlock()
-		transactions := block.Transactions()
-		crossGasUsed := block.Header().CrossGasUsed()
-		reward := new(big.Int).Mul(new(big.Int).SetUint64(crossGasUsed), cm.Config.Reputation.RewardPrice)
-		cm.state.Reward = new(big.Int).Add(cm.state.Reward, reward)
-		committee := cm.getCommittee(cm.CurrentEpoch, cm.SelfShard)
-		for _, tx := range transactions {
-			if tx.CrossShard() {
-				to := *tx.To()
-				if !vm.IsSSCAddrApplyOnChain(to) {
-					// update |Tx|
-					cm.state.TxNum++
-					cm.state.TxNumSum++
-				} else {
-					if to == vm.SimulationCommitAddr {
-						simulation := &api.SimulationCommit{}
-						err := json.Unmarshal(tx.Data(), simulation)
-						if err != nil {
-							utils.SSCLogger().Error().Err(err).Msg("failed to unmarshal simulation commit")
-							return err
-						}
-						bitmap := simulation.GetBLSBitMap()
-						for i, member := range committee.Members {
-							byt := i >> 3
-							msk := byte(1) << uint(i&7)
-							if bitmap[byt]&msk != 0 {
-								// update |STx_u|
-								cm.state.Accounts[member.Address].STxNum += 1
-								cm.state.Accounts[member.Address].STxNumSum += 1
-							}
-						}
-					}
-				}
-			}
-		}
-		return nil
+		return cm.applyBlockDelta(delta)
 	}()
 
 	if err != nil {
-		utils.SSCLogger().Error().Err(err).Msg("failed to handle block committed")
+		utils.SSCLogger().Error().Msgf("BLOCK_COMMIT_FAILED,Error=%v", err)
 		return err
 	}
 
-	// check if need to start new epoch
-	if block.NumberU64() == cm.lastEpochBlockNum+cm.Config.Reputation.BlockPerEpoch {
-		err := cm.startNewEpoch(block)
+	// Step 3: 检查是否需要启动新 epoch
+	if block.NumberU64() > 0 && block.NumberU64()%cm.Config.Reputation.BlockPerEpoch == 0 {
+		err := cm.startNewEpoch(block.NumberU64())
 		if err != nil {
-			utils.SSCLogger().Error().Err(err).Msg("failed to start new epoch")
+			utils.SSCLogger().Error().Msgf("START_EPOCH_FAILED,BlockNum=%d,Error=%v", block.NumberU64(), err)
 			return err
+		}
+	}
+
+	return nil
+}
+
+// applyBlockDelta 应用区块状态变更到 state
+// 必须持有 cmLock 调用
+func (cm *CommitteeMechanism) applyBlockDelta(delta *BlockStateDelta) error {
+	state := cm.state
+
+	// 更新奖励
+	state.Reward = new(big.Int).Add(state.Reward, delta.RewardIncrement)
+
+	// 更新交易计数
+	state.TxNum += delta.TxCount
+	state.TxNumSum += delta.TxCount
+
+	// 更新成员参与计数
+	committee := cm.getCommittee(cm.CurrentEpoch, cm.SelfShard)
+	for memberIndex, count := range delta.MemberTxCounts {
+		if memberIndex >= len(committee.Members) {
+			continue
+		}
+		memberAddr := committee.Members[memberIndex].Address
+		if account, exists := state.Accounts[memberAddr]; exists {
+			account.TxNum += count
+			account.TxNumSum += count
+		}
+	}
+	for memberIndex, count := range delta.MemberSignedCounts {
+		if memberIndex >= len(committee.Members) {
+			continue
+		}
+		memberAddr := committee.Members[memberIndex].Address
+		if account, exists := state.Accounts[memberAddr]; exists {
+			account.STxNum += count
+			account.STxNumSum += count
 		}
 	}
 
@@ -331,7 +499,7 @@ func (cm *CommitteeMechanism) HandleBlockCommitted(block *types.Block) error {
 // 1. update epoch and blockNum
 // 2. update $B,A,S,P$
 // 3. clear state
-func (cm *CommitteeMechanism) startNewEpoch(block *types.Block) error {
+func (cm *CommitteeMechanism) startNewEpoch(blockNum uint64) error {
 	newCommittee, oldCommittee, err := func() (*api.ShardSimulateCommittee, *api.ShardSimulateCommittee, error) {
 		cm.cmLock.RLock()
 		defer cm.cmLock.RUnlock()
@@ -339,35 +507,39 @@ func (cm *CommitteeMechanism) startNewEpoch(block *types.Block) error {
 		state := cm.state
 		config := cm.Config.Reputation
 		accounts := state.Accounts
-		committee := cm.getCommittee(cm.CurrentEpoch, cm.SelfShard)
-		if committee == nil {
-			return nil, nil, errors.New("committee not found")
+		oldCommittee := cm.getCommittee(cm.CurrentEpoch, cm.SelfShard)
+		if oldCommittee == nil {
+			return nil, nil, errors.New("oldCommittee not found")
 		}
-		validators := committee.Validators
+		validators := oldCommittee.Validators
+		newEpoch := api.Epoch(blockNum / cm.Config.Reputation.BlockPerEpoch)
 
 		// update S_u
 		for _, u := range validators {
 			s_u := float64(0)
 			for _, v := range validators {
 				opinion := accounts[v.Address].SLOpinions[u.Address]
-				s_u += opinion.Beta + config.A*opinion.Omega
+				s_u += (1-config.A)*opinion.Beta + config.A*opinion.Omega
 			}
-			accounts[u.Address].S = s_u
+			accounts[u.Address].S = s_u / float64(len(validators))
 		}
 
 		sumW := float64(1)
 		// update P_u, w_u
 		for _, u := range validators {
 			ur := accounts[u.Address]
-			ur.P = float64(ur.STxNumSum+1) / float64(state.TxNumSum+1)
+			ur.P = float64(ur.STxNumSum) / float64(ur.TxNumSum+1)
 			ur.W = config.RB + config.RS*float64(ur.STxNum+1)/float64(state.TxNum+1)
 			sumW += ur.W
 		}
 
 		// update R_u, add staked reward
-		for _, u := range committee.Members {
+		for _, u := range oldCommittee.Members {
 			ur := accounts[u.Address]
-			utils.SSCLogger().Info().Msgf("ur.W=%f, sum=%f", ur.W, sumW)
+			// Protect against division by zero or negative sumW
+			if sumW <= 0 {
+				sumW = 1
+			}
 			reward := new(big.Float).Mul(new(big.Float).SetInt(state.Reward), new(big.Float).SetFloat64(ur.W/sumW))
 			ur.StakedReward[cm.CurrentEpoch], _ = reward.Int(new(big.Int))
 			redeemableEpoch := cm.CurrentEpoch - api.Epoch(config.T)
@@ -386,7 +558,13 @@ func (cm *CommitteeMechanism) startNewEpoch(block *types.Block) error {
 			for _, reward := range ur.StakedReward {
 				sumReward = new(big.Int).Add(sumReward, reward)
 			}
-			avgReward := new(big.Float).Quo(new(big.Float).SetInt(sumReward), new(big.Float).SetInt64(int64(len(ur.StakedReward))))
+			// Protect against division by zero when no staked rewards exist yet
+			var avgReward *big.Float
+			if len(ur.StakedReward) == 0 {
+				avgReward = new(big.Float).SetInt64(0)
+			} else {
+				avgReward = new(big.Float).Quo(new(big.Float).SetInt(sumReward), new(big.Float).SetInt64(int64(len(ur.StakedReward))))
+			}
 			cost := new(big.Float).Mul(new(big.Float).SetFloat64(config.Theta), new(big.Float).SetUint64(state.GasUsed))
 			risk := new(big.Float).Mul(new(big.Float).SetInt(sumReward), new(big.Float).SetFloat64(ur.Mu))
 			rev := new(big.Float)
@@ -400,17 +578,35 @@ func (cm *CommitteeMechanism) startNewEpoch(block *types.Block) error {
 			ur.Rev = rev
 			revList = append(revList, rev)
 		}
-		utils.SSCLogger().Info().Interface("revList", revList).Msgf("update R_u")
+		// Log reputation data for each validator in CSV format
+		for i, u := range validators {
+			ur := accounts[u.Address]
+			totalReward := new(big.Int).SetInt64(0)
+			for _, r := range ur.Rewards {
+				totalReward = new(big.Int).Add(totalReward, r)
+			}
+			utils.SSCLogger().Info().Msgf("REPUTATION_EPOCH, BlockNum=%d,CurrentEpoch=%d,NewEpoch=%d,ShardID=%d,ValidatorIndex=%d,Addr=%s,A=%.6f,B=%.6f,S=%.6f,P=%.6f,W=%.6f,Rev=%.6f,Mu=%.6f,STxNum=%d,STxNumSum=%d,TotalReward=%s",
+				blockNum, cm.CurrentEpoch, newEpoch, cm.SelfShard, i, u.Address.Hex(), ur.A, ur.B, ur.S, ur.P, ur.W, ur.Rev, ur.Mu, ur.STxNumSum, ur.STxNumSum, totalReward.String())
+		}
 		sort.Slice(revList, func(i, j int) bool { return revList[i].Cmp(revList[j]) < 0 })
 		minRev := revList[0]
 		maxRev := revList[len(revList)-1]
-		distance := maxRev.Sub(minRev, new(big.Float))
+		distance := maxRev.Sub(maxRev, minRev)
 		for _, u := range validators {
 			ur := accounts[u.Address]
-			if distance.Cmp(new(big.Float)) == 0 {
-				ur.A = 1
+			if distance.Cmp(big.NewFloat(0)) == 0 {
+				// All validators have same revenue, assign neutral value
+				ur.A = 0.5
 			} else {
-				ur.A, _ = ur.Rev.Quo(ur.Rev.Sub(ur.Rev, minRev), distance).Float64()
+				// Properly normalize revenue to [0, 1] range
+				normalized := new(big.Float).Quo(new(big.Float).Sub(ur.Rev, minRev), distance)
+				ur.A, _ = normalized.Float64()
+				// Clamp to [0, 1] range to prevent Inf/NaN
+				if ur.A < 0 {
+					ur.A = 0
+				} else if ur.A > 1 {
+					ur.A = 1
+				}
 			}
 		}
 
@@ -422,18 +618,25 @@ func (cm *CommitteeMechanism) startNewEpoch(block *types.Block) error {
 			weightedList = append(weightedList, ur.B)
 		}
 
-		// select new committee
-		selectedIndexes := SelectWeightedIndices(weightedList, int(committee.Number), int64(cm.CurrentEpoch))
+		// select new oldCommittee
+		selectedIndexes := SelectWeightedIndices(weightedList, oldCommittee.Number, int64(cm.CurrentEpoch))
+		// order by weight desc
+		sort.Slice(selectedIndexes, func(i, j int) bool { return weightedList[i] > weightedList[j] })
 		newCommittee := &api.ShardSimulateCommittee{
-			ShardID:   cm.SelfShard,
-			Epoch:     cm.CurrentEpoch + 1,
-			Members:   make([]*api.Member, 0, len(selectedIndexes)),
-			Number:    committee.Number,
-			Threshold: committee.Threshold,
+			ShardID:            cm.SelfShard,
+			Epoch:              newEpoch,
+			Members:            make([]*api.Member, len(selectedIndexes)),
+			Number:             oldCommittee.Number,
+			Threshold:          oldCommittee.Threshold,
+			ValidatorThreshold: oldCommittee.ValidatorThreshold,
 		}
-		for _, index := range selectedIndexes {
-			newCommittee.Members = append(newCommittee.Members, validators[index])
+		newMemberIndices := make([]string, len(newCommittee.Members))
+		for i, index := range selectedIndexes {
+			newCommittee.Members[i] = validators[index]
+			newMemberIndices[i] = fmt.Sprintf("%d", index)
 		}
+		utils.SSCLogger().Info().Msgf("COMMITTEE_CHANGE,OldEpoch=%d,NewEpoch=%d,OldCount=%d,NewCount=%d,NewMemberIndices=[%s]",
+			oldCommittee.Epoch, newCommittee.Epoch, len(oldCommittee.Members), len(newCommittee.Members), newMemberIndices)
 
 		// clear state
 		state.GasUsed = 0
@@ -441,24 +644,27 @@ func (cm *CommitteeMechanism) startNewEpoch(block *types.Block) error {
 		for _, u := range validators {
 			ur := accounts[u.Address]
 			ur.STxNum = 0
+			ur.TxNum = 0
 		}
-		return newCommittee, committee, nil
+		return newCommittee, oldCommittee, nil
 	}()
 
 	if err != nil {
-		utils.SSCLogger().Error().Err(err).Msg("failed to update committee")
+		utils.SSCLogger().Error().Msgf("COMMITTEE_UPDATE_FAILED,Epoch=%d,Error=%v", cm.CurrentEpoch, err)
 		return err
 	}
 
 	// the first member submit new epoch tx
 	if cm.SelfAddr == oldCommittee.Members[0].Address {
-		utils.SSCLogger().Info().Msgf("submit new epoch tx, epoch=%d, for shard=%d, selfAddr=%s, firstMemberAddr=%s", newCommittee.Epoch, newCommittee.ShardID, cm.SelfAddr.Hex(), newCommittee.Members[0].Address.Hex())
+		utils.SSCLogger().Info().Msgf("NEW_EPOCH_SUBMIT,Epoch=%d,ShardID=%d,Submitter=%s",
+			newCommittee.Epoch, newCommittee.ShardID, cm.SelfAddr.Hex())
 		newEpoch := &api.NewEpoch{
 			Committee: newCommittee,
 		}
 		err := cm.txSubmitter.SubmitNewEpoch(newEpoch)
 		if err != nil {
-			utils.SSCLogger().Error().Err(err).Msg("submit new epoch tx failed")
+			utils.SSCLogger().Error().Msgf("NEW_EPOCH_SUBMIT_FAILED,Epoch=%d,ShardID=%d,Error=%v",
+				newCommittee.Epoch, newCommittee.ShardID, err)
 			return err
 		}
 	}
@@ -466,14 +672,16 @@ func (cm *CommitteeMechanism) startNewEpoch(block *types.Block) error {
 	return nil
 }
 
-func (cm *CommitteeMechanism) HandleNewEpoch(newEpoch *api.NewEpoch, stateDB api.StateDB, blockNum uint64) error {
+func (cm *CommitteeMechanism) HandleNewEpoch(newEpoch *api.NewEpoch, blockNum uint64) error {
 	cm.cmLock.Lock()
 	defer cm.cmLock.Unlock()
 
-	utils.SSCLogger().Info().Interface("state", cm.state.Accounts).Uint64("reward", cm.state.Reward.Uint64()).Msgf("handle new epoch, epoch=%d, for shard=%d", newEpoch.Committee.Epoch, newEpoch.Committee.ShardID)
+	utils.SSCLogger().Info().Msgf("NEW_EPOCH_HANDLED,Epoch=%d,ShardID=%d,TotalReward=%s,AccountCount=%d",
+		newEpoch.Committee.Epoch, newEpoch.Committee.ShardID, cm.state.Reward.String(), len(cm.state.Accounts))
 	err := cm.updateCommittee(newEpoch.Committee.ShardID, newEpoch.Committee)
 	if err != nil {
-		utils.SSCLogger().Error().Err(err).Msg("update committee failed")
+		utils.SSCLogger().Error().Msgf("COMMITTEE_UPDATE_FAILED,Epoch=%d,ShardID=%d,Error=%v",
+			newEpoch.Committee.Epoch, newEpoch.Committee.ShardID, err)
 		return err
 	}
 	cm.lastEpochBlockNum = blockNum
@@ -517,7 +725,8 @@ func (cm *CommitteeMechanism) workForSLTest() {
 		}
 		results := make(map[int]*api.SLTestResult)
 
-		utils.SSCLogger().Debug().Msgf("start sl test for %d validators, cnt=%d", len(validators), testCnt)
+		utils.SSCLogger().Info().Msgf("SL_TEST_START,Epoch=%d,ValidatorCount=%d,TestCnt=%d",
+			cm.CurrentEpoch, len(validators), testCnt)
 
 		ctx, cancel := context.WithTimeout(cm.ctx, config.SLTimeout)
 		for i, validator := range validators {
@@ -527,7 +736,8 @@ func (cm *CommitteeMechanism) workForSLTest() {
 				result := &api.SLTestResult{}
 				err := cm.comm.CallToEndpoint(ctx, result, endpoint, api.Method_SLTest, req)
 				if err != nil {
-					utils.SSCLogger().Warn().Err(err).Msg("call to endpoint failed")
+					utils.SSCLogger().Warn().Msgf("SL_TEST_CALL_FAILED,Validator=%s,Endpoint=%s,Error=%v",
+						validator.Address.Hex(), endpoint, err)
 					return
 				}
 				lock.Lock()
@@ -574,30 +784,64 @@ func (cm *CommitteeMechanism) workForSLTest() {
 			opinion.Omega = config.C / (float64(opinion.S+opinion.F) + config.C)
 			selfOpinions.Opinions = append(selfOpinions.Opinions, opinion)
 		}
-		utils.SSCLogger().Debug().Interface("opinions", opinions).Msgf("end sl test for %d validators, cnt=%d", len(validators), testCnt)
+		// Log SL test results and opinion metrics in CSV format
+		for addr, opinion := range opinions {
+			utils.SSCLogger().Info().Msgf("SL_TEST_RESULT,Epoch=%d,TestCnt=%d,Addr=%s,S=%d,F=%d,Beta=%.6f,Delta=%.6f,Omega=%.6f",
+				cm.CurrentEpoch, testCnt, addr.Hex(), opinion.S, opinion.F, opinion.Beta, opinion.Delta, opinion.Omega)
+		}
 		cm.cmLock.Unlock()
 
 		err := cm.txSubmitter.SubmitUploadOpinions(selfOpinions)
 		if err != nil {
-			utils.SSCLogger().Error().Err(err).Msg("submit upload opinions failed")
+			utils.SSCLogger().Error().Msgf("OPINIONS_SUBMIT_FAILED,Epoch=%d,Error=%v", cm.CurrentEpoch, err)
 		}
 
 		testCnt++
 	}
 }
 
+// OpinionDelta 表示从上传的 opinion 数据中解析出的状态变更
+// 解耦数据解析与状态写入
+type OpinionDelta struct {
+	From     common.Address
+	Opinions map[common.Address]*api.SLOpinion
+}
+
 func (cm *CommitteeMechanism) UploadSLOpinion(opinionsBytes []byte, stateDB api.StateDB) error {
-	selfOpinions := &api.SelfOpinions{}
-	err := json.Unmarshal(opinionsBytes, selfOpinions)
+	startTime := time.Now()
+	defer func() {
+		err := recover()
+		if err != nil {
+			utils.SSCLogger().Error().Dur("cost", time.Since(startTime)).Msgf("UploadSLOpinion,Epoch=%d,Error=%v", cm.CurrentEpoch, err)
+		} else {
+			utils.SSCLogger().Info().Dur("cost", time.Since(startTime)).Msgf("UploadSLOpinion,Epoch=%d,Success", cm.CurrentEpoch)
+		}
+	}()
+
+	// Step 1: 解析 opinion 数据 (解耦：解析逻辑独立)
+	delta, err := cm.parser.ParseOpinions(opinionsBytes)
 	if err != nil {
-		utils.SSCLogger().Error().Err(err).Msgf("unmarshal self opinions failed")
+		utils.SSCLogger().Error().Err(err).Msgf("ParseOpinionsBytes Failed")
 		return err
 	}
-	utils.SSCLogger().Info().Msgf("upload self opinions from %s", selfOpinions.From.Hex())
-	ar := cm.state.Accounts[selfOpinions.From]
-	for _, opinion := range selfOpinions.Opinions {
-		ar.SLOpinions[opinion.To] = opinion
+
+	utils.SSCLogger().Info().Msgf("OPINIONS_UPLOADED,From=%s,OpinionCount=%d",
+		delta.From.Hex(), len(delta.Opinions))
+
+	// Step 2: 应用状态变更 (解耦：写入逻辑独立)
+	cm.cmLock.Lock()
+	defer cm.cmLock.Unlock()
+
+	ar := cm.state.Accounts[delta.From]
+	if ar == nil {
+		utils.SSCLogger().Warn().Msgf("ACCOUNT_NOT_FOUND,Addr=%s", delta.From.Hex())
+		return nil
 	}
+
+	for toAddr, opinion := range delta.Opinions {
+		ar.SLOpinions[toAddr] = opinion
+	}
+
 	return nil
 }
 
@@ -607,8 +851,10 @@ type AccountReputation struct {
 	A            float64 // A of TPB
 	S            float64 // S of TPB
 	P            float64 // P of TPB
-	STxNum       int
-	STxNumSum    int
+	TxNum        int     // 该epoch参与的交易数量
+	TxNumSum     int     // 总参与交易数量
+	STxNum       int     // 该epoch参与并签名交易数量
+	STxNumSum    int     // 总参与并签名交易数量
 	SLOpinions   map[common.Address]*api.SLOpinion
 	StakedReward map[api.Epoch]*big.Int
 	Rewards      []*big.Int
@@ -624,4 +870,91 @@ type ReputationState struct {
 	SelfOpinions map[common.Address]*api.SLOpinion // self opinions
 	Reward       *big.Int                          // sum reward of current epoch
 	GasUsed      uint64
+}
+
+// ============================================================================
+// StateDataParser - 独立的数据解析层
+// 负责从区块、交易、opinion 数据等源解析出状态变更数据
+// 与状态写入逻辑完全解耦
+// ============================================================================
+
+type StateDataParser struct{}
+
+// NewStateDataParser 创建状态数据解析器
+func NewStateDataParser() *StateDataParser {
+	return &StateDataParser{}
+}
+
+// ParseBlock 从区块中解析状态变更数据
+// 返回 BlockStateDelta，调用方负责将 delta 应用到 state
+func (p *StateDataParser) ParseBlock(block *types.Block, committee *api.ShardSimulateCommittee, rewardPrice *big.Int) *BlockStateDelta {
+	delta := &BlockStateDelta{
+		RewardIncrement:    big.NewInt(0),
+		TxCount:            0,
+		MemberTxCounts:     make(map[int]int),
+		MemberSignedCounts: make(map[int]int),
+	}
+
+	// 计算奖励增量
+	crossGasUsed := block.Header().CrossGasUsed()
+	delta.RewardIncrement = new(big.Int).Mul(new(big.Int).SetUint64(crossGasUsed), rewardPrice)
+
+	transactions := block.Transactions()
+	for _, tx := range transactions {
+		if !tx.CrossShard() {
+			continue
+		}
+
+		to := *tx.To()
+		if bytes.Compare(to.Bytes(), vm.SimulationCommitAddr.Bytes()) == 0 {
+			utils.SSCLogger().Info().Msgf("SIMULATION_COMMIT_TX,Epoch=%d,TxHash=%s", block.Epoch(), tx.Hash().Hex())
+			// SimulationCommit 交易，解析参与成员
+			simulation := &api.CXTSimulation{}
+			if err := json.Unmarshal(tx.Data(), simulation); err != nil {
+				utils.SSCLogger().Error().Err(err).Msg("failed to unmarshal simulation commit")
+				continue // 解析失败不影响其他交易
+			}
+
+			bitmap := simulation.GetBLSBitMap()
+			if bitmap == nil {
+				utils.SSCLogger().Error().Msg("failed to parse simulation commit bitmap")
+				continue
+			}
+
+			// 解析参与签名的成员
+			for _, member := range committee.Members {
+				i := committee.MemberIndex[member.Address]
+				byt := i >> 3
+				msk := byte(1) << uint(i&7)
+				if bitmap[byt]&msk != 0 {
+					delta.MemberSignedCounts[i]++
+				}
+				delta.MemberTxCounts[i]++
+			}
+			delta.TxCount++
+		}
+	}
+
+	return delta
+}
+
+// ParseOpinions 从 opinion bytes 中解析状态变更数据
+// 返回 OpinionDelta，调用方负责将 delta 应用到 state
+func (p *StateDataParser) ParseOpinions(opinionsBytes []byte) (*OpinionDelta, error) {
+	selfOpinions := &api.SelfOpinions{}
+	if err := json.Unmarshal(opinionsBytes, selfOpinions); err != nil {
+		utils.SSCLogger().Error().Msgf("OPINIONS_UNMARSHAL_FAILED,Error=%v", err)
+		return nil, err
+	}
+
+	delta := &OpinionDelta{
+		From:     selfOpinions.From,
+		Opinions: make(map[common.Address]*api.SLOpinion),
+	}
+
+	for _, opinion := range selfOpinions.Opinions {
+		delta.Opinions[opinion.To] = opinion
+	}
+
+	return delta, nil
 }

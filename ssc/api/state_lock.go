@@ -28,7 +28,9 @@ func FormKey(address common.Address, key common.Hash) LockKey {
 // StateLockManager
 // @Description: save the locked state and build StateLocker to update locked state
 type StateLockManager interface {
+	InitLockManager(genesisRoot common.Hash) error
 	GetLocker() StateLocker
+	GetLockerAt(root common.Hash) (StateLocker, error)
 }
 
 // StateLocker
@@ -68,5 +70,5 @@ type StateLocker interface {
 
 	// Commit
 	//  @Description: Commit the state lock, it should be called by stateDB
-	Commit() error
+	Commit(newRoot common.Hash) error
 }

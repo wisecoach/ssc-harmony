@@ -32,7 +32,7 @@ func (s *sscService) GetCallState(txHash common.Hash) *api.SimulationCallState {
 		utils.SSCLogger().Error().Str("txHash", txHash.Hex()).
 			Interface("callStates", state.SimulationCallStates[state.SimulationNum]).
 			Interface("currentFrame", state.CurrentCallFrame).
-			Msgf("get nil callstate")
+			Msgf("get nil callState")
 		return nil
 	}
 	return callState
@@ -117,9 +117,21 @@ func (s *sscService) GetState(db api.StateDB, txHash common.Hash, address common
 	callState := s.GetCallState(txHash)
 	if callState == nil {
 		utils.SSCLogger().Error().Str("txHash", txHash.Hex()).
-			Msg("failed to set state: call state not found")
+			Msg("failed to get state: call state not found")
 		return common.Hash{}, api.ErrInvalidExecution
 	}
+
+	callState.StateLock.Lock()
+	// utils.SSCLogger().Debug().Str("txHash", txHash.Hex()).Str("callIndex", callState.CallIndex.ToString()).
+	// 	Int("simulationNum", callState.SimulationNum).
+	// 	Msgf("callState locked")
+	defer func() {
+		callState.StateLock.Unlock()
+		// utils.SSCLogger().Info().Str("txHash", txHash.Hex()).Str("callIndex", callState.CallIndex.ToString()).
+		// 	Int("simulationNum", callState.SimulationNum).
+		// 	Msgf("callState unlocked")
+	}()
+
 	rwset := callState.RWSet
 	if rwset.ReadState.State[address] == nil {
 		rwset.ReadState.State[address] = make(map[common.Hash]common.Hash)
@@ -151,6 +163,17 @@ func (s *sscService) SetState(db api.StateDB, txHash common.Hash, address common
 			Msg("failed to set state: call state not found")
 		return api.ErrInvalidExecution
 	}
+	callState.StateLock.Lock()
+	// utils.SSCLogger().Debug().Str("txHash", txHash.Hex()).Str("callIndex", callState.CallIndex.ToString()).
+	// 	Int("simulationNum", callState.SimulationNum).
+	// 	Msgf("callState locked")
+	defer func() {
+		callState.StateLock.Unlock()
+		// utils.SSCLogger().Info().Str("txHash", txHash.Hex()).Str("callIndex", callState.CallIndex.ToString()).
+		// 	Int("simulationNum", callState.SimulationNum).
+		// 	Msgf("callState unlocked")
+	}()
+
 	rwset := callState.RWSet
 	if rwset.CurrentState.State[address] == nil {
 		rwset.CurrentState.State[address] = make(map[common.Hash]common.Hash)
@@ -167,7 +190,9 @@ func (s *sscService) SetState(db api.StateDB, txHash common.Hash, address common
 			utils.SSCLogger().Error().Err(err).Str("txHash", txHash.Hex()).
 				Msgf("failed to set state: get conflict state [%s:%s]", address.Hex(), key.Hex())
 			if errors.Is(err, api.ErrLockedByOtherTx) {
-				callState.LockedByOtherTx = err
+				// if continue to simulate when state is locked by other tx
+				return err
+				// callState.LockedByOtherTx = err
 			} else {
 				return err
 			}
@@ -177,8 +202,6 @@ func (s *sscService) SetState(db api.StateDB, txHash common.Hash, address common
 	rwset.CurrentState.State[address][key] = value
 	rwset.WriteState.State[address][key] = value
 
-	utils.SSCLogger().Debug().Str("txHash", txHash.Hex()).
-		Msgf("set state [%s:%s] = %s", address.Hex(), key.Hex(), value.Hex())
 	return nil
 }
 

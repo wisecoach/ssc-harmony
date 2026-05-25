@@ -184,3 +184,7 @@ func (s *PublicSSCShardService) RetryCancel(ctx context.Context, txHash common.H
 	s.internalService.RetryCancel(txHash)
 	return nil
 }
+
+func (s *PublicSSCShardService) HandleNewEpoch(ctx context.Context, newEpoch *api.NewEpoch, blockNum uint64) error {
+	return s.internalService.HandleNewEpoch(newEpoch, blockNum)
+}

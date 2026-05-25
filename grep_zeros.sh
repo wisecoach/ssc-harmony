@@ -3,6 +3,6 @@
 source ../.env
 
 filter=$1
-cd tmp_log/shard="$SHARD_NUM"_validator="$VALIDATOR"_ssc="$SSC"_delay="$DELAY"_rate="$RATE"
+cd "tmp_log/shard=${SHARD_NUM}_validator=${VALIDATOR}_ssc=${SSC}_delay=${DELAY}_rate=${RATE}_vpn=${VALIDATOR_PER_NODE}"
 ls | grep "log-" | xargs cat | grep -n "$1"
 cd -

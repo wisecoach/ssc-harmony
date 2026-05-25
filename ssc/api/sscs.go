@@ -30,6 +30,7 @@ const (
 	Method_RetryCommit                = "ssc_retryCommit"
 	Method_RetryCancel                = "ssc_retryCancel"
 	Method_SLTest                     = "ssc_sLTest"
+	Method_HandleNewEpoch             = "ssc_handleNewEpoch"
 )
 
 type ShardLocator interface {
@@ -41,9 +42,9 @@ type ShardLocator interface {
 
 type BLSSignerMgr interface {
 	GetSSCSigner() BLSSigner
-	UpdateSSCPubKeys(shardID uint32, epoch Epoch, addr2Index map[common.Address]int, pubKeys []bls.PublicKeyWrapper)
 	GetValidatorSigner() BLSSigner
-	UpdateValidatorPubKeys(shardID uint32, epoch Epoch, addr2Index map[common.Address]int, pubKeys []bls.PublicKeyWrapper)
+	UpdateSSCPubKeys(shardID uint32, epoch Epoch, changed bool, addr2Index map[common.Address]int, pubKeys []bls.PublicKeyWrapper, threshold int)
+	UpdateValidatorPubKeys(shardID uint32, epoch Epoch, changed bool, addr2Index map[common.Address]int, pubKeys []bls.PublicKeyWrapper, threshold int)
 }
 
 type BLSSigner interface {
@@ -52,7 +53,7 @@ type BLSSigner interface {
 	// Aggregate aggregate the signature of messages, and return aggregated signature, bitmap and error
 	Aggregate(msgs []SSCMessage) (signatures []byte, bitmap []byte, err error)
 	Verify(msg BLSSignedMessage) error
-	UpdatePubKeys(shardID uint32, epoch Epoch, addr2Index map[common.Address]int, pubKeys []bls.PublicKeyWrapper)
+	UpdatePubKeys(shardID uint32, epoch Epoch, changed bool, addr2Index map[common.Address]int, pubKeys []bls.PublicKeyWrapper, threshold int)
 }
 
 type TxSigner interface {
@@ -221,6 +222,8 @@ type ShardService interface {
 	RetryCommit(txHash common.Hash) *RetryCommitResp
 
 	RetryCancel(txHash common.Hash)
+
+	HandleNewEpoch(newEpoch *NewEpoch, blockNum uint64) error
 }
 
 // CrossService

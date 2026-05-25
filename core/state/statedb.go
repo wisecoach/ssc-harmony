@@ -1166,10 +1166,11 @@ func (db *DB) Commit(deleteEmptyObjects bool) (common.Hash, error) {
 		return common.Hash{}, fmt.Errorf("commit aborted due to earlier error: %v", db.dbErr)
 	}
 	// Finalize any pending changes and merge everything into the tries
-	db.IntermediateRoot(deleteEmptyObjects)
+	newRoot := db.IntermediateRoot(deleteEmptyObjects)
 
 	if db.locker != nil {
-		err := db.locker.Commit()
+		utils.SSCLogger().Info().Msg("Commit")
+		err := db.locker.Commit(newRoot)
 		if err != nil {
 			return common.Hash{}, err
 		}

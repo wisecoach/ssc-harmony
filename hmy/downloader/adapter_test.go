@@ -159,7 +159,7 @@ func (e *dummyEngine) Finalize(
 	state *state.DB, txs []*types.Transaction,
 	receipts []*types.Receipt, outcxs []*types.CXReceipt,
 	incxs []*types.CXReceiptsProof, stks staking.StakingTransactions,
-	doubleSigners slash.Records, sigsReady chan bool, viewID func() uint64,
+	doubleSigners slash.Records, viewID func() uint64,
 ) (*types.Block, reward.Reader, error) {
 	return nil, nil, nil
 }

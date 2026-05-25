@@ -423,16 +423,21 @@ func ApplyCXTTransaction(service api.Service, bc ChainContext, author *common.Ad
 		sscvm := vm.NewSSCVM(vmCtx, statedb, config, cfg, service, vm.Precompiled)
 		result, err := NewSSCStateTransition(sscvm, msg, gp).TransitionDb()
 		if err != nil {
-			utils.SSCLogger().Debug().Str("txHash", tx.Hash().Hex()).Msgf("ApplyTransaction failed: err=%s", err.Error())
+			utils.SSCLogger().Error().Str("txHash", tx.Hash().Hex()).Msgf("ApplyTransaction failed: err=%s", err.Error())
 			return nil, nil, nil, 0, err
 		}
-		root := statedb.IntermediateRoot(config.IsS3(header.Epoch())).Bytes()
-
+		var root []byte
+		if config.IsS3(header.Epoch()) {
+			statedb.Finalise(true)
+		} else {
+			root = statedb.IntermediateRoot(config.IsS3(header.Epoch())).Bytes()
+		}
 		receipt := types.NewReceipt(root, err != nil, result.UsedGas)
 		receipt.Logs = make([]*types.Log, 0)
 		receipt.Bloom = types.CreateBloom(types.Receipts{receipt})
 		receipt.TxHash = tx.Hash()
 		receipt.GasUsed = result.UsedGas
+		*usedGas += result.UsedGas
 		utils.SSCLogger().Debug().Str("txHash", tx.Hash().Hex()).Msgf("ApplyTransaction receipt, root=%s, gasUsed=%d, bloom=%s", common.Bytes2Hex(root), result.UsedGas, common.Bytes2Hex(receipt.Bloom.Bytes()))
 		return receipt, nil, nil, result.UsedGas, nil
 	} else {
@@ -472,20 +477,31 @@ func SimulateCXTransaction(service api.Service, bc ChainContext, author *common.
 	}
 	// SimulationCommit and CxtCommitOrRollback needs to be executed for every validator
 	if vm.IsSSCAddrApplyOnChain(*tx.To()) {
+		originNonce := statedb.GetNonce(msg.From())
 		vmCtx := NewSSCVMContext(msg.From(), tx.Hash(), api.CallIndex{}, tx.GasPrice(), header, bc, author)
 		sscvm := vm.NewSSCVM(vmCtx, statedb, config, cfg, service, vm.Precompiled)
+		startTime := time.Now()
 		result, err := NewSSCStateTransition(sscvm, msg, gp).TransitionDb()
 		if err != nil {
 			return nil, nil, nil, 0, err
 		}
-		root := statedb.IntermediateRoot(config.IsS3(header.Epoch())).Bytes()
-
+		utils.SSCLogger().Info().Str("txHash", tx.Hash().Hex()).
+			Dur("cost", time.Since(startTime)).
+			Uint64("nonce", statedb.GetNonce(msg.From())).
+			Uint64("originNonce", originNonce).
+			Msgf("SimulateCXTransaction receipt, to=%s, gasUsed=%d", *tx.To(), result.UsedGas)
+		var root []byte
+		if config.IsS3(header.Epoch()) {
+			statedb.Finalise(true)
+		} else {
+			root = statedb.IntermediateRoot(config.IsS3(header.Epoch())).Bytes()
+		}
 		receipt := types.NewReceipt(root, err != nil, result.UsedGas)
 		receipt.Logs = make([]*types.Log, 0)
 		receipt.Bloom = types.CreateBloom(types.Receipts{receipt})
 		receipt.TxHash = tx.Hash()
 		receipt.GasUsed = result.UsedGas
-		utils.SSCLogger().Debug().Str("txHash", tx.Hash().Hex()).Msgf("SimulateCXTransaction receipt, root=%s, gasUsed=%d", common.Bytes2Hex(root), result.UsedGas)
+		*usedGas += result.UsedGas
 		return receipt, nil, nil, result.UsedGas, nil
 	} else {
 		statedb.SetNonce(msg.From(), statedb.GetNonce(msg.From())+1)

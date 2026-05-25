@@ -4,14 +4,15 @@ import (
 	"bytes"
 	"context"
 	"fmt"
-	"github.com/ethereum/go-ethereum/metrics"
-	"github.com/harmony-one/harmony/core/vm"
-	"github.com/harmony-one/harmony/ssc/api"
 	"math/big"
 	"os"
 	"runtime/pprof"
 	"sync"
 	"time"
+
+	"github.com/ethereum/go-ethereum/metrics"
+	"github.com/harmony-one/harmony/core/vm"
+	"github.com/harmony-one/harmony/ssc/api"
 
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/rlp"

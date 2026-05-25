@@ -34,6 +34,8 @@ var (
 type SimulationCommitStatus int
 type CXTCommitType int
 type CXTCommitReason int
+type CXTStatus int
+type MaliciousStrategy int
 
 const (
 	OK SimulationCommitStatus = iota
@@ -99,6 +101,71 @@ func (c CXTCommitReason) String() string {
 		return "ConflictRWSet_Recall"
 	case ReasonCxtTimeoutForSp1:
 		return "ReasonCxtTimeoutForSp1"
+	default:
+		return "Unknown"
+	}
+}
+
+const (
+	WAITING_FOR_SIMULATING             = iota // init status -> startSimulation or startCall
+	SIMULATING                                // first simulating -> SubmitSimulationTx
+	RESIMULATING                              // second simulating -> SubmitSimulationTx
+	WAITING_FOR_RESIMULATING_ON_CHAIN         // VerifySimulation conflict -> startSimulation or startCall
+	WAITING_FOR_RESIMULATION_OFF_CHAIN        // HandleSimulateRequest conflict -> startSimulation or startCall
+	SIMULATION_COMMMITTING                    // sendSimulationCommit -> VerifySimulation
+	VERIFYING_SIMULATION                      // VerifySimulation -> SubmitCommitOrRollbackTx
+	BUILDING_COMMIT_PROOF                     // HandleCommitVote
+	CXT_COMMITTING                            // SubmitCommitOrRollbackTx -> CommitOrRollbackTx
+	CXT_ROLLBACKING                           // SubmitCommitOrRollbackTx -> CommitOrRollbackTx
+	CXT_COMMITTED                             // CommitOrRollbackTx -> closeTransaction
+	CXT_ROLLBACKED                            // CommitOrRollbackTx -> closeTransaction
+)
+
+func (s CXTStatus) String() string {
+	switch s {
+	case WAITING_FOR_SIMULATING:
+		return "WAITING_FOR_SIMULATING"
+	case WAITING_FOR_RESIMULATING_ON_CHAIN:
+		return "WAITING_FOR_RESIMULATING_ON_CHAIN"
+	case WAITING_FOR_RESIMULATION_OFF_CHAIN:
+		return "WAITING_FOR_RESIMULATION_OFF_CHAIN"
+	case SIMULATING:
+		return "SIMULATING"
+	case RESIMULATING:
+		return "RESIMULATING"
+	case SIMULATION_COMMMITTING:
+		return "SIMULATION_COMMMITTING"
+	case BUILDING_COMMIT_PROOF:
+		return "BUILDING_COMMIT_PROOF"
+	case VERIFYING_SIMULATION:
+		return "VERIFYING_SIMULATION"
+	case CXT_COMMITTING:
+		return "CXT_COMMITTING"
+	case CXT_ROLLBACKING:
+		return "CXT_ROLLBACKING"
+	case CXT_COMMITTED:
+		return "CXT_COMMITTED"
+	case CXT_ROLLBACKED:
+		return "CXT_ROLLBACKED"
+	default:
+		return "Unknown"
+	}
+}
+
+const (
+	MaliciousNone = iota
+	MaliciousDelay
+	MaliciousDenied
+)
+
+func (m MaliciousStrategy) String() string {
+	switch m {
+	case MaliciousNone:
+		return "MaliciousNone"
+	case MaliciousDelay:
+		return "MaliciousDelay"
+	case MaliciousDenied:
+		return "MaliciousDenied"
 	default:
 		return "Unknown"
 	}
@@ -184,11 +251,13 @@ type CallNodeData struct {
 }
 
 type Config struct {
+	SimulationLimit          int
 	CallTimeout              time.Duration
 	CXTTimeout               time.Duration
 	SimulationCommitGasLimit uint64
 	SimulationCommitGasPrice *big.Int
 	LockExecutionOnce        bool
+	MischiefConfig           *MischiefConfig
 }
 
 // Candidate is the candidate of the committee
@@ -214,12 +283,15 @@ type ShardSimulateCommitteeConfig struct {
 
 // ShardSimulateCommittee (SSC) is the committee of the shard simulation
 type ShardSimulateCommittee struct {
-	ShardID    uint32
-	Epoch      Epoch
-	Members    []*Member
-	Validators []*Member
-	Number     int
-	Threshold  int
+	ShardID            uint32
+	Epoch              Epoch
+	Members            []*Member
+	Threshold          int
+	Validators         []*Member
+	ValidatorThreshold int
+	Number             int
+	MemberIndex        map[common.Address]int `json:"-"`
+	ValidatorIndex     map[common.Address]int `json:"-"`
 }
 
 type TimeoutConfig struct {
@@ -254,13 +326,13 @@ type SSCMessage interface {
 	MessageToSign
 	GetSenderAddr() common.Address
 	GetSignature() []byte
-	GetEpoch() Epoch
+	GetEpochs() []Epoch
 }
 
 type BaseSSCMessage struct {
 	Signature  []byte
 	SenderAddr common.Address
-	Epoch      Epoch
+	Epochs     []Epoch
 }
 
 func (s BaseSSCMessage) GetSenderAddr() common.Address {
@@ -271,8 +343,8 @@ func (s BaseSSCMessage) GetSignature() []byte {
 	return s.Signature
 }
 
-func (s BaseSSCMessage) GetEpoch() Epoch {
-	return s.Epoch
+func (s BaseSSCMessage) GetEpochs() []Epoch {
+	return s.Epochs
 }
 
 func (s BaseSSCMessage) Bytes() []byte {
@@ -284,14 +356,14 @@ type BLSSignedMessage interface {
 	GetShardId() uint32
 	GetSignatures() []byte
 	GetBLSBitMap() []byte
-	GetEpoch() Epoch
+	GetEpochs() []Epoch
 }
 
 type BaseBLSSignedMessage struct {
 	ShardId    uint32
 	Signatures []byte
 	BLSBitMap  []byte
-	Epoch      Epoch
+	Epochs     []Epoch
 }
 
 func (m BaseBLSSignedMessage) GetShardId() uint32 {
@@ -306,13 +378,14 @@ func (m BaseBLSSignedMessage) GetBLSBitMap() []byte {
 	return m.BLSBitMap
 }
 
-func (m BaseBLSSignedMessage) GetEpoch() Epoch {
-	return m.Epoch
+func (m BaseBLSSignedMessage) GetEpochs() []Epoch {
+	return m.Epochs
 }
 
 // CXTSimulationRequest is the request of the cross-shard transaction simulation
 type CXTSimulationRequest struct {
-	Epoch         Epoch
+	BlockNum      uint64
+	Epochs        []Epoch
 	TxHash        common.Hash
 	SimulationNum int
 	Author        *common.Address
@@ -639,6 +712,7 @@ type CXTCallSSCRequest struct {
 
 	// the SSC set the block hash of the simulation, used to sync the state, note: it'S not included in the signature
 	BlockHash common.Hash
+	BlockNum  uint64
 }
 
 func (m *CXTCallSSCRequest) Bytes() []byte {
@@ -1185,6 +1259,7 @@ const (
 type ReSimulationSignals struct {
 	OriginShard uint32
 	FromShard   uint32
+	Epoch       Epoch // epoch of originShard
 	Signals     []*ReSimulationSignal
 }
 
@@ -1196,9 +1271,13 @@ type ReSimulationSignal struct {
 	Condition     ConflictCondition
 }
 
-func NewCallStack() *CallStack {
+func NewCallStack(txHash common.Hash, simulationNum int) *CallStack {
 	return &CallStack{
-		CallFrames: make([]*CallFrame, 0),
+		TxHash:        txHash,
+		SimulationNum: simulationNum,
+		CallFrames:    make([]*CallFrame, 0),
+		PopNum:        0,
+		PushNum:       0,
 	}
 }
 
@@ -1220,15 +1299,29 @@ func (c *CallFrame) String() string {
 }
 
 type CallStack struct {
-	CallFrames []*CallFrame // the call frames of the call stack
+	TxHash        common.Hash
+	SimulationNum int
+	CallFrames    []*CallFrame // the call frames of the call stack
+	PopNum        int
+	PushNum       int
+}
+
+func (c *CallStack) Top() *CallFrame {
+	if len(c.CallFrames) == 0 {
+		return nil
+	}
+	return c.CallFrames[len(c.CallFrames)-1]
 }
 
 func (c *CallStack) Push(frame *CallFrame) {
+	c.PushNum++
 	c.CallFrames = append(c.CallFrames, frame)
 }
 
 func (c *CallStack) Pop() *CallFrame {
+	c.PopNum++
 	if len(c.CallFrames) == 0 {
+		// utils.SSCLogger().Info().Str("txHash", c.TxHash.Hex()).Int("simulationNum", c.SimulationNum).Str("callStack", c.String()).Msgf("pop call nil frame, pop=%d, push=%d, length=%d", c.PopNum, c.PushNum, len(c.CallFrames))
 		return nil
 	}
 	frame := c.CallFrames[len(c.CallFrames)-1]
@@ -1236,11 +1329,21 @@ func (c *CallStack) Pop() *CallFrame {
 	return frame
 }
 
+func (c *CallStack) String() string {
+	framesStr := make([]string, 0)
+	for _, frame := range c.CallFrames {
+		framesStr = append(framesStr, frame.String())
+	}
+	return fmt.Sprintf("CallStack_%s_%d: [%s]", c.TxHash.Hex(), c.SimulationNum, strings.Join(framesStr, "->"))
+}
+
 type CXTSimulationState struct {
 	Nonce                 uint64
 	TxSender              common.Address
+	Epochs                []Epoch
 	CurrentCallFrame      *CallFrame
 	CallStack             *CallStack
+	Status                CXTStatus
 	SimulationRequest     *CXTSimulationRequest // the simulation request, only origin member has this
 	SimulationResult      *CXTSimulationSSCResult
 	SimulationCallStates  map[int]SimulationCallStates
@@ -1289,6 +1392,8 @@ func (s SimulationCallStates) ToString() string {
 }
 
 type SimulationCallState struct {
+	SimulationNum     int
+	BlockNum          uint64
 	BlockHash         common.Hash
 	CallIndex         CallIndex
 	TopRequest        *CXTSimulationRequest
@@ -1303,6 +1408,7 @@ type SimulationCallState struct {
 	DB                StateDB       `json:"-"` // the state db of the simulation
 	SyncedCh          chan struct{} `json:"-"` // used to notify the state is synced
 	Lock              sync.Mutex    `json:"-"`
+	StateLock         sync.Mutex    `json:"-"`
 	Executed          bool
 }
 
@@ -1314,9 +1420,9 @@ type DependentCXTCall struct {
 	CallIndex     CallIndex
 	Requests      []*CXTCallRequest
 	SignedRequest *CXTCallSSCRequest
-	Executed      bool
 	SSCResult     *CXTCallSSCResult
-	WaitingChs    []chan *CXTCallSSCResult `json:"-"`
+	WaitCh        chan struct{} // 等待 channel，用于通知所有等待的请求
+	CloseOnce     sync.Once
 }
 
 type ExecutionVerifyState struct {
@@ -1413,7 +1519,7 @@ type SLOpinion struct {
 
 type RetryTx struct {
 	TxHash        common.Hash
-	Epoch         Epoch
+	Epochs        []Epoch
 	Sender        common.Address
 	Nonce         uint64
 	GasPrice      uint64

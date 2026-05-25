@@ -26,6 +26,7 @@ import (
 	"testing"
 	"time"
 
+	event2 "github.com/harmony-one/harmony/core/event"
 	"github.com/harmony-one/harmony/core/rawdb"
 
 	"github.com/harmony-one/harmony/crypto/bls"
@@ -86,7 +87,7 @@ func (bc *testBlockChain) StateAt(common.Hash) (*state.DB, error) {
 	return bc.statedb, nil
 }
 
-func (bc *testBlockChain) SubscribeChainHeadEvent(ch chan<- ChainHeadEvent) event.Subscription {
+func (bc *testBlockChain) SubscribeChainHeadEvent(ch chan<- event2.ChainHeadEvent) event.Subscription {
 	return bc.chainHeadFeed.Subscribe(ch)
 }
 

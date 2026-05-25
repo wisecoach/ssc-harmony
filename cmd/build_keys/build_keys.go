@@ -173,8 +173,8 @@ type ShardConfig struct {
 }
 
 func buildConfig(config ShardConfig) {
-	dev_path := fmt.Sprintf("test/configs/%s/shard=%d_validator=%d_ssc=%d_delay=%d", "dev", config.shard, config.validator, config.ssc, config.delay)
-	local_path := fmt.Sprintf("test/configs/%s/shard=%d_validator=%d_ssc=%d_delay=%d", "local", config.shard, config.validator, config.ssc, config.delay)
+	dev_path := fmt.Sprintf("test/configs/%s/shard=%d_validator=%d_ssc=%d_delay=%d_vpn=%d", "dev", config.shard, config.validator, config.ssc, config.delay, config.validatorPerNode)
+	local_path := fmt.Sprintf("test/configs/%s/shard=%d_validator=%d_ssc=%d_delay=%d_vpn=%d", "local", config.shard, config.validator, config.ssc, config.delay, config.validatorPerNode)
 	os.MkdirAll(dev_path, 0755)
 	os.MkdirAll(local_path, 0755)
 
@@ -248,20 +248,22 @@ func buildConfig(config ShardConfig) {
 		localSSCMembers = localValidators[:config.ssc]
 		devSSCMembers = devValidators[:config.ssc]
 		localSSC = append(localSSC, &api.ShardSimulateCommittee{
-			ShardID:    i,
-			Epoch:      0,
-			Members:    localSSCMembers,
-			Validators: localValidators,
-			Number:     len(localSSCMembers),
-			Threshold:  int(math.Ceil(float64((2*len(localSSCMembers) + 1) / 3))),
+			ShardID:            i,
+			Epoch:              0,
+			Members:            localSSCMembers,
+			Validators:         localValidators,
+			Number:             len(localSSCMembers),
+			Threshold:          int(math.Ceil(float64((2*len(localSSCMembers) + 1) / 3))),
+			ValidatorThreshold: int(math.Ceil(float64((2*len(devValidators) + 1) / 3))),
 		})
 		devSSC = append(devSSC, &api.ShardSimulateCommittee{
-			ShardID:    i,
-			Epoch:      0,
-			Members:    devSSCMembers,
-			Validators: devValidators,
-			Number:     len(devSSCMembers),
-			Threshold:  int(math.Ceil(float64((2*len(devSSCMembers) + 1) / 3))),
+			ShardID:            i,
+			Epoch:              0,
+			Members:            devSSCMembers,
+			Validators:         devValidators,
+			Number:             len(devSSCMembers),
+			Threshold:          int(math.Ceil(float64((2*len(devSSCMembers) + 1) / 3))),
+			ValidatorThreshold: int(math.Ceil(float64((2*len(devValidators) + 1) / 3))),
 		})
 		localConfig.Timeout = timeout
 		devConfig.Timeout = timeout
@@ -269,10 +271,10 @@ func buildConfig(config ShardConfig) {
 	localConfig.Committees = localSSC
 	devConfig.Committees = devSSC
 	repuConfig := &api.ReputationConfig{
-		SLFileSize:    10000,
+		SLFileSize:    1000,
 		SLDifficulty:  5,
 		SLTimeout:     time.Millisecond * 200,
-		SLPeriod:      time.Second * 3,
+		SLPeriod:      time.Hour * 10,
 		A:             0.5,
 		C:             2,
 		W1:            0.33,
@@ -281,7 +283,7 @@ func buildConfig(config ShardConfig) {
 		RewardPrice:   new(big.Int).SetInt64(10000),
 		RB:            1,
 		RS:            2,
-		BlockPerEpoch: 10,
+		BlockPerEpoch: 1000000000000000,
 		Theta:         1,
 		T:             5,
 	}
@@ -389,6 +391,14 @@ func main() {
 			validatorPerNode: 1,
 		},
 		{
+			name:             "安全性测试2",
+			shard:            2,
+			validator:        10,
+			ssc:              4,
+			delay:            20,
+			validatorPerNode: 1,
+		},
+		{
 			name:             "安全性本地测试",
 			shard:            2,
 			validator:        4,
@@ -404,6 +414,14 @@ func main() {
 			delay:            10,
 			validatorPerNode: 1,
 		},
+		{
+			name:             "安全性本地测试3",
+			shard:            2,
+			validator:        3,
+			ssc:              3,
+			delay:            10,
+			validatorPerNode: 1,
+		},
 	}
 	for _, config := range configs {
 		buildConfig(config)
@@ -411,6 +429,5 @@ func main() {
 }
 
 func main1() {
-	dxs
 	build_client_keys()
 }

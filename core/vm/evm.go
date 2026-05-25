@@ -19,6 +19,7 @@ package vm
 import (
 	"github.com/harmony-one/harmony/block"
 	"github.com/harmony-one/harmony/ssc/api"
+
 	"math/big"
 	"sync/atomic"
 	"time"
@@ -350,7 +351,7 @@ func (evm *EVM) Call(caller ContractRef, addr common.Address, input []byte, gas 
 	}
 	// Initialise a new contract and set the code that is to be used by the EVM.
 	// The contract is a scoped environment for this execution context only.
-	contract := NewContract(caller, to, value, gas)
+	contract := NewContract(evm.TxHash, caller, to, value, gas)
 	contract.SetCallCode(&addr, codeHash, code)
 
 	// Even if the account has no code, we need to continue because it might be a precompile
@@ -406,7 +407,7 @@ func (evm *EVM) CallCode(caller ContractRef, addr common.Address, input []byte, 
 	// initialise a new contract and set the code that is to be used by the
 	// EVM. The contract is a scoped environment for this execution context
 	// only.
-	contract := NewContract(caller, to, value, gas)
+	contract := NewContract(evm.TxHash, caller, to, value, gas)
 	contract.SetCallCode(&addr, evm.StateDB.GetCodeHash(addr), evm.StateDB.GetCode(addr))
 
 	ret, err = run(evm, contract, input, false)
@@ -439,7 +440,7 @@ func (evm *EVM) DelegateCall(caller ContractRef, addr common.Address, input []by
 	)
 
 	// Initialise a new contract and make initialise the delegate values
-	contract := NewContract(caller, to, nil, gas).AsDelegate()
+	contract := NewContract(evm.TxHash, caller, to, nil, gas).AsDelegate()
 	contract.SetCallCode(&addr, evm.StateDB.GetCodeHash(addr), evm.StateDB.GetCode(addr))
 
 	ret, err = run(evm, contract, input, false)
@@ -472,7 +473,7 @@ func (evm *EVM) StaticCall(caller ContractRef, addr common.Address, input []byte
 	// Initialise a new contract and set the code that is to be used by the
 	// EVM. The contract is a scoped environment for this execution context
 	// only.
-	contract := NewContract(caller, to, new(big.Int), gas)
+	contract := NewContract(evm.TxHash, caller, to, new(big.Int), gas)
 	contract.SetCallCode(&addr, evm.StateDB.GetCodeHash(addr), evm.StateDB.GetCode(addr))
 
 	// We do an AddBalance of zero here, just in order to trigger a touch.
@@ -535,7 +536,7 @@ func (evm *EVM) create(caller ContractRef, codeAndHash *codeAndHash, gas uint64,
 	// initialise a new contract and set the code that is to be used by the
 	// EVM. The contract is a scoped environment for this execution context
 	// only.
-	contract := NewContract(caller, AccountRef(address), value, gas)
+	contract := NewContract(evm.TxHash, caller, AccountRef(address), value, gas)
 	contract.SetCodeOptionalHash(&address, codeAndHash)
 
 	if evm.vmConfig.NoRecursion && evm.depth > 0 {

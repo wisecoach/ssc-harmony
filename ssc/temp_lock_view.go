@@ -6,6 +6,7 @@ import (
 
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/harmony-one/harmony/core/types"
+	"github.com/harmony-one/harmony/internal/utils"
 	"github.com/harmony-one/harmony/ssc/api"
 )
 
@@ -137,6 +138,8 @@ func (v *TempLockView) OnBlockCommitted(block *types.Block) {
 	for _, tx := range block.Transactions() {
 		blockTxHashes = append(blockTxHashes, tx.Hash())
 	}
+
+	utils.SSCLogger().Info().Uint64("blockNum", block.NumberU64()).Int("lockedNum", len(v.tempWriteLocks)).Msg("TempLockView on block committed")
 
 	v.mu.Lock()
 	defer v.mu.Unlock()

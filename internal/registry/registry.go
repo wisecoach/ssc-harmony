@@ -13,6 +13,7 @@ import (
 	"github.com/harmony-one/harmony/multibls"
 	"github.com/harmony-one/harmony/node/worker"
 	"github.com/harmony-one/harmony/shard"
+	"github.com/harmony-one/harmony/ssc/api"
 	"github.com/harmony-one/harmony/webhooks"
 )
 
@@ -30,6 +31,7 @@ type Registry struct {
 	nodeConfig      *nodeconfig.ConfigType
 	addressToBLSKey AddressToBLSKey
 	worker          *worker.Worker
+	sscService      api.Service
 }
 
 // New creates a new registry.
@@ -216,6 +218,21 @@ func (r *Registry) GetWorker() *worker.Worker {
 	defer r.mu.Unlock()
 
 	return r.worker
+}
+
+func (r *Registry) SetSSCService(s api.Service) *Registry {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	r.sscService = s
+	return r
+}
+
+func (r *Registry) GetSSCService() api.Service {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	return r.sscService
 }
 
 type FindCommitteeByID interface {

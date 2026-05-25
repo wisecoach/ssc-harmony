@@ -1,7 +1,10 @@
 package vm
 
 import (
+	"time"
+
 	"github.com/ethereum/go-ethereum/common"
+	"github.com/harmony-one/harmony/internal/utils"
 )
 
 var (
@@ -44,6 +47,11 @@ func (s *simulationCommit) RequiredGas(vm *SSCVM, contract *Contract, input []by
 }
 
 func (s *simulationCommit) RunWriteCapable(vm *SSCVM, contract *Contract, input []byte) ([]byte, error) {
+	startTime := time.Now()
+	defer utils.SSCLogger().Debug().
+		Str("txHash", vm.Context.TxHash.Hex()).
+		Dur("cost", time.Since(startTime)).
+		Msgf("verify simulation")
 	vm.SSCService.VerifySimulation(input, vm.StateDB, vm.Context.Header)
 	return nil, nil
 }
@@ -98,6 +106,11 @@ func (s *slOpinion) RequiredGas(vm *SSCVM, contract *Contract, input []byte) (ui
 	return 0, nil
 }
 func (s *slOpinion) RunWriteCapable(vm *SSCVM, contract *Contract, input []byte) ([]byte, error) {
+	startTime := time.Now()
+	defer utils.SSCLogger().Info().
+		Str("txHash", vm.Context.TxHash.Hex()).
+		Dur("cost", time.Since(startTime)).
+		Msgf("upload SLOpinion")
 	err := vm.SSCService.UploadSLOpinion(input, vm.StateDB)
 	if err != nil {
 		return nil, err

@@ -262,6 +262,7 @@ func (consensus *Consensus) finalCommit() {
 			go func() {
 				select {
 				case consensus.GetCommitSigChannel() <- commitSigAndBitmap:
+					consensus.getLogger().Info().Int("sigLength", len(commitSigAndBitmap)).Msg("[finalCommit] sent commitSigAndBitmap for pipelining")
 				case <-time.After(CommitSigSenderTimeout):
 					utils.Logger().Error().Err(err).Msg("[finalCommit] channel not received after 6s for commitSigAndBitmap")
 				}
@@ -438,6 +439,7 @@ func (consensus *Consensus) BlockChannel(newBlock *types.Block) {
 		consensus.msgSender.Reset(newBlock.NumberU64())
 
 		consensus.getLogger().Info().
+			Uint64("blockNum", newBlock.NumberU64()).
 			Int("numTxs", len(newBlock.Transactions())).
 			Int("numStakingTxs", len(newBlock.StakingTransactions())).
 			Time("startTime", startTime).

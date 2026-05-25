@@ -183,11 +183,12 @@ func NewGenesisSpec(netType nodeconfig.NetworkType, shardID uint32, configPath s
 				gen.SSCConfig.Committees = append(gen.SSCConfig.Committees, committeeShard0)
 				for i := 1; i < int(genesisScheduleInstance.NumShards()); i++ {
 					committee := &api.ShardSimulateCommittee{
-						ShardID:   uint32(i),
-						Epoch:     0,
-						Members:   make([]*api.Member, 0, committeeShard0.Number),
-						Number:    committeeShard0.Number,
-						Threshold: committeeShard0.Threshold,
+						ShardID:            uint32(i),
+						Epoch:              0,
+						Members:            make([]*api.Member, 0, committeeShard0.Number),
+						Number:             committeeShard0.Number,
+						Threshold:          committeeShard0.Threshold,
+						ValidatorThreshold: committeeShard0.ValidatorThreshold,
 					}
 					for _, member := range committeeShard0.Members {
 						committee.Members = append(committee.Members, &api.Member{

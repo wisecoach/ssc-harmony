@@ -299,7 +299,7 @@ var defaultSSCConfig = harmonyconfig.SSCConfig{
 	SelfAddrHex:              "",
 	CallTimeout:              time.Hour,
 	CXTTimeout:               time.Hour,
-	SimulationCommitGasLimit: 5000000,
+	SimulationCommitGasLimit: 500000000,
 	SimulationCommitGasPrice: big.NewInt(3000000000),
 	LockExecutionOnce:        false,
 }

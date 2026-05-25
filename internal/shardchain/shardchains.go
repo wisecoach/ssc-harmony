@@ -7,6 +7,7 @@ import (
 	"github.com/harmony-one/harmony/core/state"
 	harmonyconfig "github.com/harmony-one/harmony/internal/configs/harmony"
 	"github.com/harmony-one/harmony/internal/shardchain/tikv_manage"
+	"github.com/harmony-one/harmony/ssc/api"
 
 	"github.com/harmony-one/harmony/shard"
 
@@ -45,6 +46,7 @@ type CollectionImpl struct {
 	disableCache  map[uint32]bool
 	chainConfig   *params.ChainConfig
 	harmonyconfig *harmonyconfig.HarmonyConfig
+	sscService    api.Service
 }
 
 // NewCollection creates and returns a new shard chain collection.
@@ -56,7 +58,7 @@ type CollectionImpl struct {
 func NewCollection(
 	harmonyconfig *harmonyconfig.HarmonyConfig,
 	dbFactory DBFactory, dbInit DBInitializer, engine engine.Engine,
-	chainConfig *params.ChainConfig,
+	chainConfig *params.ChainConfig, sscService api.Service,
 ) *CollectionImpl {
 	return &CollectionImpl{
 		harmonyconfig: harmonyconfig,
@@ -66,6 +68,7 @@ func NewCollection(
 		pool:          make(map[uint32]core.BlockChain),
 		disableCache:  make(map[uint32]bool),
 		chainConfig:   chainConfig,
+		sscService:    sscService,
 	}
 }
 

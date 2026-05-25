@@ -46,11 +46,8 @@ func (c *Comm) Multicast(ctx context.Context, members []*api.Member, method stri
 
 	select {
 	case <-ctx.Done():
-		utils.SSCLogger().Error().Err(ctx.Err()).
-			Msg("FATAL: ctx already canceled BEFORE Multicast!")
 		return fmt.Errorf("ctx canceled before call")
 	default:
-		utils.SSCLogger().Debug().Msg("ctx is alive before Multicast")
 	}
 
 	for i, member := range members {

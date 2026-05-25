@@ -47,44 +47,42 @@ type retryScheduler struct {
 
 func (rs *retryScheduler) cycle() {
 	for {
-		<-time.After(time.Second * 3)
-		func() {
-			rs.mu.RLock()
-			rs.mu.RUnlock()
-			rs.printState()
-		}()
+		<-time.After(time.Second * 60)
+		// func() {
+		// 	rs.mu.RLock()
+		// 	rs.printState()
+		// 	rs.mu.RUnlock()
+		// }()
 	}
 }
 
 func (rs *retryScheduler) printState() {
 	// print all txs need to retry
-	txs2retry := make(map[common.Hash][]uint32)
+	txs2retry := make(map[common.Hash][]bool)
 	for hash, tx := range rs.retryPool {
-		txs2retry[hash] = make([]uint32, 0)
+		txs2retry[hash] = make([]bool, 0)
 		if signals, exists := rs.signals[hash]; exists {
-			for fromShard, signal := range signals[tx.SimulationNum] {
-				if signal.Ready {
-					txs2retry[hash] = append(txs2retry[hash], fromShard)
-				}
+			for _, signal := range signals[tx.SimulationNum] {
+				txs2retry[hash] = append(txs2retry[hash], signal.Ready)
 			}
 		}
 	}
-	utils.SSCLogger().Debug().
+	utils.SSCLogger().Info().
 		Int("num", len(txs2retry)).
 		Interface("txs2readyShard", txs2retry).
 		Msg("retry txs")
 }
 
 func (rs *retryScheduler) CallForRetry(tx *api.RetryTx) {
-	if !rs.sscService.IsLeader() {
+	if !rs.sscService.IsLeader(tx.Epochs[rs.selfShard]) {
 		return
 	}
-	utils.SSCLogger().Debug().
+	utils.SSCLogger().Info().
 		Str("txHash", tx.TxHash.Hex()).
 		Interface("relatedShards", tx.RelatedShards).
 		Msg("call for retry")
 	for _, shard := range tx.RelatedShards {
-		leader := rs.sscService.GetLeader(tx.Epoch, shard)
+		leader := rs.sscService.GetLeader(tx.Epochs[shard], shard)
 		err := rs.comm.Call(rs.ctx, nil, leader, api.Method_AddRetryTx, tx)
 		if err != nil {
 			utils.SSCLogger().Error().Err(err).Msg("call for retry failed")
@@ -94,15 +92,14 @@ func (rs *retryScheduler) CallForRetry(tx *api.RetryTx) {
 }
 
 func (rs *retryScheduler) AddToRetry(tx *api.RetryTx) {
-	if !rs.sscService.IsLeader() {
+	if tx == nil || tx.TxHash == (common.Hash{}) {
+		return
+	}
+	if !rs.sscService.IsLeader(tx.Epochs[rs.selfShard]) {
 		return
 	}
 	rs.mu.Lock()
 	defer rs.mu.Unlock()
-
-	if tx == nil || tx.TxHash == (common.Hash{}) {
-		return
-	}
 
 	// 防重复
 	if _, exists := rs.retryPool[tx.TxHash]; exists {
@@ -117,7 +114,7 @@ func (rs *retryScheduler) AddToRetry(tx *api.RetryTx) {
 	}
 
 	rs.retryPool[tx.TxHash] = tx
-	utils.SSCLogger().Debug().
+	utils.SSCLogger().Info().
 		Str("txHash", tx.TxHash.Hex()).
 		Interface("relatedShards", tx.RelatedShards).
 		Int("reads", len(tx.ReadSet)).
@@ -128,9 +125,6 @@ func (rs *retryScheduler) AddToRetry(tx *api.RetryTx) {
 
 // OnBlockCommitted 在区块提交后调用，尝试提升重试池中的交易
 func (rs *retryScheduler) OnBlockCommitted(block *types.Block) {
-	if !rs.sscService.IsLeader() {
-		return
-	}
 	// 首先处理临时锁
 	rs.tempLockView.OnBlockCommitted(block)
 
@@ -145,21 +139,17 @@ func (rs *retryScheduler) OnBlockCommitted(block *types.Block) {
 	rs.staleTxs = make(map[common.Hash]struct{})
 
 	shard2SignalReadyNum := make(map[uint32]int)
-	shard2RetrySignals := make(map[uint32]*api.ReSimulationSignals)
+	shard2Epoch2RetrySignals := make(map[uint32]map[api.Epoch]*api.ReSimulationSignals)
 	for i := uint32(0); i < rs.sscService.ShardNum(); i++ {
 		shard2SignalReadyNum[i] = 0
-		shard2RetrySignals[i] = &api.ReSimulationSignals{
-			OriginShard: i,
-			FromShard:   rs.selfShard,
-			Signals:     make([]*api.ReSimulationSignal, 0),
-		}
+		shard2Epoch2RetrySignals[i] = make(map[api.Epoch]*api.ReSimulationSignals)
 	}
 
 	// 判断交易是否可以重新模拟，并加入到signals中
 	for txHash, tx := range rs.retryPool {
 		signal := &api.ReSimulationSignal{
 			TxHash:        tx.TxHash,
-			Epoch:         tx.Epoch,
+			Epoch:         tx.Epochs[tx.OriginShardID],
 			SimulationNum: tx.SimulationNum,
 			Condition:     tx.Condition,
 		}
@@ -169,22 +159,33 @@ func (rs *retryScheduler) OnBlockCommitted(block *types.Block) {
 		} else {
 			signal.Ready = false
 		}
-		signals := shard2RetrySignals[tx.OriginShardID]
+		signals := shard2Epoch2RetrySignals[tx.OriginShardID][signal.Epoch]
+		if signals == nil {
+			signals = &api.ReSimulationSignals{
+				OriginShard: tx.OriginShardID,
+				FromShard:   rs.selfShard,
+				Epoch:       signal.Epoch,
+				Signals:     make([]*api.ReSimulationSignal, 0),
+			}
+			shard2Epoch2RetrySignals[tx.OriginShardID][signal.Epoch] = signals
+		}
 		signals.Signals = append(signals.Signals, signal)
 	}
 
 	// 提交 promoted 交易到下一轮模拟
-	for _, signals := range shard2RetrySignals {
-		if len(signals.Signals) > 0 {
-			utils.SSCLogger().Debug().
-				Int("num", len(signals.Signals)).
-				Uint32("shard", signals.OriginShard).
-				Msg("promoted txs to next round")
-			go rs.sendReSimulationSignals(signals)
+	for _, epoch2Signals := range shard2Epoch2RetrySignals {
+		for _, signals := range epoch2Signals {
+			if len(signals.Signals) > 0 {
+				utils.SSCLogger().Info().
+					Int("num", len(signals.Signals)).
+					Uint32("shard", signals.OriginShard).
+					Msg("promoted txs to next round")
+				go rs.sendReSimulationSignals(signals)
+			}
 		}
 	}
 
-	utils.SSCLogger().Debug().
+	utils.SSCLogger().Info().
 		Int("poolSize", len(rs.retryPool)).
 		Uint64("blockNum", block.NumberU64()).
 		Int("staleNum", staleNum).
@@ -193,20 +194,21 @@ func (rs *retryScheduler) OnBlockCommitted(block *types.Block) {
 }
 
 func (rs *retryScheduler) sendReSimulationSignals(signals *api.ReSimulationSignals) {
-	leader := rs.sscService.CurrentLeader(signals.OriginShard)
+	leader := rs.sscService.GetLeader(signals.Epoch, signals.OriginShard)
 
 	err := rs.comm.Call(rs.ctx, nil, leader, api.Method_SignalReSimulation, signals)
 	if err != nil {
-		utils.SSCLogger().Error().Msg("send signals resimulation failed")
+		utils.SSCLogger().Error().Err(err).Msg("send signals resimulation failed")
 	}
 }
 func (rs *retryScheduler) HandleReSimulationSignal(signals *api.ReSimulationSignals) error {
-	if !rs.sscService.IsLeader() {
+	if !rs.sscService.IsLeader(signals.Epoch) {
 		return nil
 	}
-	if rs.selfShard != signals.FromShard {
+	if rs.selfShard != signals.OriginShard {
 		utils.SSCLogger().Error().Msgf("handle signal from other shard, origin=%d, self=%d", signals.FromShard, rs.selfShard)
-		return errors.New("handle signal from other shard")
+		return errors.New("h" +
+			"andle signal from other shard")
 	}
 
 	ready := 0
@@ -227,30 +229,25 @@ func (rs *retryScheduler) HandleReSimulationSignal(signals *api.ReSimulationSign
 	for _, signal := range signals.Signals {
 		txHash := signal.TxHash
 		rs.setSignal(signals.FromShard, signal)
-		retryTx := rs.retryPool[txHash]
 		readyCnt := 0
-		cachedSignals := rs.signals[txHash][retryTx.SimulationNum]
+		cachedSignals := rs.signals[txHash][signal.SimulationNum]
 		for _, s := range cachedSignals {
 			if s.Ready {
 				readyCnt++
 			}
 		}
-		utils.SSCLogger().Debug().
-			Interface("signal", signal).
-			Interface("retryTx", retryTx).
-			Interface("cachedSignals", cachedSignals).
-			Int("readyCnt", readyCnt).
-			Str("tx", txHash.Hex()).
-			Msg("check signals")
-		if readyCnt == len(retryTx.RelatedShards) {
-			return rs.tryToReSimulation(retryTx)
+		retryTx := rs.retryPool[txHash]
+		if retryTx != nil {
+			if readyCnt == len(retryTx.RelatedShards) {
+				go rs.tryToReSimulation(retryTx)
+			}
 		}
 	}
 
 	return nil
 }
 
-func (rs *retryScheduler) tryToReSimulation(retryTx *api.RetryTx) error {
+func (rs *retryScheduler) tryToReSimulation(retryTx *api.RetryTx) {
 	txHash := retryTx.TxHash
 
 	resps := make(map[uint32]*api.RetryCommitResp)
@@ -262,7 +259,7 @@ func (rs *retryScheduler) tryToReSimulation(retryTx *api.RetryTx) error {
 		go func(shard uint32) {
 			defer wg.Done()
 			resp := new(api.RetryCommitResp)
-			err := rs.comm.Call(rs.ctx, resp, rs.sscService.GetLeader(retryTx.Epoch, shard), api.Method_RetryCommit, txHash)
+			err := rs.comm.Call(rs.ctx, resp, rs.sscService.GetLeader(retryTx.Epochs[shard], shard), api.Method_RetryCommit, txHash)
 			if err != nil {
 				utils.SSCLogger().Error().Err(err).Msg("retry commit failed")
 				return
@@ -285,16 +282,18 @@ func (rs *retryScheduler) tryToReSimulation(retryTx *api.RetryTx) error {
 		}
 	}
 	if success {
-		utils.SSCLogger().Debug().Str("txHash", txHash.Hex()).Msg("retry commit success")
+		utils.SSCLogger().Info().Str("txHash", txHash.Hex()).Msg("retry commit success")
 		go rs.sscService.startReSimulation(retryTx.TxHash, retryTx.SimulationNum)
+		rs.mu.Lock()
 		delete(rs.signals, txHash)
 		delete(rs.retryPool, txHash)
+		rs.mu.Unlock()
 	} else {
 		for shardId, resp := range resps {
 			// 如果失败，则将临时上锁的交易解锁
 			if resp.Locked {
 				go func(shardId uint32) {
-					err := rs.comm.Call(rs.ctx, nil, rs.sscService.GetLeader(retryTx.Epoch, shardId), api.Method_RetryCancel, resp.TxHash)
+					err := rs.comm.Call(rs.ctx, nil, rs.sscService.GetLeader(retryTx.Epochs[shardId], shardId), api.Method_RetryCancel, resp.TxHash)
 					if err != nil {
 						utils.SSCLogger().Error().Err(err).Msg("retry cancel failed")
 						return
@@ -311,7 +310,6 @@ func (rs *retryScheduler) tryToReSimulation(retryTx *api.RetryTx) error {
 			}
 		}
 	}
-	return nil
 }
 
 func (rs *retryScheduler) setSignal(fromShard uint32, signal *api.ReSimulationSignal) {
@@ -340,10 +338,6 @@ func (rs *retryScheduler) isStale(tx *api.RetryTx) bool {
 }
 
 func (rs *retryScheduler) StaleTx(txHash common.Hash) {
-	if !rs.sscService.IsLeader() {
-		return
-	}
-
 	rs.tempLockView.GarbageCollect(txHash)
 
 	rs.mu.Lock()
@@ -353,25 +347,25 @@ func (rs *retryScheduler) StaleTx(txHash common.Hash) {
 }
 
 func (rs *retryScheduler) RetryCommit(txHash common.Hash) bool {
-	if !rs.sscService.IsLeader() {
-		return false
-	}
+	rs.mu.RLock()
 	retryTx := rs.retryPool[txHash]
 	if retryTx == nil {
+		rs.mu.RUnlock()
+		return false
+	}
+	rs.mu.RUnlock()
+	if !rs.sscService.IsLeader(retryTx.Epochs[rs.selfShard]) {
 		return false
 	}
 	locked := rs.tempLockView.TryLock(txHash, retryTx.ReadSet, retryTx.WriteSet)
 	if !locked {
-		utils.SSCLogger().Error().Str("txHash", txHash.Hex()).Msg("retryCommit failed: try lock failed")
+		utils.SSCLogger().Debug().Str("txHash", txHash.Hex()).Msg("retryCommit failed: try lock failed")
 		return false
 	}
-	utils.SSCLogger().Debug().Str("txHash", txHash.Hex()).Msg("retryCommit")
+	utils.SSCLogger().Info().Str("txHash", txHash.Hex()).Msg("retryCommit")
 	return true
 }
 
 func (rs *retryScheduler) RetryCancel(txHash common.Hash) {
-	if !rs.sscService.IsLeader() {
-		return
-	}
 	rs.tempLockView.GarbageCollect(txHash)
 }

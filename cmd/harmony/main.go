@@ -392,6 +392,8 @@ func setupNodeAndRun(hc harmonyconfig.HarmonyConfig) {
 	}
 
 	go func() {
+		// runtime.SetBlockProfileRate(1)
+		// runtime.SetMutexProfileFraction(1)
 		ol.Println(http.ListenAndServe(fmt.Sprintf(":%d", hc.HTTP.Port-3000), nil))
 	}()
 
@@ -797,7 +799,7 @@ func setupChain(hc harmonyconfig.HarmonyConfig, nodeConfig *nodeconfig.ConfigTyp
 
 	chainConfig := nodeConfig.GetNetworkType().ChainConfig()
 	collection := shardchain.NewCollection(
-		&hc, chainDBFactory, &core.GenesisInitializer{NetworkType: nodeConfig.GetNetworkType(), ConfigFilePath: nodeConfig.GenesisConfigFile}, engine, &chainConfig,
+		&hc, chainDBFactory, &core.GenesisInitializer{NetworkType: nodeConfig.GetNetworkType(), ConfigFilePath: nodeConfig.GenesisConfigFile}, engine, &chainConfig, registry.GetSSCService(),
 	)
 	for shardID, archival := range nodeConfig.ArchiveModes() {
 		if archival {
@@ -905,6 +907,7 @@ func setupConsensusAndNode(hc harmonyconfig.HarmonyConfig, nodeConfig *nodeconfi
 	txSigner := ssc.NewTxSigner(chainId, submitterKey.PrivateKey)
 	signerMgr := ssc.NewBLSSignerMgr(nodeConfig.ShardID, ethCommon.Address(sscSelfAddr), &blsKey)
 	sscConfig := &api.Config{
+		SimulationLimit:          hc.SSC.SimulationLimit,
 		CallTimeout:              hc.SSC.CallTimeout,
 		CXTTimeout:               hc.SSC.CXTTimeout,
 		SimulationCommitGasLimit: hc.SSC.SimulationCommitGasLimit,
@@ -915,7 +918,7 @@ func setupConsensusAndNode(hc harmonyconfig.HarmonyConfig, nodeConfig *nodeconfi
 	comm := ssc.NewComm()
 	txSub := ssc.NewTxSubmitter(nodeConfig.ShardID, txSigner, currentNode, sscConfig)
 	cm := ssc.NewCommitteeMechanism(ctx, ethCommon.Address(sscSelfAddr), nodeConfig.ShardID, sscOnChainConfig, signerMgr, txSub, comm)
-	sscService := ssc.NewService(ctx, sscConfig, cm, sscOnChainConfig, signerMgr, currentNode, bc, txSigner, comm, txSub)
+	sscService := ssc.NewService(ctx, sscConfig, cm, sscOnChainConfig, signerMgr, bc, txSigner, comm)
 	currentNode.SetSSCService(sscService)
 
 	if hc.Legacy != nil && hc.Legacy.TPBroadcastInvalidTxn != nil {
@@ -970,6 +973,7 @@ func setupConsensusAndNode(hc harmonyconfig.HarmonyConfig, nodeConfig *nodeconfi
 	// update consensus information based on the blockchain
 	currentConsensus.SetMode(currentConsensus.UpdateConsensusInformation())
 	currentConsensus.NextBlockDue = time.Now()
+	currentConsensus.GetOnChainSSCAddrs = cm.CurrentValidatorAddrs
 	return currentNode
 }
 

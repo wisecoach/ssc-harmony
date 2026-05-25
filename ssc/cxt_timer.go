@@ -9,7 +9,7 @@ import (
 
 type txInfo struct {
 	txHash        common.Hash
-	epoch         api.Epoch
+	epochs        []api.Epoch
 	blockNum      uint64
 	originShardId uint32
 	poolTimeout   uint64
@@ -39,7 +39,9 @@ type CXTTimerManager struct {
 	blockNum               uint64
 }
 
-func (c *CXTTimerManager) StartPoolTimer(txHash common.Hash, blockNum uint64, originShardId uint32) {
+// StartPoolTimer
+// from HandleSimulateRequest/HandleCXTCall to signSimulationCommit
+func (c *CXTTimerManager) StartPoolTimer(txHash common.Hash, epochs []api.Epoch, blockNum uint64, originShardId uint32) {
 	c.lock.Lock()
 	defer c.lock.Unlock()
 
@@ -64,12 +66,16 @@ func (c *CXTTimerManager) StartPoolTimer(txHash common.Hash, blockNum uint64, or
 				blockNum:      blockNum,
 				originShardId: originShardId,
 				poolTimeout:   poolTimeout,
+				epochs:        epochs,
 			}
 		}
 	}
 }
 
 func (c *CXTTimerManager) removePoolTx(txHash common.Hash) bool {
+	c.lock.Lock()
+	defer c.lock.Unlock()
+
 	tx, exists := c.txs[txHash]
 	if !exists {
 		return false
@@ -85,14 +91,13 @@ func (c *CXTTimerManager) removePoolTx(txHash common.Hash) bool {
 	return false
 }
 
-func (c *CXTTimerManager) StartTimer(txHash common.Hash, epoch api.Epoch, blockNum uint64, originShardId uint32) {
+func (c *CXTTimerManager) StartTimer(txHash common.Hash, epochs []api.Epoch, blockNum uint64, originShardId uint32) {
 	c.lock.Lock()
 	defer c.lock.Unlock()
 
 	if originShardId == c.selfShard {
-		// c.removePoolTx(txHash)
 		sp1 := blockNum + c.config.Sp1
-		utils.SSCLogger().Debug().Str("txHash", txHash.String()).Msgf("start timer for cxt, which will timeout at block %d committed", sp1)
+		utils.SSCLogger().Info().Str("txHash", txHash.String()).Msgf("start sp1 timer for cxt, which will timeout at block %d committed", sp1)
 		if c.bkNum2txForSp1[sp1] == nil {
 			c.bkNum2txForSp1[sp1] = map[common.Hash]struct{}{}
 		}
@@ -102,7 +107,7 @@ func (c *CXTTimerManager) StartTimer(txHash common.Hash, epoch api.Epoch, blockN
 			blockNum:      blockNum,
 			originShardId: originShardId,
 			sp1:           sp1,
-			epoch:         epoch,
+			epochs:        epochs,
 		}
 	}
 }
@@ -119,7 +124,7 @@ func (c *CXTTimerManager) BlockCommitted(blockNum uint64) {
 			if !exists {
 				continue
 			}
-			utils.SSCLogger().Debug().Str("txHash", hash.String()).Msgf("cxt timeout at block %d committed, start to resimulation", blockNum)
+			utils.SSCLogger().Info().Str("txHash", hash.String()).Msgf("cxt sp1 timeout at block %d committed", blockNum)
 			go c.service.handleTxSp1Timeout(txInfo)
 			delete(c.txs, hash)
 		}

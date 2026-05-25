@@ -232,6 +232,11 @@ type BlockChainImpl struct {
 func (bc *BlockChainImpl) SetSSCService(sscService api.Service) {
 	bc.processor.sscService = sscService
 	bc.stateLockManager = sscService.StateLockManager()
+	currentBlock := bc.CurrentBlock()
+	err := bc.stateLockManager.InitLockManager(currentBlock.Root())
+	if err != nil {
+		panic(err)
+	}
 }
 
 // NewBlockChainWithOptions same as NewBlockChain but can accept additional behaviour options.
@@ -548,7 +553,12 @@ func (bc *BlockChainImpl) ValidateNewBlock(block *types.Block, beaconChain Block
 }
 
 func (bc *BlockChainImpl) validateNewBlock(block *types.Block) error {
-	state, err := state.New(bc.CurrentBlock().Root(), bc.stateCache, bc.snaps, bc.stateLockManager.GetLocker())
+	root := bc.CurrentBlock().Root()
+	locker, err := bc.stateLockManager.GetLockerAt(root)
+	if err != nil {
+		return err
+	}
+	state, err := state.New(root, bc.stateCache, bc.snaps, locker)
 	if err != nil {
 		return err
 	}
@@ -699,7 +709,14 @@ func (bc *BlockChainImpl) setHead(head uint64) error {
 		headBlockGauge.Update(int64(newHeadBlock.NumberU64()))
 	}
 	if currentBlock := bc.CurrentBlock(); currentBlock != nil {
-		if _, err := state.New(currentBlock.Root(), bc.stateCache, bc.snaps, bc.stateLockManager.GetLocker()); err != nil {
+		root := currentBlock.Root()
+		locker, err := bc.stateLockManager.GetLockerAt(root)
+		if err != nil {
+			// Rewound state missing, rolled back to before pivot, reset to genesis
+			bc.currentBlock.Store(bc.genesisBlock)
+			headBlockGauge.Update(int64(bc.genesisBlock.NumberU64()))
+		}
+		if _, err := state.New(currentBlock.Root(), bc.stateCache, bc.snaps, locker); err != nil {
 			// Rewound state missing, rolled back to before pivot, reset to genesis
 			bc.currentBlock.Store(bc.genesisBlock)
 			headBlockGauge.Update(int64(bc.genesisBlock.NumberU64()))
@@ -764,9 +781,15 @@ func (bc *BlockChainImpl) StateAt(root common.Hash) (*state.DB, error) {
 	if root == (common.Hash{}) {
 		return nil, errors.New("state root is empty")
 	}
-	var locker api.StateLocker
+	var (
+		locker api.StateLocker
+		err    error
+	)
 	if bc.stateLockManager != nil {
-		locker = bc.stateLockManager.GetLocker()
+		locker, err = bc.stateLockManager.GetLockerAt(root)
+		if err != nil {
+			return nil, err
+		}
 	}
 	return state.New(root, bc.stateCache, bc.snaps, locker)
 }
@@ -840,7 +863,15 @@ func (bc *BlockChainImpl) repairValidatorsAndCommitSigs(head **types.Block) erro
 	valsToRemove := map[common.Address]struct{}{}
 	for {
 		// Abort if we've rewound to a head block that does have associated state
-		if _, err := state.New((*head).Root(), bc.stateCache, bc.snaps, bc.stateLockManager.GetLocker()); err == nil {
+		var (
+			err    error
+			locker api.StateLocker
+		)
+		root := (*head).Root()
+		if locker, err = bc.stateLockManager.GetLockerAt(root); err != nil {
+			return errors.WithMessagef(err, "failed to get locker for root %s", root.Hex())
+		}
+		if _, err = state.New(root, bc.stateCache, bc.snaps, locker); err == nil {
 			utils.Logger().Info().
 				Str("number", (*head).Number().String()).
 				Str("hash", (*head).Hash().Hex()).
@@ -855,7 +886,7 @@ func (bc *BlockChainImpl) repairValidatorsAndCommitSigs(head **types.Block) erro
 		sigAndBitMap := append(lastSig[:], (*head).Header().LastCommitBitmap()...)
 		bc.WriteCommitSig((*head).NumberU64()-1, sigAndBitMap)
 
-		err := rawdb.DeleteBlock(bc.db, (*head).Hash(), (*head).NumberU64())
+		err = rawdb.DeleteBlock(bc.db, (*head).Hash(), (*head).NumberU64())
 		if err != nil {
 			return errors.WithMessagef(err, "failed to delete block %d", (*head).NumberU64())
 		}
@@ -1850,7 +1881,12 @@ func (bc *BlockChainImpl) insertChain(chain types.Blocks, verifyHeaders bool) (i
 		} else {
 			parent = chain[i-1]
 		}
-		state, err := state.New(parent.Root(), bc.stateCache, bc.snaps, bc.stateLockManager.GetLocker())
+		root := parent.Root()
+		locker, err := bc.stateLockManager.GetLockerAt(root)
+		if err != nil {
+			return i, events, coalescedLogs, err
+		}
+		state, err := state.New(parent.Root(), bc.stateCache, bc.snaps, locker)
 		if err != nil {
 			return i, events, coalescedLogs, err
 		}
@@ -1922,6 +1958,7 @@ func (bc *BlockChainImpl) insertChain(chain types.Blocks, verifyHeaders bool) (i
 			Int("uncles", len(block.Uncles())).
 			Int("txs", len(block.Transactions())).
 			Int("stakingTxs", len(block.StakingTransactions())).
+			Uint64("0x40Nonce", state.GetNonce(common.HexToAddress("0x040C58C98df724d931475866aa8465bAe4E199d2"))).
 			Uint64("gas", block.GasUsed()).
 			Str("elapsed", common.PrettyDuration(time.Since(bstart)).String()).
 			Logger()
@@ -3509,14 +3546,24 @@ func (bc *BlockChainImpl) tikvCleanCache() {
 		for i := bc.latestCleanCacheNum + 1; i <= to; i++ {
 			// build previous block statedb
 			fromBlock := bc.GetBlockByNumber(i)
-			fromTrie, err := state.New(fromBlock.Root(), bc.stateCache, bc.snaps, bc.stateLockManager.GetLocker())
+			root := fromBlock.Root()
+			locker, err := bc.stateLockManager.GetLockerAt(root)
+			if err != nil {
+				continue
+			}
+			fromTrie, err := state.New(fromBlock.Root(), bc.stateCache, bc.snaps, locker)
 			if err != nil {
 				continue
 			}
 
 			// build current block statedb
 			toBlock := bc.GetBlockByNumber(i + 1)
-			toTrie, err := state.New(toBlock.Root(), bc.stateCache, bc.snaps, bc.stateLockManager.GetLocker())
+			root = toBlock.Root()
+			locker, err = bc.stateLockManager.GetLockerAt(root)
+			if err != nil {
+				continue
+			}
+			toTrie, err := state.New(toBlock.Root(), bc.stateCache, bc.snaps, locker)
 			if err != nil {
 				continue
 			}
@@ -3616,7 +3663,12 @@ func (bc *BlockChainImpl) InitTiKV(conf *harmonyconfig.TiKVConfig) {
 		// If redis is empty, the hit rate will be too low and the synchronization block speed will be slow
 		// set LOAD_PRE_FETCH is yes can significantly improve this.
 		if os.Getenv("LOAD_PRE_FETCH") == "yes" {
-			if trie, err := state.New(bc.CurrentBlock().Root(), bc.stateCache, bc.snaps, bc.stateLockManager.GetLocker()); err == nil {
+			currentRoot := bc.CurrentBlock().Root()
+			locker, err := bc.stateLockManager.GetLockerAt(currentRoot)
+			if err != nil {
+				log.Println("LOAD_PRE_FETCH ERR: ", err)
+			}
+			if trie, err := state.New(currentRoot, bc.stateCache, bc.snaps, locker); err == nil {
 				trie.Prefetch(512)
 			} else {
 				log.Println("LOAD_PRE_FETCH ERR: ", err)

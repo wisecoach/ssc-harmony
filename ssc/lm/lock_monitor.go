@@ -9,7 +9,7 @@ import (
 	"github.com/harmony-one/harmony/internal/utils"
 )
 
-var MonitorEnabled = true
+var MonitorEnabled = false
 var TimeoutThreshold = 5 * time.Second
 
 func EnableMonitor() {

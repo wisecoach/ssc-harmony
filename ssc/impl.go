@@ -6,10 +6,12 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"math"
 	"math/big"
 	"sort"
+	"strings"
 	"sync"
+	"sync/atomic"
+	"time"
 
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/event"
@@ -18,7 +20,6 @@ import (
 	corestate "github.com/harmony-one/harmony/core/state"
 	"github.com/harmony-one/harmony/core/types"
 	"github.com/harmony-one/harmony/core/vm"
-	"github.com/harmony-one/harmony/hmy"
 	"github.com/harmony-one/harmony/internal/utils"
 	"github.com/harmony-one/harmony/ssc/api"
 	"github.com/harmony-one/harmony/ssc/lm"
@@ -29,14 +30,17 @@ type pendingCXTRequest struct {
 	waitingCh chan *api.CXTCallSSCResult
 }
 
+type simulateTask struct {
+	req *api.CXTSimulationRequest
+}
+
 type sscService struct {
 	*CommitteeMechanism
 	Comm           *Comm
 	BLSSignerMgr   api.BLSSignerMgr
 	txSigner       api.TxSigner
-	txSubmitter    api.TxSubmitter
-	lockStateMgr   api.StateLockManager
-	tempLockView   *TempLockView
+	lockStateMgr   *stateLockManager
+	tempLockView   *TempLockView ``
 	timerMgr       *CXTTimerManager
 	retryScheduler *retryScheduler
 
@@ -66,24 +70,38 @@ type sscService struct {
 	// preSimuLock    lm.Mutex                                         // cmLock for cachedResultCh
 	// cachedResultCh map[common.Hash]chan *api.CXTSimulationSSCResult // cached for consensus leader
 
-	ctx          context.Context
-	chainHeadCh  chan core.ChainHeadEvent
-	chainHeadSub event.Subscription
+	ctx               context.Context
+	chainHeadCh       chan core.ChainHeadEvent
+	chainHeadSub      event.Subscription
+	simulateSemaphore chan struct{}      // semaphore to limit concurrent simulation (increased limit for worker pool)
+	simulateTaskCh    chan *simulateTask // task queue for worker pool
+	workerWg          sync.WaitGroup     // wait group for workers
+	numWorkers        int                // number of worker goroutines
+
+	// simulation statistics
+	simuStatsLock     sync.Mutex
+	simulatingCount   int64 // current number of simulations in progress
+	totalSimulations  int64 // total number of simulations completed
+	totalSimuDuration time.Duration
 }
 
 func (s *sscService) GetShardID(address common.Address) uint32 {
 	return s.CommitteeMechanism.GetShardID(address)
 }
 
-func NewService(ctx context.Context, config *api.Config, cm *CommitteeMechanism, sscConfig *api.ShardSimulateCommitteeConfig,
-	signerMgr api.BLSSignerMgr, nodeAPI hmy.NodeAPI, bc core.BlockChain, txSigner api.TxSigner, comm *Comm, txSub api.TxSubmitter) api.Service {
+// newBaseService 创建基础服务实例（内部使用）
+func newBaseService(ctx context.Context, config *api.Config, cm *CommitteeMechanism, sscConfig *api.ShardSimulateCommitteeConfig,
+	signerMgr api.BLSSignerMgr, bc core.BlockChain, txSigner api.TxSigner, comm *Comm) *sscService {
+	// 设置 worker 数量和信号量上限
+	numWorkers := config.SimulationLimit          // worker 数量
+	simulateLimit := config.SimulationLimit * 100 // 提高信号量上限，允许更多并发
+
 	service := &sscService{
 		CommitteeMechanism:      cm,
 		Comm:                    comm,
 		BLSSignerMgr:            signerMgr,
 		txSigner:                txSigner,
 		Config:                  config,
-		txSubmitter:             txSub,
 		bc:                      bc,
 		stateLock:               lm.NewRWMutex(),
 		verifyCtxLock:           lm.NewRWMutex(),
@@ -102,6 +120,10 @@ func NewService(ctx context.Context, config *api.Config, cm *CommitteeMechanism,
 		ctx:                     ctx,
 		chainHeadCh:             make(chan core.ChainHeadEvent, 10),
 		chainHeadSub:            nil,
+		simulateSemaphore:       make(chan struct{}, simulateLimit),          // 提高并发上限
+		simulateTaskCh:          make(chan *simulateTask, simulateLimit*200), // 任务队列，容量更大
+		workerWg:                sync.WaitGroup{},
+		numWorkers:              numWorkers,
 	}
 	lockStateMgr := newStateLockManager(service)
 	service.lockStateMgr = lockStateMgr
@@ -111,8 +133,18 @@ func NewService(ctx context.Context, config *api.Config, cm *CommitteeMechanism,
 	subscription := bc.SubscribeChainHeadEvent(service.chainHeadCh)
 	service.chainHeadSub = subscription
 	utils.SSCLogger().Info().Msg("ssc service start...")
+	// 启动 worker pool
+	service.startWorkers()
 	go service.loop()
 	return service
+}
+
+func (s *sscService) BindBlockChain(bcValue *atomic.Value) {
+	bc := bcValue.Load().(core.BlockChain)
+	s.bc = bc
+	subscription := bc.SubscribeChainHeadEvent(s.chainHeadCh)
+	s.chainHeadSub = subscription
+	go s.loop()
 }
 
 func (s *sscService) BlockCommitted(block *types.Block) error {
@@ -137,6 +169,7 @@ func (s *sscService) loop() {
 			utils.SSCLogger().Error().Msg("chain head subscription error")
 			return
 		case head := <-s.chainHeadCh:
+			utils.SSCLogger().Info().Uint64("blockNum", head.Block.NumberU64()).Msg("new block committed")
 			b := head.Block
 			var callStatesInWaiting []*api.SimulationCallState
 			func() {
@@ -146,24 +179,49 @@ func (s *sscService) loop() {
 				delete(s.callStatesInWaiting, b.Header().Hash())
 			}()
 			for _, callState := range callStatesInWaiting {
+				var txHash common.Hash
+				if callState.CallRequest != nil {
+					txHash = callState.CallRequest.TxHash
+				} else if callState.TopRequest != nil {
+					txHash = callState.TopRequest.TxHash
+				}
+				utils.SSCLogger().Info().
+					Str("txHash", txHash.Hex()).
+					Str("callIndex", callState.CallIndex.ToString()).
+					Str("blockHash", b.Hash().Hex()).
+					Uint64("blockNum", b.NumberU64()).
+					Msg("call state synced")
 				callState.SyncedCh <- struct{}{}
 			}
 		}
 	}
 }
 
-func (s *sscService) startSimulation(req *api.CXTSimulationRequest) (*api.SimulationCallState, error) {
+func (s *sscService) startSimulation(req *api.CXTSimulationRequest) (*api.CXTSimulationState, *api.SimulationCallState, error) {
 	txHash := req.TxHash
 	_, err := s.startCXT(txHash, req.SimulationNum, s.SelfShard, make([]uint32, 0), req, nil)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 
-	utils.SSCLogger().Debug().
-		Str("txHash", txHash.Hex()).
-		Msg("start simulation 1")
+	s.stateLock.Lock()
+	state, err := s.getState(txHash)
+	if err != nil {
+		utils.SSCLogger().Error().Err(err).Msg("failed to get state")
+		s.stateLock.Unlock()
+		return nil, nil, err
+	}
+	// check if callIndex is already in progress, don't start again
+	if callState := state.SimulationCallStates[state.SimulationNum].Get(api.CallIndex{}); callState != nil {
+		utils.SSCLogger().Info().Str("txHash", txHash.Hex()).Msgf("simulation has been started, simulationNum=%d", state.SimulationNum)
+		s.stateLock.Unlock()
+		return state, callState, nil
+	}
+	s.stateLock.Unlock()
 
 	callState := &api.SimulationCallState{
+		SimulationNum:     req.SimulationNum,
+		BlockNum:          req.BlockNum,
 		BlockHash:         req.BlockHash,
 		CallIndex:         api.CallIndex{},
 		TopRequest:        req,
@@ -175,47 +233,26 @@ func (s *sscService) startSimulation(req *api.CXTSimulationRequest) (*api.Simula
 		Lock:              sync.Mutex{},
 	}
 
-	utils.SSCLogger().Debug().
-		Str("txHash", txHash.Hex()).
-		Msg("start simulation 1.1")
-
 	header := s.bc.GetHeaderByHash(callState.BlockHash)
 	if header == nil {
-		utils.SSCLogger().Debug().
-			Str("txHash", txHash.Hex()).
-			Msg("start simulation 1.2")
-		s.waitForSync(callState)
-		utils.SSCLogger().Debug().
-			Str("txHash", txHash.Hex()).
-			Msg("start simulation 1.2.1")
+		s.waitForSync(txHash, callState)
 		header = s.bc.GetHeaderByHash(callState.BlockHash)
-		utils.SSCLogger().Debug().
-			Str("txHash", txHash.Hex()).
-			Msg("start simulation 1.3")
 		if header == nil {
 
-			utils.SSCLogger().Debug().
+			utils.SSCLogger().Info().
 				Str("txHash", txHash.Hex()).
 				Msg("start simulation 1.4")
 			utils.SSCLogger().Error().Msg("failed to get block header")
-			return nil, errors.New("failed to get block header")
+			return nil, nil, errors.New("failed to get block header")
 		}
 	}
-
-	utils.SSCLogger().Debug().
-		Str("txHash", txHash.Hex()).
-		Msg("start simulation 3")
 
 	db, err := s.bc.StateAt(header.Root())
 	if err != nil {
 		utils.SSCLogger().Error().Err(err).Msg("failed to get state")
-		return nil, err
+		return nil, nil, err
 	}
 	callState.DB = db
-
-	utils.SSCLogger().Debug().
-		Str("txHash", txHash.Hex()).
-		Msg("start simulation 2")
 
 	func() {
 		s.commitLock.Lock()
@@ -231,47 +268,50 @@ func (s *sscService) startSimulation(req *api.CXTSimulationRequest) (*api.Simula
 		}
 	}()
 
-	func() {
-		s.stateLock.Lock()
-		defer s.stateLock.Unlock()
-		state, _ := s.getState(txHash)
-		state.CurrentCallFrame = &api.CallFrame{
-			CallIndex: api.CallIndex{},
-			PC:        0,
-		}
-		state.SimulationCallStates[req.SimulationNum] = state.SimulationCallStates[req.SimulationNum].Add(callState)
-		s.pendingLock.Lock()
-		pendingList := s.pendingRequests[txHash]
-		s.pendingRequests[txHash] = make([]*pendingCXTRequest, 0)
-		if len(pendingList) > 0 {
-			// 异步处理，避免阻塞当前 goroutine 和锁
-			for _, p := range pendingList {
+	s.stateLock.Lock()
+	state, err = s.getState(txHash)
+	if err != nil {
+		s.stateLock.Unlock()
+		utils.SSCLogger().Error().Err(err).Msg("failed to start simulation because of failed state")
+		return nil, nil, err
+	}
+	state.CurrentCallFrame = &api.CallFrame{
+		CallIndex: api.CallIndex{},
+		PC:        0,
+	}
+	state.SimulationCallStates[req.SimulationNum] = state.SimulationCallStates[req.SimulationNum].Add(callState)
+	s.stateLock.Unlock()
+
+	s.pendingLock.Lock()
+	defer s.pendingLock.Unlock()
+	pendingList := s.pendingRequests[txHash]
+	s.pendingRequests[txHash] = make([]*pendingCXTRequest, 0)
+	if len(pendingList) > 0 {
+		// 异步处理，避免阻塞当前 goroutine 和锁
+		for _, p := range pendingList {
+			utils.SSCLogger().Info().
+				Str("txHash", txHash.Hex()).
+				Str("callIndex", p.req.CallIndex.ToString()).
+				Msg("found pending CXT request")
+			if p.req.CallIndex[:len(p.req.CallIndex)-1].ToString() == callState.CallIndex.ToString() {
 				utils.SSCLogger().Info().
 					Str("txHash", txHash.Hex()).
 					Str("callIndex", p.req.CallIndex.ToString()).
-					Msg("found pending CXT request")
-				if p.req.CallIndex[:len(p.req.CallIndex)-1].ToString() == callState.CallIndex.ToString() {
+					Msg("processing pending CXT request")
+				go func(req *api.CXTCallRequest, ch chan *api.CXTCallSSCResult) {
+					result := s.RequestCallCXT(req) // 递归调用，此时状态已存在
 					utils.SSCLogger().Info().
 						Str("txHash", txHash.Hex()).
-						Str("callIndex", p.req.CallIndex.ToString()).
-						Msg("processing pending CXT request")
-					go func(req *api.CXTCallRequest, ch chan *api.CXTCallSSCResult) {
-						result := s.RequestCallCXT(req) // 递归调用，此时状态已存在
-						utils.SSCLogger().Info().
-							Str("txHash", txHash.Hex()).
-							Str("callIndex", req.CallIndex.ToString()).
-							Msg("finished processing pending CXT request")
-						ch <- result
-					}(p.req, p.waitingCh)
-				} else {
-					s.pendingRequests[txHash] = append(s.pendingRequests[txHash], p)
-				}
+						Str("callIndex", req.CallIndex.ToString()).
+						Msg("finished processing pending CXT request")
+					ch <- result
+				}(p.req, p.waitingCh)
+			} else {
+				s.pendingRequests[txHash] = append(s.pendingRequests[txHash], p)
 			}
 		}
-		s.pendingLock.Unlock()
-	}()
-
-	return callState, nil
+	}
+	return state, callState, nil
 }
 
 func (s *sscService) startCXT(txHash common.Hash, simulationNum int, originShardId uint32, relatedShards api.RelatedShards,
@@ -292,11 +332,8 @@ func (s *sscService) startCXT(txHash common.Hash, simulationNum int, originShard
 	ctx, cancel := context.WithTimeout(s.ctx, s.Config.CallTimeout)
 
 	newState := &api.CXTSimulationState{
-		CurrentCallFrame: &api.CallFrame{
-			CallIndex: api.CallIndex{},
-			PC:        0,
-		},
-		CallStack:            api.NewCallStack(),
+		CallStack:            api.NewCallStack(txHash, simulationNum),
+		Status:               api.SIMULATING,
 		SimulationRequest:    topRequest,
 		SimulationResult:     nil,
 		SimulationCallStates: make(map[int]api.SimulationCallStates),
@@ -318,7 +355,6 @@ func (s *sscService) startCXT(txHash common.Hash, simulationNum int, originShard
 		// extend from originRequest
 		if topRequest != nil {
 			utils.SSCLogger().Debug().Str("txHash", txHash.Hex()).
-				Interface("originRequest", state.SimulationRequest).
 				Msgf("extend from origin request, simulationNum %d", topRequest.SimulationNum)
 			originReq := state.SimulationRequest
 			topRequest.Tx = originReq.Tx
@@ -329,15 +365,19 @@ func (s *sscService) startCXT(txHash common.Hash, simulationNum int, originShard
 		newState.SimulationRequest = topRequest
 		newState.SimulationCallStates = state.SimulationCallStates
 		newState.RelatedShards = newState.RelatedShards.Merge(state.RelatedShards)
+		newState.CallStack = api.NewCallStack(txHash, simulationNum)
+		newState.Status = api.RESIMULATING
 	}
 
 	if topRequest != nil {
 		newState.Nonce = topRequest.Tx.Nonce()
 		newState.TxSender, _ = topRequest.Tx.SenderAddress()
+		newState.Epochs = topRequest.Epochs
 	}
 	if callRequest != nil {
 		newState.Nonce = callRequest.Nonce
 		newState.TxSender = common.BytesToAddress(callRequest.TxSender)
+		newState.Epochs = callRequest.Epochs
 	}
 
 	newState.SimulationCallStates[simulationNum] = make(api.SimulationCallStates, 0)
@@ -351,14 +391,14 @@ func (s *sscService) startCXT(txHash common.Hash, simulationNum int, originShard
 }
 
 func (s *sscService) handleTxSp1Timeout(info txInfo) {
-	utils.SSCLogger().Debug().Str("txHash", info.txHash.Hex()).Msgf("cxt has timeout for sp1, send rollback vote to ssc leader")
+	utils.SSCLogger().Info().Str("txHash", info.txHash.Hex()).Msgf("cxt has timeout for sp1, send rollback vote to ssc leader")
 	payload := &api.CXTInvalidSimulationPayload{
 		Type: api.CXTTimeout,
 	}
 	payloadBytes, _ := json.Marshal(payload)
 	vote := &api.CXTCommitVote{
 		BaseSSCMessage: api.BaseSSCMessage{
-			Epoch: info.epoch,
+			Epochs: info.epochs,
 		},
 		TxHash:        info.txHash,
 		ShardId:       s.SelfShard,
@@ -383,13 +423,13 @@ func (s *sscService) handleTxPoolTimeout(info txInfo) {
 		return
 	}
 	if existsOnChain {
-		utils.SSCLogger().Debug().Str("txHash", txHash.Hex()).
+		utils.SSCLogger().Info().Str("txHash", txHash.Hex()).
 			Msgf("cxt has timeout for pool, but the tx is already onchain")
 		return
 	}
 	utils.SSCLogger().Info().Str("txHash", txHash.Hex()).
-		Msgf("simulation is pool timeout, status=PoolTimeout, timeout for [%d, %d], current=%d, epoch=%d", info.blockNum, info.poolTimeout, info.poolTimeout, info.blockNum)
-	s.closeTransaction(txHash, false)
+		Msgf("simulation is pool timeout, status=PoolTimeout, timeout for [%d, %d], current=%d, epoch=%v", info.blockNum, info.poolTimeout, info.poolTimeout, info.epochs)
+	s.closeTransaction(txHash, false, "PoolTimeout")
 }
 
 func newStateSet() *api.StateSet {
@@ -408,39 +448,104 @@ func newRWSet() *api.RWSet {
 }
 
 func (s *sscService) SimulateCXTransaction(req *api.CXTSimulationRequest) {
-	utils.SSCLogger().Info().Str("txHash", req.Tx.Hash().String()).Msg("simulate cx transaction, start")
-	req.Epoch = s.CurrentEpoch
-	leader := s.GetLeader(req.Epoch, s.SelfShard)
+	req.Epochs = s.CopyCurrentEpochs()
+	leader := s.GetLeader(req.Epochs[s.SelfShard], s.SelfShard)
+
+	// increment simulating count when request arrives
+	atomic.AddInt64(&s.simulatingCount, 1)
+	currentCount := atomic.LoadInt64(&s.simulatingCount)
+
+	utils.SSCLogger().Info().Str("txHash", req.Tx.Hash().String()).Str("leader", leader.Endpoint).
+		Int64("simulatingCount", currentCount).
+		Msg("simulate cx transaction, send to chan")
+
+	// 将任务发送到 worker 队列（非阻塞，队列满时会阻塞）
+	s.simulateTaskCh <- &simulateTask{req: req}
+
+	utils.SSCLogger().Info().Str("txHash", req.Tx.Hash().String()).Str("leader", leader.Endpoint).
+		Int64("simulatingCount", currentCount).
+		Msg("simulate cx transaction, in chan")
+}
+
+// startWorkers 启动 worker pool
+func (s *sscService) startWorkers() {
+	for i := 0; i < s.numWorkers; i++ {
+		s.workerWg.Add(1)
+		go s.worker(i)
+	}
+	utils.SSCLogger().Info().Int("numWorkers", s.numWorkers).Msg("worker pool started")
+}
+
+// worker 处理模拟任务
+func (s *sscService) worker(id int) {
+	defer s.workerWg.Done()
+	utils.SSCLogger().Info().Int("workerId", id).Msg("worker started")
+
+	for task := range s.simulateTaskCh {
+		s.processSimulationTask(task, id)
+	}
+}
+
+// processSimulationTask 处理单个模拟任务
+func (s *sscService) processSimulationTask(task *simulateTask, workerId int) {
+	startTime := time.Now()
+	req := task.req
+	leader := s.GetLeader(req.Epochs[s.SelfShard], s.SelfShard)
+
+	defer func() {
+		// decrement simulating count and update statistics
+		atomic.AddInt64(&s.simulatingCount, -1)
+		duration := time.Since(startTime)
+		s.simuStatsLock.Lock()
+		s.totalSimulations++
+		s.totalSimuDuration += duration
+		avgDuration := s.totalSimuDuration / time.Duration(s.totalSimulations)
+		currentCount := atomic.LoadInt64(&s.simulatingCount)
+		s.simuStatsLock.Unlock()
+
+		utils.SSCLogger().Info().
+			Str("txHash", req.Tx.Hash().String()).
+			Interface("epochs", req.Epochs).
+			Int("workerId", workerId).
+			Dur("cost", duration).
+			Dur("avgCost", avgDuration).
+			Int64("currentCount", currentCount).
+			Int64("totalCount", s.totalSimulations).
+			Msg("simulate cx transaction, end")
+	}()
 
 	ctx, cancel := context.WithTimeout(s.ctx, s.Config.CallTimeout)
+	defer cancel()
 
-	go func() {
-		defer cancel()
-		ret := new(api.CXTSimulationSSCResult)
-		err := s.Comm.Call(ctx, ret, leader, api.Method_StartSimulateCXTransaction, req)
-		if err != nil {
-			utils.SSCLogger().Error().Str("txHash", req.Tx.Hash().Hex()).Err(err).Msgf("failed to call start simulate cx transaction")
-			ret = &api.CXTSimulationSSCResult{Err: err.Error()}
-		}
-		utils.SSCLogger().Info().Str("txHash", req.Tx.Hash().String()).Msg("simulate cx transaction, end")
-	}()
+	ret := new(api.CXTSimulationSSCResult)
+	err := s.Comm.Call(ctx, ret, leader, api.Method_StartSimulateCXTransaction, req)
+
+	if err != nil {
+		utils.SSCLogger().Error().Str("txHash", req.Tx.Hash().Hex()).Err(err).Msgf("failed to call start simulate cx transaction")
+		ret = &api.CXTSimulationSSCResult{Err: err.Error()}
+	}
 }
 
 func (s *sscService) CallCXTContract(req *api.CXTCallRequest) *api.CXTCallSSCResult {
 	txHash := req.TxHash
-	committee := s.GetCommittee(req.Epoch, s.SelfShard)
 	targetShardId := req.TargetShardId
 	var (
 		cxtState      *api.CXTSimulationState
 		dependentCall *api.DependentCXTCall
+		err           error
+		committee     *api.ShardSimulateCommittee
 	)
 	sscResult := func() *api.CXTCallSSCResult {
 		s.stateLock.Lock()
 		defer s.stateLock.Unlock()
 
-		cxtState, _ = s.getState(txHash)
-		if cxtState == nil {
-			return &api.CXTCallSSCResult{Err: "no simulation state found"}
+		cxtState, err = s.getState(txHash)
+		if err != nil {
+			utils.SSCLogger().Error().Str("txHash", txHash.Hex()).Err(err).Msgf("failed to get state")
+			return &api.CXTCallSSCResult{
+				BaseBLSSignedMessage: api.BaseBLSSignedMessage{
+					Epochs: req.Epochs,
+				}, Err: err.Error()}
 		}
 
 		req.Nonce = cxtState.Nonce
@@ -448,6 +553,19 @@ func (s *sscService) CallCXTContract(req *api.CXTCallRequest) *api.CXTCallSSCRes
 		req.SimulationNum = cxtState.SimulationNum
 		req.OriginShardId = cxtState.OriginShardId
 		req.FromShardId = s.SelfShard
+		req.Epochs = cxtState.Epochs
+		committee = s.GetCommittee(req.Epochs[s.SelfShard], s.SelfShard)
+
+		// 检查 CurrentCallFrame 是否为 nil，避免空指针
+		if cxtState.CurrentCallFrame == nil {
+			utils.SSCLogger().Error().Str("txHash", txHash.Hex()).
+				Msg("CurrentCallFrame is nil, this should not happen")
+			return &api.CXTCallSSCResult{
+				BaseBLSSignedMessage: api.BaseBLSSignedMessage{
+					Epochs: req.Epochs,
+				}, Err: "CurrentCallFrame is nil"}
+		}
+
 		req.CallIndex = make(api.CallIndex, len(cxtState.CurrentCallFrame.CallIndex))
 		copy(req.CallIndex, cxtState.CurrentCallFrame.CallIndex)
 		req.CallIndex = append(req.CallIndex, cxtState.CurrentCallFrame.PC)
@@ -461,6 +579,9 @@ func (s *sscService) CallCXTContract(req *api.CXTCallRequest) *api.CXTCallSSCRes
 				Msg("recall contract has been locked, reuse it")
 			callStates := cxtState.SimulationCallStates[req.SimulationNum]
 			callerState := callStates.Get(req.CallIndex[:len(req.CallIndex)-1])
+
+			callerState.StateLock.Lock()
+			defer callerState.StateLock.Unlock()
 			lockedCallStates := cxtState.SimulationCallStates[cxtState.SimulationNum-1]
 			dependentCall = lockedCallStates.Get(req.CallIndex).DependentCXTCalls[req.CallIndex.ToString()]
 			callerState.DependentCXTCalls[req.CallIndex.ToString()] = dependentCall
@@ -472,16 +593,22 @@ func (s *sscService) CallCXTContract(req *api.CXTCallRequest) *api.CXTCallSSCRes
 		callerState := callStates.Get(req.CallIndex[:len(req.CallIndex)-1])
 		if callerState == nil {
 			utils.SSCLogger().Debug().Str("txHash", txHash.String()).
-				Interface("cxtState", cxtState).
 				Interface("callStates", callStates).
 				Str("callIndex", req.CallIndex.ToString()).
-				Interface("cxtState.callerState", cxtState.SimulationCallStates[req.SimulationNum].Get(req.CallIndex[:len(req.CallIndex)-1])).
 				Msg("no caller's call state found")
-			return &api.CXTCallSSCResult{Err: "no call state found"}
+			return &api.CXTCallSSCResult{
+				BaseBLSSignedMessage: api.BaseBLSSignedMessage{
+					Epochs: req.Epochs,
+				}, Err: "no call state found"}
 		}
+
+		// 使用独立的 depCallLock 保护 DependentCXTCalls 访问
+		callerState.StateLock.Lock()
+		defer callerState.StateLock.Unlock()
 		dependentCall = callerState.DependentCXTCalls[req.CallIndex.ToString()]
 		if dependentCall != nil && callerState.Executed {
-			return callerState.CallSSCResult
+			ret := callerState.CallSSCResult
+			return ret
 		}
 		if dependentCall == nil {
 			dependentCall = &api.DependentCXTCall{
@@ -489,8 +616,7 @@ func (s *sscService) CallCXTContract(req *api.CXTCallRequest) *api.CXTCallSSCRes
 				Requests:      make([]*api.CXTCallRequest, 0, committee.Threshold),
 				SignedRequest: nil,
 				SSCResult:     nil,
-				Executed:      false,
-				WaitingChs:    make([]chan *api.CXTCallSSCResult, 0),
+				WaitCh:        make(chan struct{}), // ✅ 初始化 WaitCh
 			}
 			callerState.DependentCXTCalls[req.CallIndex.ToString()] = dependentCall
 		}
@@ -500,7 +626,7 @@ func (s *sscService) CallCXTContract(req *api.CXTCallRequest) *api.CXTCallSSCRes
 	if sscResult != nil {
 		if cxtState != nil {
 			subNode := new(api.CallNode)
-			subNode.FromData(sscResult.TreeNode)
+			subNode.FromData(txHash, sscResult.TreeNode)
 			cxtState.CallForest.Insert(subNode)
 		}
 		return sscResult
@@ -514,16 +640,19 @@ func (s *sscService) CallCXTContract(req *api.CXTCallRequest) *api.CXTCallSSCRes
 	}
 	req.BaseSSCMessage.SenderAddr = s.SelfAddr
 	req.BaseSSCMessage.Signature = sign
+	req.BaseSSCMessage.Epochs = cxtState.Epochs
 
-	leader := s.GetLeader(req.Epoch, s.SelfShard)
-	utils.SSCLogger().Debug().
+	leader := s.GetLeader(req.Epochs[s.SelfShard], s.SelfShard)
+	startTime := time.Now()
+	utils.SSCLogger().Info().
 		Str("txHash", txHash.String()).
-		Interface("CurrentCallFrame", cxtState.CurrentCallFrame).
+		Int("simulationNum", req.SimulationNum).
 		Str("reqCallIndex", req.CallIndex.ToString()).
 		Interface("relatedShards", req.RelatedShards).
 		Uint32("selfShard", s.SelfShard).
 		Uint32("targetShard", targetShardId).
 		Str("addr", req.Addr.Hex()).
+		Uint64("gas", req.Gas).
 		Str("callIndex", req.CallIndex.ToString()).Msg("call cxt contract, start")
 
 	ctx, cancel := context.WithTimeout(cxtState.Ctx, s.Config.CallTimeout)
@@ -531,59 +660,80 @@ func (s *sscService) CallCXTContract(req *api.CXTCallRequest) *api.CXTCallSSCRes
 	ret := new(api.CXTCallSSCResult)
 	err = s.Comm.Call(ctx, ret, leader, api.Method_RequestCallCXT, req)
 	if err != nil {
-		utils.SSCLogger().Error().Err(err).Msg("failed to call cxt contract")
-		utils.SSCLogger().Debug().Str("txHash", txHash.String()).
+		if !errors.Is(err, context.Canceled) {
+			utils.SSCLogger().Error().Err(err).Msg("failed to call cxt contract")
+		}
+		utils.SSCLogger().Info().Str("txHash", txHash.String()).
 			Str("callIndex", req.CallIndex.ToString()).
 			Uint32("targetShard", targetShardId).
 			Str("relatedShards", fmt.Sprintf("%v", cxtState.RelatedShards)).
-			Interface("result", ret).
+			Dur("cost", time.Since(startTime)).
 			Msg("call cxt contract, end")
-		ret = &api.CXTCallSSCResult{Err: fmt.Sprintf("error from targetShard %d, err=%s", targetShardId, err.Error())}
+		ret = &api.CXTCallSSCResult{
+			Err: fmt.Sprintf("error from targetShard %d, err=%s", targetShardId, err.Error()),
+			BaseBLSSignedMessage: api.BaseBLSSignedMessage{
+				Epochs: req.Epochs,
+			},
+		}
 		dependentCall.SSCResult = ret
 	} else {
 		if ret.Err != "" {
-			utils.SSCLogger().Error().Str("txHash", txHash.String()).
-				Str("callIndex", req.CallIndex.ToString()).Err(errors.New(ret.Err)).Msgf("failed to call cxt contract, targetShardId: %d", req.TargetShardId)
+			if ret.Err != context.Canceled.Error() {
+				utils.SSCLogger().Error().Str("txHash", txHash.String()).
+					Str("callIndex", req.CallIndex.ToString()).Err(errors.New(ret.Err)).Msgf("failed to call cxt contract, targetShardId: %d", req.TargetShardId)
+			}
 		} else {
 			err = s.signerMgr.GetSSCSigner().Verify(ret)
 			if err != nil {
 				utils.SSCLogger().Error().Str("txHash", txHash.String()).
 					Str("callIndex", req.CallIndex.ToString()).Err(err).Msg("failed to verify cxt call ssc result signature")
-				utils.SSCLogger().Debug().Str("txHash", txHash.String()).
+				utils.SSCLogger().Info().Str("txHash", txHash.String()).
 					Str("callIndex", req.CallIndex.ToString()).
 					Uint32("targetShard", targetShardId).
 					Str("relatedShards", fmt.Sprintf("%v", cxtState.RelatedShards)).
-					Interface("result", ret).
+					Dur("cost", time.Since(startTime)).
 					Msg("call cxt contract, end")
-				ret = &api.CXTCallSSCResult{Err: fmt.Sprintf("error from targetShard %d, err=%s", targetShardId, err.Error())}
+				// ✅ 即使验证失败，也要合并 RelatedShards
+				if ret.RelatedShards != nil && len(ret.RelatedShards) > 0 {
+					func() {
+						s.stateLock.Lock()
+						defer s.stateLock.Unlock()
+						cxtState.RelatedShards = cxtState.RelatedShards.Merge(ret.RelatedShards)
+						utils.SSCLogger().Debug().Str("txHash", txHash.String()).Interface("relatedShards", cxtState.RelatedShards).Msg("merged RelatedShards from failed verification")
+					}()
+				}
+				ret = &api.CXTCallSSCResult{
+					Err: fmt.Sprintf("error from targetShard %d, err=%s", targetShardId, err.Error()),
+					BaseBLSSignedMessage: api.BaseBLSSignedMessage{
+						Epochs: req.Epochs,
+					},
+				}
 				dependentCall.SSCResult = ret
 				subNode := new(api.CallNode)
-				subNode.FromData(ret.TreeNode)
+				subNode.FromData(txHash, ret.TreeNode)
 				cxtState.CallForest.Insert(subNode)
 				return ret
 			}
 		}
-		s.stateLock.Lock()
-		dependentCall.SSCResult = ret
-		dependentCall.Executed = true
-		dependentCall.WaitingChs = nil
-		oldRelatedShards := cxtState.RelatedShards
-		cxtState.RelatedShards = cxtState.RelatedShards.Merge(ret.RelatedShards)
-		utils.SSCLogger().Debug().Str("txHash", txHash.String()).
-			Str("result", fmt.Sprintf("%v", cxtState.RelatedShards)).
-			Str("old", fmt.Sprintf("%v", oldRelatedShards)).
-			Str("new", fmt.Sprintf("%v", ret.RelatedShards)).
-			Msg("update related shards")
-		utils.SSCLogger().Debug().Str("txHash", txHash.String()).
-			Str("callIndex", req.CallIndex.ToString()).
-			Uint32("targetShard", targetShardId).
-			Str("relatedShards", fmt.Sprintf("%v", cxtState.RelatedShards)).
-			Interface("result", ret).
-			Msg("call cxt contract, end")
-		s.stateLock.Unlock()
+		func() {
+			s.stateLock.Lock()
+			defer s.stateLock.Unlock()
+			dependentCall.SSCResult = ret
+			// ✅ 合并 RelatedShards（无论成功失败）
+			oldRelatedShards := cxtState.RelatedShards
+			cxtState.RelatedShards = cxtState.RelatedShards.Merge(ret.RelatedShards)
+			utils.SSCLogger().Info().Str("txHash", txHash.String()).
+				Str("callIndex", req.CallIndex.ToString()).
+				Uint32("targetShard", targetShardId).
+				Str("returnRelatedShards", fmt.Sprintf("%v", ret.RelatedShards)).
+				Str("old", fmt.Sprintf("%v", oldRelatedShards)).
+				Str("new", fmt.Sprintf("%v", cxtState.RelatedShards)).
+				Dur("cost", time.Since(startTime)).
+				Msg("call cxt contract, end")
+		}()
 	}
 	subNode := new(api.CallNode)
-	subNode.FromData(ret.TreeNode)
+	subNode.FromData(txHash, ret.TreeNode)
 	cxtState.CallForest.Insert(subNode)
 	// wait for sub execution finished
 	subNode.Wait(s.SelfShard)
@@ -611,7 +761,7 @@ func (s *sscService) VerifySimulation(simulationBytes []byte, stateDB api.StateD
 			Reason:        api.ReasonInvalidSimulation,
 			Payload:       payloadBytes,
 			BaseSSCMessage: api.BaseSSCMessage{
-				Epoch: simulation.Epoch,
+				Epochs: simulation.Epochs,
 			},
 		}
 		s.sendCXTCommitVote(simulation.OriginShardId, vote)
@@ -620,14 +770,25 @@ func (s *sscService) VerifySimulation(simulationBytes []byte, stateDB api.StateD
 
 	txHash := simulation.TxHash
 	if s.SelfShard == simulation.OriginShardId {
-		s.timerMgr.StartTimer(txHash, simulation.Epoch, header.NumberU64(), s.SelfShard)
+		s.timerMgr.StartTimer(txHash, simulation.Epochs, header.NumberU64(), s.SelfShard)
 	}
+	s.stateLock.Lock()
+	if state, err := s.getState(txHash); err == nil {
+		state.Status = api.VERIFYING_SIMULATION
+	}
+	s.stateLock.Unlock()
 
-	utils.SSCLogger().Debug().Str("txHash", txHash.Hex()).
-		// Interface("simulation", simulation).
+	utils.SSCLogger().Info().Str("txHash", txHash.Hex()).
 		Int("simulationNum", simulation.SimulationNum).
-		Uint64("epoch", uint64(simulation.Epoch)).
+		Interface("epoch", simulation.Epochs).
 		Msg("begin to verify simulation")
+
+	startTime := time.Now()
+	defer func() {
+		utils.SSCLogger().Info().Str("txHash", txHash.String()).
+			Dur("cost", time.Since(startTime)).
+			Msg("verify simulation finished")
+	}()
 
 	conflictLockCallIndexes := make([]api.CallIndex, 0)
 	conflictLockKeys := make([]api.LockKey, 0)
@@ -639,12 +800,15 @@ func (s *sscService) VerifySimulation(simulationBytes []byte, stateDB api.StateD
 		callStateMap[callState.CallIndex.ToString()] = callState
 	}
 	verifyContext := &api.ExecutionVerifyContext{Simulation: simulation, CallStateMap: callStateMap}
-	// s.verifyCtxLock.Lock()
+	s.verifyCtxLock.Lock()
 	s.executionVerifyContexts[txHash] = verifyContext
-	// s.verifyCtxLock.Unlock()
+	s.verifyCtxLock.Unlock()
 
-	utils.SSCLogger().Debug().Str("txHash", txHash.Hex()).
-		Msg("verify simulation 1")
+	s.stateLock.Lock()
+	if state, err := s.getState(txHash); err == nil {
+		state.Status = api.VERIFYING_SIMULATION
+	}
+	s.stateLock.Unlock()
 
 CallStates:
 	for i, callState := range simulation.CallStates {
@@ -722,6 +886,9 @@ CallStates:
 			OriginShardId: simulation.OriginShardId,
 			Reason:        api.ReasonInvalidSimulation,
 			Payload:       payloadBytes,
+			BaseSSCMessage: api.BaseSSCMessage{
+				Epochs: simulation.Epochs,
+			},
 		}
 		s.sendCXTCommitVote(simulation.OriginShardId, vote)
 		return
@@ -731,7 +898,7 @@ CallStates:
 		utils.SSCLogger().Debug().Str("txHash", txHash.Hex()).
 			Str("callIndex", simulation.CallStates[conflictCallStateIndex].CallIndex.ToString()).
 			Msgf("try to mu state with execution")
-		err := s.lockStateWithExecution(simulation.Epoch, simulation.CallStates[conflictCallStateIndex], stateDB.(*corestate.DB))
+		err := s.lockStateWithExecution(simulation.Epochs, simulation.CallStates[conflictCallStateIndex], stateDB.(*corestate.DB))
 		if err != nil {
 			stateDB.RevertToSnapshot(snapshot)
 			utils.SSCLogger().Error().Str("txHash", txHash.Hex()).
@@ -747,6 +914,9 @@ CallStates:
 				OriginShardId: simulation.OriginShardId,
 				Reason:        api.ReasonConflictRWSetFailedLock,
 				Payload:       payloadBytes,
+				BaseSSCMessage: api.BaseSSCMessage{
+					Epochs: simulation.Epochs,
+				},
 			}
 			s.sendCXTCommitVote(simulation.OriginShardId, vote)
 			return
@@ -762,6 +932,9 @@ CallStates:
 			OriginShardId: simulation.OriginShardId,
 			Reason:        api.ReasonConflictRWSetRecall,
 			Payload:       payloadBytes,
+			BaseSSCMessage: api.BaseSSCMessage{
+				Epochs: simulation.Epochs,
+			},
 		}
 		s.sendCXTCommitVote(s.SelfShard, vote)
 		return
@@ -782,10 +955,10 @@ CallStates:
 				}
 			}
 		}
-		if s.IsLeader() {
+		if s.IsLeader(simulation.Epochs[s.SelfShard]) {
 			retryTx := &api.RetryTx{
 				TxHash:        txHash,
-				Epoch:         simulation.Epoch,
+				Epochs:        simulation.Epochs,
 				Sender:        simulation.Sender,
 				Nonce:         simulation.Nonce,
 				OriginShardID: simulation.OriginShardId,
@@ -799,10 +972,15 @@ CallStates:
 				Int("ls", len(ls)).
 				Msg("subscribe mu States for re-simulation")
 
+			s.stateLock.Lock()
+			if state, err := s.getState(txHash); err == nil {
+				state.Status = api.WAITING_FOR_RESIMULATING_ON_CHAIN
+			}
+			s.stateLock.Unlock()
 			s.retryScheduler.CallForRetry(retryTx)
 		}
 	} else {
-		utils.SSCLogger().Debug().Str("txHash", txHash.Hex()).
+		utils.SSCLogger().Info().Str("txHash", txHash.Hex()).
 			Uint32("FromShard", simulation.OriginShardId).
 			Int("size", len(simulationBytes)).
 			Msgf("simulation is valid, mu the rwset and send commit vote")
@@ -816,6 +994,9 @@ CallStates:
 			Type:          api.Commit,
 			Reason:        api.ReasonSuccess,
 			Payload:       nil,
+			BaseSSCMessage: api.BaseSSCMessage{
+				Epochs: simulation.Epochs,
+			},
 		}
 		utils.SSCLogger().Debug().Str("txHash", txHash.Hex()).
 			Uint32("FromShard", simulation.OriginShardId).
@@ -961,7 +1142,7 @@ func (s *sscService) sendCXTCommitVote(shardId uint32, vote *api.CXTCommitVote) 
 	ctx, cancel := context.WithTimeout(s.ctx, s.Config.CallTimeout)
 	defer cancel()
 
-	targetLeader := s.GetLeader(vote.Epoch, shardId)
+	targetLeader := s.GetLeader(vote.Epochs[shardId], shardId)
 	if targetLeader == nil {
 		utils.SSCLogger().Error().Str("txHash", txHash.Hex()).
 			Msg("failed to get leader")
@@ -1014,7 +1195,7 @@ func (s *sscService) checkLockConflict(simulation *api.CXTSimulation, stateDB ap
 	return len(conflictLockKeys) > 0
 }
 
-func (s *sscService) lockStateWithExecution(epoch api.Epoch, callState *api.CXTCallState, state *corestate.DB) error {
+func (s *sscService) lockStateWithExecution(epochs []api.Epoch, callState *api.CXTCallState, state *corestate.DB) error {
 	var (
 		topReq        *api.CXTSimulationRequest
 		callReq       *api.CXTCallSSCRequest
@@ -1065,7 +1246,7 @@ func (s *sscService) lockStateWithExecution(epoch api.Epoch, callState *api.CXTC
 		LeftOverGas:   leftOverGas,
 		BlockHash:     header.Hash(),
 		BaseSSCMessage: api.BaseSSCMessage{
-			Epoch: epoch,
+			Epochs: epochs,
 		},
 	}
 	if err != nil {
@@ -1073,7 +1254,7 @@ func (s *sscService) lockStateWithExecution(epoch api.Epoch, callState *api.CXTC
 	}
 
 	// cache the recall state for the next simulation recall state
-	if s.IsMember() {
+	if s.IsMember(epochs[s.SelfShard]) {
 		s.stateLock.Lock()
 		defer s.stateLock.Unlock()
 		simulationState, err := s.getState(txHash)
@@ -1086,6 +1267,7 @@ func (s *sscService) lockStateWithExecution(epoch api.Epoch, callState *api.CXTC
 		nextCallState := simulationState.SimulationCallStates[simulationState.SimulationNum+1].Get(callIndex)
 		if nextCallState == nil {
 			nextCallState = &api.SimulationCallState{
+				SimulationNum:     simulationState.SimulationNum,
 				CallIndex:         callIndex,
 				TopRequest:        topReq,
 				CallRequest:       callReq,
@@ -1095,6 +1277,7 @@ func (s *sscService) lockStateWithExecution(epoch api.Epoch, callState *api.CXTC
 				CallSSCResult:     nil,
 				Executed:          false,
 				Lock:              sync.Mutex{},
+				StateLock:         sync.Mutex{},
 			}
 			simulationState.SimulationCallStates[simulationState.SimulationNum+1].Add(nextCallState)
 		}
@@ -1130,7 +1313,7 @@ func (s *sscService) CommitOrRollbackWithProof(commitProofBytes []byte, stateDB 
 	utils.SSCLogger().Info().Str("txHash", txHash.Hex()).Msg("commit or rollback with proof")
 
 	if commitProof.Type == api.Commit {
-		utils.SSCLogger().Info().Str("txHash", txHash.String()).Msgf("commit with proof, origin: [%v,%d], epoch=%d", commitProof.OriginShard == s.SelfShard, commitProof.OriginShard, commitProof.Epoch)
+		utils.SSCLogger().Info().Str("txHash", txHash.String()).Msgf("commit with proof, origin: [%v,%d], epoch=%v", commitProof.OriginShard == s.SelfShard, commitProof.OriginShard, commitProof.Epochs)
 		if commitProof.SimulationNum > 0 {
 			utils.SSCLogger().Info().Str("txHash", txHash.Hex()).Msgf("commit with proof after %d resimulation, origin: [%v,%d]",
 				commitProof.SimulationNum, commitProof.OriginShard == s.SelfShard, commitProof.OriginShard)
@@ -1140,9 +1323,14 @@ func (s *sscService) CommitOrRollbackWithProof(commitProofBytes []byte, stateDB 
 			utils.SSCLogger().Error().Str("txHash", txHash.String()).Err(err).Msg("failed to commit tx with proof")
 			return err
 		}
-		s.closeTransaction(txHash, true)
+		s.stateLock.Lock()
+		if state, err := s.getState(txHash); err == nil {
+			state.Status = api.CXT_COMMITTED
+		}
+		s.stateLock.Unlock()
+		s.closeTransaction(txHash, true, "Commit")
 	} else if commitProof.Type == api.Rollback {
-		utils.SSCLogger().Info().Str("txHash", txHash.String()).Msgf("rollback with proof, origin: [%v,%d], epoch=%d, reason: %s", commitProof.OriginShard == s.SelfShard, commitProof.OriginShard, commitProof.Epoch, commitProof.Reason.String())
+		utils.SSCLogger().Info().Str("txHash", txHash.String()).Msgf("rollback with proof, origin: [%v,%d], epoch=%v, reason: %s", commitProof.OriginShard == s.SelfShard, commitProof.OriginShard, commitProof.Epochs, commitProof.Reason.String())
 		if commitProof.SimulationNum > 0 {
 			utils.SSCLogger().Info().Str("txHash", txHash.Hex()).Msgf("rollback with proof after %d resimulation, origin: [%v,%d]",
 				commitProof.SimulationNum, commitProof.OriginShard == s.SelfShard, commitProof.OriginShard)
@@ -1152,7 +1340,12 @@ func (s *sscService) CommitOrRollbackWithProof(commitProofBytes []byte, stateDB 
 			utils.SSCLogger().Error().Str("txHash", txHash.String()).Err(err).Msg("failed to rollback tx with proof")
 			return err
 		}
-		s.closeTransaction(txHash, false)
+		s.stateLock.Lock()
+		if state, err := s.getState(txHash); err == nil {
+			state.Status = api.CXT_ROLLBACKED
+		}
+		s.stateLock.Unlock()
+		s.closeTransaction(txHash, false, "Rollback")
 	}
 
 	return nil
@@ -1165,30 +1358,41 @@ func (s *sscService) NewEpoch(newEpochBytes []byte, sscvm api.VM, stateDB api.St
 		utils.SSCLogger().Error().Err(err).Msg("failed to unmarshal new epoch")
 		return err
 	}
-	utils.SSCLogger().Info().Uint32("selfShardId", s.SelfShard).Interface("newEpoch", newEpoch).Msg("new epoch")
-	if s.SelfShard == newEpoch.Committee.ShardID {
-		utils.SSCLogger().Info().Msgf("local call new epoch, epoch=%d, need to cross call other %d shards", newEpoch.Committee.Epoch, len(s.LatestCommittees)-1)
-		for i := 0; i < len(s.LatestCommittees); i++ {
-			shardId := uint32(i)
-			if shardId != s.SelfShard {
-				utils.SSCLogger().Info().Msgf("cross call new epoch, epoch=%d, shardId=%d", newEpoch.Committee.Epoch, shardId)
-				_, _, err := sscvm.CrossCall(shardId, vm.NewEpochAddr, vm.NewEpochAddr, newEpochBytes, 10000000, new(big.Int))
-				if err != nil {
-					utils.SSCLogger().Error().Err(err).Msg("failed to cross call new epoch")
-					return err
-				}
+	// utils.SSCLogger().Info().Uint32("selfShardId", s.SelfShard).Interface("newEpoch", newEpoch).Msg("new epoch")
+
+	if s.IsLeader(newEpoch.Committee.Epoch - 1) {
+
+		startTime := time.Now()
+		wg := sync.WaitGroup{}
+
+		committees := s.GetLatestCommittees()
+		for shardId, committee := range committees {
+			for _, validator := range committee.Validators {
+				wg.Add(1)
+				go func(validator *api.Member, shardId uint32) {
+					defer wg.Done()
+					catllErr := s.comm.Call(s.ctx, nil, validator, api.Method_HandleNewEpoch, newEpoch, blockNum)
+					if catllErr != nil {
+						utils.SSCLogger().Error().Err(catllErr).Msg("failed to call new epoch")
+					}
+				}(validator, shardId)
 			}
 		}
+		utils.SSCLogger().Info().Dur("cost", time.Since(startTime)).Msgf("leader broadcast new epoch to every validator, epoch=%d, blockNum=%d", newEpoch.Committee.Epoch, blockNum)
 	}
-	return s.CommitteeMechanism.HandleNewEpoch(newEpoch, stateDB, blockNum)
+
+	return nil
 }
 
 func (s *sscService) StartSimulateCXTransaction(req *api.CXTSimulationRequest) *api.CXTSimulationSSCResult {
 	var waitingCh chan *api.CXTSimulationSSCResult
 	txHash := req.Tx.Hash()
 
+	startTime := time.Now()
 	utils.SSCLogger().Info().Int("simulationNum", req.SimulationNum).Str("txHash", txHash.String()).Msg("start simulate cx transaction, start")
-	defer utils.SSCLogger().Info().Int("simulationNum", req.SimulationNum).Str("txHash", txHash.String()).Msg("start simulate cx transaction, end")
+	defer func() {
+		utils.SSCLogger().Info().Int("simulationNum", req.SimulationNum).Str("txHash", txHash.String()).Dur("cost", time.Since(startTime)).Msg("start simulate cx transaction, end")
+	}()
 
 	func() {
 		s.simuLock.Lock()
@@ -1216,9 +1420,12 @@ func (s *sscService) StartSimulateCXTransaction(req *api.CXTSimulationRequest) *
 
 	header := s.bc.CurrentHeader()
 	req.BlockHash = header.Hash()
-	committee := s.GetCommittee(req.Epoch, s.SelfShard)
+	req.BlockNum = header.NumberU64()
+	committee := s.GetCommittee(req.Epochs[s.SelfShard], s.SelfShard)
 	n := committee.Number
 	t := committee.Threshold
+
+	state, _, _ := s.startSimulation(req)
 
 	ctx, cancel := context.WithTimeout(s.ctx, s.Config.CallTimeout)
 	defer cancel()
@@ -1233,15 +1440,20 @@ func (s *sscService) StartSimulateCXTransaction(req *api.CXTSimulationRequest) *
 
 	// 预分配容量，但长度动态控制
 	results = make([]api.SSCMessage, 0, t)
+	addrMap := make(map[int]bool)
+
+	utils.SSCLogger().Info().Int("simulationNum", req.SimulationNum).Str("txHash", txHash.String()).Msg("start simulate cx transaction, call to handle simulation request")
 
 	for i := 0; i < n; i++ {
 		member := committee.Members[i]
-		go func(m *api.Member) {
+		go func(m *api.Member, c *api.ShardSimulateCommittee) {
 			defer wg.Done()
 			ret := new(api.CXTSimulationResult)
-			err := s.Comm.Call(ctx, ret, m, api.Method_HandleSimulateRequest, req)
-			if err != nil {
-				utils.SSCLogger().Error().Str("txHash", txHash.String()).Err(err).Msg("failed to call")
+			callErr := s.Comm.Call(ctx, ret, m, api.Method_HandleSimulateRequest, req)
+			if callErr != nil {
+				if !errors.Is(callErr, context.Canceled) {
+					utils.SSCLogger().Error().Str("txHash", txHash.Hex()).Err(callErr).Msg("failed to call cxt ssc call")
+				}
 				return
 			}
 
@@ -1257,22 +1469,26 @@ func (s *sscService) StartSimulateCXTransaction(req *api.CXTSimulationRequest) *
 			if bytes.Compare(m.Address.Bytes(), s.SelfAddr.Bytes()) == 0 {
 				hasSelf = true
 				if len(results) < t {
+					addrMap[committee.ValidatorIndex[m.Address]] = true
 					results = append([]api.SSCMessage{ret}, results...)
 				} else {
+					delete(addrMap, committee.ValidatorIndex[results[0].GetSenderAddr()])
+					addrMap[committee.ValidatorIndex[m.Address]] = true
 					results[0] = ret // 替换最后一个
 				}
 			} else {
 				if len(results) < t {
+					addrMap[committee.ValidatorIndex[m.Address]] = true
 					results = append(results, ret)
 				}
 			}
 
 			// 检查是否满足终止条件
 			if hasSelf && len(results) == t {
-				utils.SSCLogger().Info().Str("txHash", txHash.String()).Msg("simulation result received, including self")
+				utils.SSCLogger().Info().Interface("addrMap", addrMap).Str("txHash", txHash.String()).Msg("simulation result received, including self")
 				cancel()
 			}
-		}(member)
+		}(member, committee)
 	}
 	wg.Wait()
 
@@ -1283,22 +1499,37 @@ func (s *sscService) StartSimulateCXTransaction(req *api.CXTSimulationRequest) *
 	if len(results) == t {
 		leaderRet := results[0].(*api.CXTSimulationResult)
 		if leaderRet.Err != "" {
-			sscResult = &api.CXTSimulationSSCResult{Err: leaderRet.Err, RelatedShards: []uint32{s.SelfShard}}
+			sscResult = &api.CXTSimulationSSCResult{
+				Err:           leaderRet.Err,
+				RelatedShards: []uint32{s.SelfShard},
+				BaseBLSSignedMessage: api.BaseBLSSignedMessage{
+					Epochs: leaderRet.Epochs,
+				},
+			}
 			utils.SSCLogger().Error().Str("txHash", txHash.String()).Err(errors.New(leaderRet.Err)).Msg("failed to simulate transaction")
 		} else {
 			sscResult, err = s.aggregateSimulationResults(results)
 			if err != nil {
-				sscResult = &api.CXTSimulationSSCResult{Err: err.Error(), RelatedShards: []uint32{s.SelfShard}}
+				sscResult = &api.CXTSimulationSSCResult{Err: err.Error(), RelatedShards: []uint32{s.SelfShard},
+					BaseBLSSignedMessage: api.BaseBLSSignedMessage{
+						Epochs: leaderRet.Epochs,
+					}}
 				utils.SSCLogger().Error().Str("txHash", txHash.String()).Err(err).Msg("failed to aggregate simulation results")
 				return sscResult
 			}
 		}
 	} else {
 		if len(results) == 0 {
-			sscResult = &api.CXTSimulationSSCResult{Err: "no response from other shards", RelatedShards: []uint32{s.SelfShard}}
+			sscResult = &api.CXTSimulationSSCResult{Err: "no response from other shards", RelatedShards: []uint32{s.SelfShard},
+				BaseBLSSignedMessage: api.BaseBLSSignedMessage{
+					Epochs: req.Epochs,
+				}}
 		} else {
 			errRet := results[len(results)-1].(*api.CXTSimulationResult)
-			sscResult = &api.CXTSimulationSSCResult{Err: errRet.Err, RelatedShards: []uint32{s.SelfShard}}
+			sscResult = &api.CXTSimulationSSCResult{Err: errRet.Err, RelatedShards: []uint32{s.SelfShard},
+				BaseBLSSignedMessage: api.BaseBLSSignedMessage{
+					Epochs: req.Epochs,
+				}}
 		}
 	}
 
@@ -1309,7 +1540,7 @@ func (s *sscService) StartSimulateCXTransaction(req *api.CXTSimulationRequest) *
 		Sender:        req.From,
 		RelatedShards: sscResult.RelatedShards,
 		BaseBLSSignedMessage: api.BaseBLSSignedMessage{
-			Epoch:   req.Epoch,
+			Epochs:  req.Epochs,
 			ShardId: s.SelfShard,
 		},
 	}
@@ -1323,19 +1554,29 @@ func (s *sscService) StartSimulateCXTransaction(req *api.CXTSimulationRequest) *
 	} else {
 		if vm.IsLockedByOtherTxErr(sscResult.Err) {
 			utils.SSCLogger().Debug().Str("txHash", simulationCommit.TxHash.Hex()).
-				Msgf("simulation's state is locked by other tx, try to retry if self is leader: %v", s.IsLeader())
+				Msgf("simulation's state is locked by other tx, try to retry if self is leader: %v", s.IsLeader(req.Epochs[s.SelfShard]))
 			simulationCommit.Commit = false
 			simulationCommit.Status = api.LockConflict
 			// don't send commit simulation if state is locked by other tx
-			if s.IsLeader() {
+			if s.IsLeader(req.Epochs[s.SelfShard]) {
 				s.retryScheduler.CallForRetry(&api.RetryTx{
 					TxHash:        txHash,
-					Epoch:         req.Epoch,
+					Epochs:        req.Epochs,
 					RelatedShards: sscResult.RelatedShards,
 					SimulationNum: req.SimulationNum + 1,
 					Condition:     api.Simulate,
 				})
 			}
+			s.stateLock.Lock()
+			state, err = s.getState(txHash)
+			if err != nil {
+				s.stateLock.Unlock()
+				sscResult = &api.CXTSimulationSSCResult{Err: err.Error(), RelatedShards: []uint32{s.SelfShard}}
+				utils.SSCLogger().Error().Str("txHash", txHash.String()).Err(err).Msg("failed to get state")
+				return sscResult
+			}
+			state.Status = api.WAITING_FOR_RESIMULATION_OFF_CHAIN
+			s.stateLock.Unlock()
 			return sscResult
 		} else {
 			simulationCommit.Commit = false
@@ -1347,7 +1588,7 @@ func (s *sscService) StartSimulateCXTransaction(req *api.CXTSimulationRequest) *
 	}
 
 	s.stateLock.Lock()
-	state, err := s.getState(req.Tx.Hash())
+	state, err = s.getState(req.Tx.Hash())
 	if err != nil {
 		s.stateLock.Unlock()
 		sscResult = &api.CXTSimulationSSCResult{Err: err.Error(), RelatedShards: []uint32{s.SelfShard}}
@@ -1361,9 +1602,6 @@ func (s *sscService) StartSimulateCXTransaction(req *api.CXTSimulationRequest) *
 	func() {
 		s.simuLock.Lock()
 		defer s.simuLock.Unlock()
-		if len(state.SimulationCallStates[state.SimulationNum]) == 0 {
-			utils.SSCLogger().Error().Interface("state", state).Msgf("simulation call states is empty")
-		}
 		state.SimulationCallStates[state.SimulationNum][0].TopSSCResult = sscResult
 		state.SimulationResult = sscResult
 		chs = s.simuWaitingChs[txHash]
@@ -1374,11 +1612,11 @@ func (s *sscService) StartSimulateCXTransaction(req *api.CXTSimulationRequest) *
 	}
 
 	s.thresholdSignSimulationCommit(simulationCommit)
+
 	leaders := make([]*api.Member, 0)
 	for _, shardId := range simulationCommit.RelatedShards {
-		leaders = append(leaders, s.GetLeader(req.Epoch, shardId))
+		leaders = append(leaders, s.GetLeader(req.Epochs[shardId], shardId))
 	}
-	utils.SSCLogger().Debug().Str("txHash", txHash.String()).Interface("commit", simulationCommit).Interface("leaders", leaders).Msgf("send simulation commit to %v", simulationCommit.RelatedShards)
 	ctxCS, cancelCS := context.WithTimeout(s.ctx, s.Config.CallTimeout)
 	defer cancelCS()
 
@@ -1402,7 +1640,7 @@ func (s *sscService) StartSimulateCXTransaction(req *api.CXTSimulationRequest) *
 }
 
 func (s *sscService) thresholdSignSimulationCommit(commit *api.SimulationCommit) {
-	committee := s.GetCommittee(commit.Epoch, s.SelfShard)
+	committee := s.GetCommittee(commit.Epochs[s.SelfShard], s.SelfShard)
 	n := committee.Number
 	t := committee.Threshold
 	txHash := commit.TxHash
@@ -1426,6 +1664,7 @@ func (s *sscService) thresholdSignSimulationCommit(commit *api.SimulationCommit)
 	)
 	// 预分配容量，但长度动态控制
 	results = make([]api.SSCMessage, 0, t)
+	addrMap := make(map[common.Address]bool)
 
 	for i := 0; i < n; i++ {
 		member := committee.Members[i]
@@ -1434,10 +1673,13 @@ func (s *sscService) thresholdSignSimulationCommit(commit *api.SimulationCommit)
 			signature := make([]byte, 0)
 			signErr := s.Comm.Call(ctx, &signature, member, api.Method_SignSimulationCommit, commit)
 			if signErr != nil {
+				if !errors.Is(signErr, context.Canceled) {
+					utils.SSCLogger().Error().Str("txHash", txHash.Hex()).Err(signErr).Msg("thresholdSignSimulationCommit")
+				}
 				return
 			}
 			ret := api.BaseSSCMessage{
-				Epoch:      commit.Epoch,
+				Epochs:     commit.Epochs,
 				Signature:  signature,
 				SenderAddr: member.Address,
 			}
@@ -1458,12 +1700,16 @@ func (s *sscService) thresholdSignSimulationCommit(commit *api.SimulationCommit)
 			if bytes.Compare(m.Address.Bytes(), s.SelfAddr.Bytes()) == 0 {
 				hasSelf = true
 				if len(results) < t {
+					addrMap[m.Address] = true
 					results = append([]api.SSCMessage{ret}, results...)
 				} else {
+					delete(addrMap, results[0].GetSenderAddr())
+					addrMap[m.Address] = true
 					results[0] = ret // 替换最后一个
 				}
 			} else {
 				if len(results) < t {
+					addrMap[m.Address] = true
 					results = append(results, ret)
 				}
 			}
@@ -1491,6 +1737,7 @@ func (s *sscService) aggregateSimulationResults(results []api.SSCMessage) (*api.
 	if len(results) == 0 {
 		return nil, errors.New("no simulation results to aggregate")
 	}
+
 	result := results[0].(*api.CXTSimulationResult)
 	aggregatedSig, bitMap, err := s.BLSSignerMgr.GetSSCSigner().Aggregate(results)
 	if err != nil {
@@ -1507,43 +1754,77 @@ func (s *sscService) aggregateSimulationResults(results []api.SSCMessage) (*api.
 			ShardId:    s.SelfShard,
 			Signatures: aggregatedSig,
 			BLSBitMap:  bitMap,
-			Epoch:      result.Epoch,
+			Epochs:     result.Epochs,
 		},
 	}
 	return sscResult, nil
 }
 
 func (s *sscService) HandleSimulateRequest(ctx context.Context, req *api.CXTSimulationRequest) *api.CXTSimulationResult {
+	startTime := time.Now()
 	txHash := req.TxHash
-	utils.SSCLogger().Info().Str("txHash", txHash.Hex()).Int("simulationNum", req.SimulationNum).Msgf("handle simulate request, start, simulationNum=%d", req.SimulationNum)
-	defer utils.SSCLogger().Info().Str("txHash", txHash.Hex()).Msg("handle simulate request, end")
-	callState, err := s.startSimulation(req)
+	utils.SSCLogger().Info().Str("txHash", txHash.Hex()).Int("simulationNum", req.SimulationNum).Msg("handle simulate request, start")
+	defer func() {
+		utils.SSCLogger().Info().Str("txHash", txHash.Hex()).Dur("cost", time.Since(startTime)).Msg("handle simulate request, end")
+	}()
+	simuState, callState, err := s.startSimulation(req)
 	if err != nil {
-		return &api.CXTSimulationResult{Err: err.Error()}
+		utils.SSCLogger().Error().Str("txHash", txHash.Hex()).Err(err).Msg("failed to start simulation")
+		return &api.CXTSimulationResult{
+			Err:            err.Error(),
+			BaseSSCMessage: api.BaseSSCMessage{Epochs: req.Epochs},
+		}
 	}
 
-	s.stateLock.RLock()
-	simuState, stErr := s.getState(txHash)
-	if stErr != nil {
-		utils.SSCLogger().Error().Str("txHash", txHash.Hex()).Err(stErr).Msg("failed to get state")
-		s.stateLock.RUnlock()
-		return &api.CXTSimulationResult{Err: stErr.Error()}
+	s.stateLock.Lock()
+	simuState.CurrentCallFrame = &api.CallFrame{
+		CallIndex: api.CallIndex{},
+		PC:        0,
 	}
-	relatedShards := simuState.RelatedShards
-	simuState.SimulateCh = make(chan struct{})
-	s.stateLock.RUnlock()
+	simuState.CallStack.Push(simuState.CurrentCallFrame)
+	s.stateLock.Unlock()
 
 	defer func() {
-		utils.SSCLogger().Debug().Str("txHash", txHash.Hex()).Msg("simulation completed")
-		close(simuState.SimulateCh)
+		s.stateLock.Lock()
+		defer s.stateLock.Unlock()
+		simuState.CallStack.Pop()
+		simuState.CurrentCallFrame = simuState.CallStack.Top()
+	}()
+
+	callState.Lock.Lock()
+	defer callState.Lock.Unlock()
+
+	relatedShards := simuState.RelatedShards
+	simuState.SimulateCh = make(chan struct{})
+	ch := simuState.SimulateCh
+
+	rootNode := api.NewCallNode(txHash, api.CallIndex{}, s.SelfShard)
+	simuState.CallForest.Insert(rootNode)
+
+	defer func() {
+		rootNode.Done()
+		rootNode.Wait(s.SelfShard)
+		close(ch)
 	}()
 
 	header := s.bc.GetHeaderByHash(req.BlockHash)
-	state, _ := s.bc.StateAt(header.Root())
+	if header == nil {
+		utils.SSCLogger().Error().Str("txHash", txHash.Hex()).Msg("header not found")
+		return &api.CXTSimulationResult{
+			Err:            "header not found",
+			BaseSSCMessage: api.BaseSSCMessage{Epochs: req.Epochs},
+		}
+	}
+	stateDB, _ := s.bc.StateAt(header.Root())
+	if stateDB == nil {
+		utils.SSCLogger().Error().Str("txHash", txHash.Hex()).Msg("stateDB not found")
+		return &api.CXTSimulationResult{Err: "stateDB not found",
+			BaseSSCMessage: api.BaseSSCMessage{Epochs: req.Epochs}}
+	}
 	chainConfig := s.bc.Config()
 	vmConfig := s.bc.GetVMConfig()
 
-	s.timerMgr.StartPoolTimer(txHash, header.NumberU64(), s.SelfShard)
+	s.timerMgr.StartPoolTimer(txHash, req.Epochs, header.NumberU64(), s.SelfShard)
 
 	var (
 		gp            *core.GasPool
@@ -1555,7 +1836,7 @@ func (s *sscService) HandleSimulateRequest(ctx context.Context, req *api.CXTSimu
 		tx = req.Tx
 		gp = new(core.GasPool).AddGas(req.GasPool)
 		executionType = vm.SimulationCall
-		// init cxt state
+		// init cxt stateDB
 	} else {
 		tx = simuState.SimulationRequest.Tx
 		gp = new(core.GasPool).AddGas(simuState.SimulationRequest.GasPool)
@@ -1565,7 +1846,8 @@ func (s *sscService) HandleSimulateRequest(ctx context.Context, req *api.CXTSimu
 	var signer types.Signer
 	if tx.IsEthCompatible() {
 		if !chainConfig.IsEthCompatible(header.Epoch()) {
-			return &api.CXTSimulationResult{Err: "ethereum compatible transactions not supported at current epoch"}
+			return &api.CXTSimulationResult{Err: "ethereum compatible transactions not supported at current epoch",
+				BaseSSCMessage: api.BaseSSCMessage{Epochs: req.Epochs}}
 		}
 		signer = types.NewEIP155Signer(chainConfig.EthCompatibleChainID)
 	} else {
@@ -1574,7 +1856,8 @@ func (s *sscService) HandleSimulateRequest(ctx context.Context, req *api.CXTSimu
 	msg, err := tx.AsMessage(signer)
 
 	if err != nil {
-		return &api.CXTSimulationResult{Err: err.Error(), BaseSSCMessage: api.BaseSSCMessage{Epoch: req.Epoch}}
+		return &api.CXTSimulationResult{Err: err.Error(),
+			BaseSSCMessage: api.BaseSSCMessage{Epochs: req.Epochs}}
 	}
 
 	utils.SSCLogger().Debug().
@@ -1585,18 +1868,22 @@ func (s *sscService) HandleSimulateRequest(ctx context.Context, req *api.CXTSimu
 	var ret *api.CXTSimulationResult
 	vmCtx := core.NewSSCVMContext(msg.From(), tx.Hash(), api.CallIndex{}, tx.GasPrice(), header, s.bc, req.Author)
 	vmCtx.TxType = types.CXTransaction
-	sscvm := vm.NewSSCVM(vmCtx, state, chainConfig, *vmConfig, s, executionType)
+	sscvm := vm.NewSSCVM(vmCtx, stateDB, chainConfig, *vmConfig, s, executionType)
 	result, err := core.NewSSCStateTransition(sscvm, msg, gp).TransitionDb()
 	if err != nil {
-		ret = &api.CXTSimulationResult{Err: err.Error(), BaseSSCMessage: api.BaseSSCMessage{Epoch: req.Epoch}}
+		ret = &api.CXTSimulationResult{Err: err.Error(), BaseSSCMessage: api.BaseSSCMessage{Epochs: req.Epochs}}
 	} else {
 		s.stateLock.RLock()
-		simuState, err = s.getState(txHash)
+		newSimuState, err := s.getState(txHash)
 		if err != nil {
+			utils.SSCLogger().Error().Str("txHash", txHash.Hex()).Err(err).Msg("failed to get stateDB")
 			s.stateLock.RUnlock()
-			return &api.CXTSimulationResult{Err: err.Error()}
+			return &api.CXTSimulationResult{
+				Err:            err.Error(),
+				BaseSSCMessage: api.BaseSSCMessage{Epochs: req.Epochs},
+			}
 		}
-		relatedShards = simuState.RelatedShards
+		relatedShards = newSimuState.RelatedShards
 		s.stateLock.RUnlock()
 
 		ret = &api.CXTSimulationResult{
@@ -1606,7 +1893,7 @@ func (s *sscService) HandleSimulateRequest(ctx context.Context, req *api.CXTSimu
 			UsedGas:       result.UsedGas,
 			Err:           "",
 			BaseSSCMessage: api.BaseSSCMessage{
-				Epoch: req.Epoch,
+				Epochs: req.Epochs,
 			},
 		}
 		if result.VMErr != nil {
@@ -1627,133 +1914,406 @@ func (s *sscService) HandleSimulateRequest(ctx context.Context, req *api.CXTSimu
 	return ret
 }
 
+// safeCallRequest 封装单个请求的上下文信息
+type safeCallRequest struct {
+	req       *api.CXTCallRequest
+	waitingCh chan *api.CXTCallSSCResult
+}
+
+// safeDependentCall 线程安全的依赖调用聚合器
+type safeDependentCall struct {
+	*api.DependentCXTCall
+	lock sync.RWMutex
+	// waitCh 已移至 DependentCXTCall.WaitCh，所有请求共享同一个 channel
+}
+
 func (s *sscService) RequestCallCXT(req *api.CXTCallRequest) *api.CXTCallSSCResult {
 	txHash := req.TxHash
-	committee := s.GetCommittee(req.Epoch, s.SelfShard)
-	utils.SSCLogger().Debug().Str("txHash", txHash.Hex()).Int("simulationNum", req.SimulationNum).Msgf("request call cxt, start, simulationNum=%d", req.SimulationNum)
+	startTime := time.Now()
 
-	s.stateLock.Lock()
-	cxtState, _ := s.getState(txHash)
-	if cxtState == nil {
-		s.stateLock.Unlock()
-		return &api.CXTCallSSCResult{Err: "no simulation state found"}
-	}
-	callStates := cxtState.SimulationCallStates[req.SimulationNum]
-	// get caller's call state
-	callerState := callStates.Get(req.CallIndex[:len(req.CallIndex)-1])
+	// 获取当前分片委员会信息
+	committee := s.GetCommittee(req.Epochs[s.SelfShard], s.SelfShard)
+	threshold := committee.Threshold
 
-	utils.SSCLogger().Debug().Str("txHash", txHash.Hex()).Str("signer", req.SenderAddr.Hex()).Str("callIndex", req.CallIndex.ToString()).Msgf("request call cxt, addr: %s, callStates: %s", req.Addr.Hex(), callStates.ToString())
-	if callerState == nil {
-		pendingWaitingCh := make(chan *api.CXTCallSSCResult, 1)
-		s.pendingLock.Lock()
-		if s.pendingRequests == nil {
-			s.pendingRequests = make(map[common.Hash][]*pendingCXTRequest)
-		}
-		s.pendingRequests[txHash] = append(s.pendingRequests[txHash], &pendingCXTRequest{
-			req:       req,
-			waitingCh: pendingWaitingCh,
-		})
-		s.pendingLock.Unlock()
-		s.stateLock.Unlock()
-		utils.SSCLogger().Debug().Str("txHash", txHash.Hex()).Str("signer", req.SenderAddr.Hex()).Str("callIndex", req.CallIndex.ToString()).Msgf("request call cxt, no caller state found, waiting for pending request")
-		return <-pendingWaitingCh
+	s.stateLock.RLock()
+	state, err := s.getState(txHash)
+	s.stateLock.RUnlock()
+	if err != nil {
+		return &api.CXTCallSSCResult{
+			BaseBLSSignedMessage: api.BaseBLSSignedMessage{
+				Epochs: req.Epochs,
+			},
+			Err: fmt.Sprintf("failed to get state=%v", err)}
 	}
 
-	s.stateLock.Unlock()
+	// 创建带超时的 context，避免永久阻塞
+	ctx, cancel := context.WithTimeout(state.Ctx, s.Config.CallTimeout)
+	defer cancel()
 
-	waitingCh := make(chan *api.CXTCallSSCResult, 1)
-	var (
-		dependentCall  *api.DependentCXTCall
-		reachThreshold bool
-	)
-	sscResult := func() *api.CXTCallSSCResult {
-		s.stateLock.Lock()
-		defer s.stateLock.Unlock()
+	utils.SSCLogger().Info().
+		Str("txHash", txHash.Hex()).
+		Str("callIndex", req.CallIndex.ToString()).
+		Interface("epochs", req.Epochs).
+		Uint32("targetShard", req.TargetShardId).
+		Msg("RequestCallCXT: start")
 
-		dependentCall = callerState.DependentCXTCalls[req.CallIndex.ToString()]
-		if dependentCall != nil && dependentCall.SSCResult != nil {
-			utils.SSCLogger().Debug().Str("txHash", txHash.Hex()).Str("callIndex", req.CallIndex.ToString()).Msgf("request call cxt, dependent call result found")
-			return dependentCall.SSCResult
-		}
-
-		if dependentCall == nil {
-			dependentCall = &api.DependentCXTCall{
-				CallIndex:     req.CallIndex,
-				Requests:      make([]*api.CXTCallRequest, 0, committee.Threshold),
-				SignedRequest: nil,
-				SSCResult:     nil,
-				Executed:      false,
-				WaitingChs:    make([]chan *api.CXTCallSSCResult, 0),
-			}
-			callerState.DependentCXTCalls[req.CallIndex.ToString()] = dependentCall
-		}
-
-		dependentCall.WaitingChs = append(dependentCall.WaitingChs, waitingCh)
-		if len(dependentCall.Requests) < committee.Threshold {
-			dependentCall.Requests = append(dependentCall.Requests, req)
-			if len(dependentCall.Requests) == committee.Threshold {
-				reachThreshold = true
-			}
-		}
-		utils.SSCLogger().Debug().Str("txHash", txHash.String()).Str("callIndex", req.CallIndex.ToString()).Msgf("request call cxt, waiting [%d/%d], chs=%d", len(dependentCall.Requests), committee.Threshold, len(dependentCall.WaitingChs))
-		return nil
+	defer func() {
+		utils.SSCLogger().Info().
+			Str("txHash", txHash.Hex()).
+			Str("callIndex", req.CallIndex.ToString()).
+			Interface("epochs", req.Epochs).
+			Dur("cost", time.Since(startTime)).
+			Msg("RequestCallCXT: end")
 	}()
 
-	if sscResult != nil {
-		return sscResult
+	// ========== 阶段 1: 获取或创建调用状态 ==========
+
+	_, dependentCall, err := s.getOrCreateCallerState(txHash, req, committee)
+	if err != nil {
+		return &api.CXTCallSSCResult{
+			BaseBLSSignedMessage: api.BaseBLSSignedMessage{
+				Epochs: req.Epochs,
+			},
+			Err: fmt.Sprintf("failed to get caller state: %v", err),
+		}
 	}
+
+	// ========== 阶段 2: 注册当前请求 ==========
+
+	callReq := &safeCallRequest{
+		req:       req,
+		waitingCh: make(chan *api.CXTCallSSCResult, 1), // 带缓冲，避免发送方阻塞
+	}
+
+	// 尝试注册请求，返回是否达到阈值
+	reachThreshold := s.registerRequest(dependentCall, callReq, threshold)
+	utils.SSCLogger().Info().
+		Str("txHash", txHash.Hex()).
+		Str("callIndex", req.CallIndex.ToString()).
+		Interface("epochs", req.Epochs).
+		Msgf("RequestCallCXT: register request, reached threshold: %v", reachThreshold)
+
+	// ========== 阶段 3: 根据是否达到阈值分支处理 ==========
 
 	if reachThreshold {
-		// aggregate signatures
-		// send request to leader
-		leader := s.GetLeader(req.Epoch, req.TargetShardId)
-		sscReq := s.aggregateSSCCallRequest(dependentCall.Requests)
-		dependentCall.SignedRequest = sscReq
+		// 当前请求使计数达到阈值，负责聚合并发起远程调用
+		result := s.executeThresholdAction(ctx, txHash, req, dependentCall, committee)
+		return result
+	} else {
+		// 未达到阈值，等待其他请求或超时
+		result := s.waitForResult(ctx, callReq, dependentCall)
+		return result
+	}
+}
 
-		utils.SSCLogger().Debug().
-			Str("txHash", txHash.String()).
-			Str("cxtStateCallIndex", cxtState.CurrentCallFrame.CallIndex.ToString()).
-			Str("reqCallIndex", req.CallIndex.ToString()).
-			Uint32("sscTargetShardId", s.SelfShard).
-			Uint32("reqTargetShardId", req.TargetShardId).
-			Uint32("targetShardId", s.GetShardID(req.Addr)).
-			Str("addr", req.Addr.Hex()).
-			Str("callIndex", req.CallIndex.ToString()).Msg("request call cxt, start")
-		defer utils.SSCLogger().Debug().Str("txHash", txHash.String()).Msg("request call cxt, end")
+// getOrCreateCallerState 获取或创建 caller 状态和 dependentCall
+func (s *sscService) getOrCreateCallerState(
+	txHash common.Hash,
+	req *api.CXTCallRequest,
+	committee *api.ShardSimulateCommittee,
+) (*api.SimulationCallState, *safeDependentCall, error) {
 
-		ret := new(api.CXTCallSSCResult)
-		var err error
+	s.stateLock.RLock()
+	cxtState, err := s.getState(txHash)
+	if err != nil {
+		s.stateLock.RUnlock()
+		return nil, nil, err
+	}
 
-		s.stateLock.Lock()
-		cxtState, err = s.getState(txHash)
-		s.stateLock.Unlock()
-		if cxtState != nil {
-			dependentCall = cxtState.SimulationCallStates[req.SimulationNum].Get(req.CallIndex[:len(req.CallIndex)-1]).DependentCXTCalls[req.CallIndex.ToString()]
-			ctx, cancel := context.WithTimeout(context.Background(), s.Config.CallTimeout)
-			defer cancel()
-			err = s.Comm.Call(ctx, ret, leader, api.Method_HandleCXTSSCCall, sscReq)
+	callStates := cxtState.SimulationCallStates[req.SimulationNum]
+	callerState := callStates.Get(req.CallIndex[:len(req.CallIndex)-1])
+	s.stateLock.RUnlock()
+
+	// 如果 callerState 不存在，放入 pending 队列等待
+	if callerState == nil {
+		pendingResult := s.handlePendingRequest(txHash, req, cxtState.Ctx)
+		if pendingResult != nil {
+			s.stateLock.RLock()
+			cxtState, err = s.getState(txHash)
 			if err != nil {
-				utils.SSCLogger().Error().Err(err).Interface("req", sscReq).Str("txHash", txHash.String()).Str("callIndex", req.CallIndex.ToString()).Msg("failed to call cxt ssc call")
-				ret = &api.CXTCallSSCResult{Err: err.Error(), BaseBLSSignedMessage: api.BaseBLSSignedMessage{Epoch: req.Epoch}}
+				s.stateLock.RUnlock()
+				return nil, nil, err
 			}
-			if ret.Err != "" {
-				utils.SSCLogger().Error().Err(errors.New(ret.Err)).Str("txHash", txHash.String()).Str("callIndex", req.CallIndex.ToString()).Msgf("failed to call cxt ssc call, targetShardId=%d", req.TargetShardId)
-			}
-		} else {
-			ret = &api.CXTCallSSCResult{Err: err.Error()}
-		}
-
-		utils.SSCLogger().Debug().Str("txHash", txHash.String()).Str("callIndex", req.CallIndex.ToString()).Interface("ret", ret).Msgf("request call cxt, return, chs=%d", len(dependentCall.WaitingChs))
-		s.stateLock.Lock()
-		dependentCall.SSCResult = ret
-		chs := dependentCall.WaitingChs
-		s.stateLock.Unlock()
-		for _, ch := range chs {
-			ch <- ret
+			callStates = cxtState.SimulationCallStates[req.SimulationNum]
+			callerState = callStates.Get(req.CallIndex[:len(req.CallIndex)-1])
+			s.stateLock.RUnlock()
 		}
 	}
 
-	return <-waitingCh
+	// 再次检查，如果仍不存在则返回错误
+	if callerState == nil {
+		return nil, nil, errors.New("caller state not found and pending wait failed")
+	}
+
+	// 获取或创建 dependentCall（使用独立的 depCallLock 保护，避免与合约执行竞争）
+	dependentCall := s.getOrCreateDependentCall(txHash, callerState, req.CallIndex.ToString(), committee.Threshold)
+
+	return callerState, dependentCall, nil
+}
+
+// handlePendingRequest 处理 callerState 不存在的情况
+func (s *sscService) handlePendingRequest(
+	txHash common.Hash,
+	req *api.CXTCallRequest,
+	cxtCtx context.Context,
+) *api.CXTCallSSCResult {
+
+	waitingCh := make(chan *api.CXTCallSSCResult, 1)
+
+	s.pendingLock.Lock()
+	if s.pendingRequests == nil {
+		s.pendingRequests = make(map[common.Hash][]*pendingCXTRequest)
+	}
+	s.pendingRequests[txHash] = append(s.pendingRequests[txHash], &pendingCXTRequest{
+		req:       req,
+		waitingCh: waitingCh,
+	})
+	s.pendingLock.Unlock()
+
+	utils.SSCLogger().Debug().
+		Str("txHash", txHash.Hex()).
+		Str("callIndex", req.CallIndex.ToString()).
+		Msg("RequestCallCXT: no caller state, waiting in pending queue")
+
+	// 等待被唤醒或超时
+	select {
+	case result := <-waitingCh:
+		return result
+	case <-cxtCtx.Done():
+		// 超时，从 pending 队列移除
+		s.pendingLock.Lock()
+		pendingList := s.pendingRequests[txHash]
+		newList := make([]*pendingCXTRequest, 0, len(pendingList))
+		for _, p := range pendingList {
+			if p.waitingCh != waitingCh {
+				newList = append(newList, p)
+			}
+		}
+		s.pendingRequests[txHash] = newList
+		s.pendingLock.Unlock()
+		return &api.CXTCallSSCResult{
+			BaseBLSSignedMessage: api.BaseBLSSignedMessage{
+				Epochs: req.Epochs,
+			}, Err: fmt.Sprintf("pending request timeout: %v", cxtCtx.Err())}
+	}
+}
+
+// getOrCreateDependentCall 获取或创建 dependentCall
+// 使用独立的 depCallLock 保护 DependentCXTCalls 访问，避免与合约执行的 callerState.Lock 竞争
+func (s *sscService) getOrCreateDependentCall(
+	txHash common.Hash,
+	callerState *api.SimulationCallState,
+	callIndexKey string,
+	threshold int,
+) *safeDependentCall {
+
+	callerState.StateLock.Lock()
+	defer callerState.StateLock.Unlock()
+
+	dependentCall := callerState.DependentCXTCalls[callIndexKey]
+	isNew := false
+	if dependentCall == nil {
+		dependentCall = &api.DependentCXTCall{
+			CallIndex:     api.CallIndex{},
+			Requests:      make([]*api.CXTCallRequest, 0, threshold),
+			SignedRequest: nil,
+			SSCResult:     nil,
+			WaitCh:        make(chan struct{}), // ✅ 在创建时初始化 waitCh，所有请求共享
+		}
+		callerState.DependentCXTCalls[callIndexKey] = dependentCall
+		isNew = true
+	}
+
+	// 🔍 调试日志：打印 dependentCall 和 WaitCh 的地址
+	utils.SSCLogger().Info().
+		Str("txHash", txHash.Hex()).
+		Str("callIndex", callIndexKey).
+		Bool("isNew", isNew).
+		Str("depCallAddr", fmt.Sprintf("%p", dependentCall)).
+		Str("waitChAddr", fmt.Sprintf("%p", dependentCall.WaitCh)).
+		Msg("getOrCreateDependentCall")
+
+	safeCall := &safeDependentCall{
+		DependentCXTCall: dependentCall,
+		lock:             sync.RWMutex{},
+		// waitCh 不再需要，直接使用 dependentCall.WaitCh
+	}
+	return safeCall
+}
+
+// registerRequest 注册当前请求，返回是否达到阈值和是否已有结果
+func (s *sscService) registerRequest(
+	dependentCall *safeDependentCall,
+	callReq *safeCallRequest,
+	threshold int,
+) (reachThreshold bool) {
+
+	dependentCall.lock.Lock()
+	defer dependentCall.lock.Unlock()
+
+	// 如果已经满足threshold，则返回
+	if len(dependentCall.Requests) >= threshold {
+		return false
+	}
+
+	// 添加请求和等待 channel
+	dependentCall.Requests = append(dependentCall.Requests, callReq.req)
+
+	// 检查是否达到阈值
+	// 修复：使用 == 而不是 >=，确保只有恰好达到阈值的请求触发执行，避免重复触发
+	if len(dependentCall.Requests) == threshold {
+		return true
+	}
+
+	return false
+}
+
+// executeThresholdAction 达到阈值时执行聚合和远程调用
+func (s *sscService) executeThresholdAction(
+	ctx context.Context,
+	txHash common.Hash,
+	req *api.CXTCallRequest,
+	dependentCall *safeDependentCall,
+	committee *api.ShardSimulateCommittee,
+) *api.CXTCallSSCResult {
+
+	// 聚合请求
+	var sscReq *api.CXTCallSSCRequest
+	func() {
+		startTime := time.Now()
+		utils.SSCLogger().Info().Str("txHash", txHash.Hex()).Msgf("RequestCallCXT: aggregateSSCCallRequest start")
+		dependentCall.lock.RLock()
+		defer func() {
+			dependentCall.lock.RUnlock()
+			utils.SSCLogger().Info().Str("txHash", txHash.Hex()).Dur("cost", time.Since(startTime)).Msgf("RequestCallCXT: aggregateSSCCallRequest end")
+		}()
+		sscReq = s.aggregateSSCCallRequest(dependentCall.Requests)
+	}()
+
+	if sscReq == nil {
+		return &api.CXTCallSSCResult{
+			BaseBLSSignedMessage: api.BaseBLSSignedMessage{
+				Epochs: req.Epochs,
+			},
+			Err: "failed to aggregate requests",
+		}
+	}
+
+	// 保存聚合后的请求
+	dependentCall.lock.Lock()
+	dependentCall.SignedRequest = sscReq
+	dependentCall.lock.Unlock()
+
+	utils.SSCLogger().Info().
+		Str("txHash", txHash.Hex()).
+		Str("callIndex", req.CallIndex.ToString()).
+		Interface("epochs", req.Epochs).
+		Uint32("targetShard", req.TargetShardId).
+		Msg("RequestCallCXT: executing threshold action")
+
+	// 获取 leader 并发起远程调用
+	leader := s.GetLeader(req.Epochs[req.TargetShardId], req.TargetShardId)
+
+	ret := new(api.CXTCallSSCResult)
+	defer func() {
+		// 保存结果并通知所有等待的请求
+		dependentCall.lock.Lock()
+		dependentCall.SSCResult = ret
+		utils.SSCLogger().Info().
+			Str("txHash", txHash.Hex()).
+			Str("callIndex", req.CallIndex.ToString()).
+			Str("waitChAddr", fmt.Sprintf("%p", dependentCall.WaitCh)).
+			Msg("RequestCallCXT: closing WaitCh to notify waiters")
+		dependentCall.CloseOnce.Do(func() {
+			close(dependentCall.WaitCh) // ✅ 使用 DependentCXTCall.WaitCh
+		})
+		dependentCall.lock.Unlock()
+	}()
+
+	// 检查状态是否仍然有效
+	s.stateLock.RLock()
+	cxtState, err := s.getState(txHash)
+	s.stateLock.RUnlock()
+
+	if err != nil || cxtState == nil {
+		utils.SSCLogger().Error().
+			Str("txHash", txHash.Hex()).
+			Str("callIndex", req.CallIndex.ToString()).
+			Msg("RequestCallCXT: transaction has been closed")
+		return &api.CXTCallSSCResult{
+			BaseBLSSignedMessage: api.BaseBLSSignedMessage{
+				Epochs: req.Epochs,
+			}, Err: "transaction has been closed"}
+	}
+
+	// 发起远程调用
+	callCtx, callCancel := context.WithTimeout(ctx, s.Config.CallTimeout)
+	defer callCancel()
+
+	utils.SSCLogger().Info().
+		Str("txHash", txHash.Hex()).
+		Str("callIndex", req.CallIndex.ToString()).
+		Str("leader", leader.Endpoint).
+		Msg("RequestCallCXT: initiating remote call")
+
+	err = s.Comm.Call(callCtx, ret, leader, api.Method_HandleCXTSSCCall, sscReq)
+	if err != nil {
+		utils.SSCLogger().Error().
+			Err(err).
+			Str("txHash", txHash.Hex()).
+			Msg("RequestCallCXT: remote call failed")
+		return &api.CXTCallSSCResult{
+			Err:                  fmt.Sprintf("remote call error: %v", err),
+			BaseBLSSignedMessage: api.BaseBLSSignedMessage{Epochs: req.Epochs},
+		}
+	}
+
+	if ret.Err != "" {
+		utils.SSCLogger().Error().
+			Str("txHash", txHash.Hex()).
+			Str("err", ret.Err).
+			Str("callIndex", req.CallIndex.ToString()).
+			Str("relatedShards", fmt.Sprintf("%v", ret.RelatedShards)).
+			Msg("RequestCallCXT: remote call returned error")
+	}
+
+	return ret
+}
+
+// waitForResult 等待结果（带超时）
+func (s *sscService) waitForResult(
+	ctx context.Context,
+	callReq *safeCallRequest,
+	dependentCall *safeDependentCall,
+) *api.CXTCallSSCResult {
+
+	utils.SSCLogger().Info().
+		Str("txHash", callReq.req.TxHash.Hex()).
+		Str("callIndex", callReq.req.CallIndex.ToString()).
+		Str("waitChAddr", fmt.Sprintf("%p", dependentCall.WaitCh)).
+		Msg("RequestCallCXT: waiting for result")
+
+	select {
+	case <-dependentCall.WaitCh: // ✅ 使用 DependentCXTCall.WaitCh
+		utils.SSCLogger().Info().
+			Str("txHash", callReq.req.TxHash.Hex()).
+			Str("callIndex", callReq.req.CallIndex.ToString()).
+			Str("waitChAddr", fmt.Sprintf("%p", dependentCall.WaitCh)).
+			Bool("hasResult", dependentCall.SSCResult != nil).
+			Msg("RequestCallCXT: wait finished, got result")
+		return dependentCall.SSCResult
+	case <-ctx.Done():
+		utils.SSCLogger().Warn().
+			Err(ctx.Err()).
+			Str("txHash", callReq.req.TxHash.Hex()).
+			Str("callIndex", callReq.req.CallIndex.ToString()).
+			Str("waitChAddr", fmt.Sprintf("%p", dependentCall.WaitCh)).
+			Msg("RequestCallCXT: wait timeout")
+		return &api.CXTCallSSCResult{
+			Err:                  fmt.Sprintf("wait timeout: %v", ctx.Err()),
+			BaseBLSSignedMessage: api.BaseBLSSignedMessage{Epochs: callReq.req.Epochs},
+		}
+	}
 }
 
 func (s *sscService) aggregateSSCCallRequest(requests []*api.CXTCallRequest) *api.CXTCallSSCRequest {
@@ -1761,11 +2321,38 @@ func (s *sscService) aggregateSSCCallRequest(requests []*api.CXTCallRequest) *ap
 		utils.SSCLogger().Error().Msg("no cxt call requests to aggregate")
 		return nil
 	}
+	request := requests[0]
+	committee := s.GetCommittee(request.Epochs[s.SelfShard], s.SelfShard)
 	msgs := make([]api.SSCMessage, 0, len(requests))
 	for _, msg := range requests {
+		sender := msg.GetSenderAddr()
+		_, inCommittee := committee.MemberIndex[sender]
+		validatorIndex, inValidators := committee.ValidatorIndex[sender]
+		if !inCommittee {
+			memberIndexes := make([]int, 0, len(committee.Members))
+			for _, memberIndex := range committee.MemberIndex {
+				memberIndexes = append(memberIndexes, memberIndex)
+			}
+			utils.SSCLogger().Error().
+				Interface("epochs", request.Epochs).
+				Str("txHash", msg.TxHash.Hex()).
+				Str("callIndex", msg.CallIndex.ToString()).
+				Int("validatorIndex", validatorIndex).
+				Interface("memberIndexes", memberIndexes).
+				Str("addr", msg.GetSenderAddr().Hex()).
+				Msg("cxt call request sender not in committee")
+		}
+		if !inValidators {
+			validatorAddrs := make([]string, 0, len(committee.Validators))
+			for _, validator := range committee.Validators {
+				validatorAddrs = append(validatorAddrs, validator.Address.Hex())
+			}
+			utils.SSCLogger().Error().Str("txHash", msg.TxHash.Hex()).Str("callIndex", msg.CallIndex.ToString()).Interface("validatorIndexes", committee.ValidatorIndex).Str("addr", msg.GetSenderAddr().Hex()).Msgf("cxt call request sender not in validators, %v", validatorAddrs)
+		} else {
+			utils.SSCLogger().Info().Str("txHash", msg.TxHash.Hex()).Str("callIndex", msg.CallIndex.ToString()).Str("addr", msg.GetSenderAddr().Hex()).Msgf("cxt call request sender in committee, validatorIndex=%d", validatorIndex)
+		}
 		msgs = append(msgs, msg)
 	}
-	request := requests[0]
 	aggregatedSig, bitMap, err := s.BLSSignerMgr.GetSSCSigner().Aggregate(msgs)
 	if err != nil {
 		utils.SSCLogger().Error().Err(err).Interface("requests", requests).Msg("failed to aggregate cxt call request signatures")
@@ -1792,9 +2379,10 @@ func (s *sscService) aggregateSSCCallRequest(requests []*api.CXTCallRequest) *ap
 			ShardId:    s.SelfShard,
 			Signatures: aggregatedSig,
 			BLSBitMap:  bitMap,
-			Epoch:      request.Epoch,
+			Epochs:     request.Epochs,
 		},
 		BlockHash: common.Hash{},
+		BlockNum:  0,
 	}
 	return sscRequest
 }
@@ -1803,32 +2391,76 @@ func (s *sscService) HandleCXTCall(req *api.CXTCallSSCRequest) *api.CXTCallResul
 	err := s.signerMgr.GetSSCSigner().Verify(req)
 	if err != nil {
 		utils.SSCLogger().Error().Err(err).Msg("failed to verify cxt call request signature")
-		return &api.CXTCallResult{Err: fmt.Sprintf("error from targetShard %d, err=%s", req.TargetShardId, err.Error())}
+		return &api.CXTCallResult{
+			Err: fmt.Sprintf("error from targetShard %d, err=%s", req.TargetShardId, err.Error()),
+			BaseSSCMessage: api.BaseSSCMessage{
+				Epochs:     req.Epochs,
+				SenderAddr: s.SelfAddr,
+			},
+		}
 	}
 
 	txHash := req.TxHash
 	// begin cxt call, update simulationState and callIndex
 	callState, err := s.startCall(req)
 	if err != nil {
-		return &api.CXTCallResult{Err: fmt.Sprintf("error from targetShard %d, err=%s", req.TargetShardId, err.Error())}
+		return &api.CXTCallResult{
+			Err: fmt.Sprintf("error from targetShard %d, err=%s", req.TargetShardId, err.Error()),
+			BaseSSCMessage: api.BaseSSCMessage{
+				Epochs:     req.Epochs,
+				SenderAddr: s.SelfAddr,
+			},
+		}
 	}
-	s.stateLock.RLock()
+	s.stateLock.Lock()
 	simuState, stateErr := s.getState(txHash)
 	if stateErr != nil {
-		s.stateLock.RUnlock()
-		return &api.CXTCallResult{Err: "transaction has been closed"}
+		s.stateLock.Unlock()
+		return &api.CXTCallResult{
+			Err: "transaction has been closed",
+			BaseSSCMessage: api.BaseSSCMessage{
+				Epochs:     req.Epochs,
+				SenderAddr: s.SelfAddr,
+			},
+		}
 	}
-	s.stateLock.RUnlock()
+	simuState.CurrentCallFrame = &api.CallFrame{
+		CallIndex: req.CallIndex,
+		PC:        0,
+	}
+	simuState.CallStack.Push(simuState.CurrentCallFrame)
+	s.stateLock.Unlock()
 
 	defer s.endCall(req)
 	callState.Lock.Lock()
 	defer callState.Lock.Unlock()
 
-	utils.SSCLogger().Debug().Str("txHash", txHash.Hex()).Str("callIndex", req.CallIndex.ToString()).Str("addr", req.Addr.Hex()).Msg("handle cxt call, start")
-	defer utils.SSCLogger().Debug().Str("txHash", txHash.Hex()).Msg("handle cxt call, end")
+	startTime := time.Now()
+	utils.SSCLogger().Info().Str("txHash", txHash.Hex()).Str("callIndex", req.CallIndex.ToString()).Str("addr", req.Addr.Hex()).Msg("handle cxt call, start")
+	defer func() {
+		utils.SSCLogger().Info().Str("txHash", txHash.Hex()).Str("callIndex", req.CallIndex.ToString()).Dur("cost", time.Since(startTime)).Msg("handle cxt call, end")
+	}()
 
 	header := s.bc.GetHeaderByHash(req.BlockHash)
+	if header == nil {
+		utils.SSCLogger().Error().Str("txHash", txHash.Hex()).Str("callIndex", req.CallIndex.ToString()).Msg("failed to get header")
+		return &api.CXTCallResult{
+			Err: "failed to get header",
+			BaseSSCMessage: api.BaseSSCMessage{
+				Epochs:     req.Epochs,
+				SenderAddr: s.SelfAddr,
+			},
+		}
+	}
 	state, err := s.bc.StateAt(header.Root())
+	if err != nil {
+		utils.SSCLogger().Error().Err(err).Msg("failed to get stateDB")
+		return &api.CXTCallResult{Err: "failed to get stateDB",
+			BaseSSCMessage: api.BaseSSCMessage{
+				Epochs:     req.Epochs,
+				SenderAddr: s.SelfAddr,
+			}}
+	}
 	chainConfig := s.bc.Config()
 	vmConfig := s.bc.GetVMConfig()
 	sender := vm.AccountRef(req.Caller)
@@ -1839,10 +2471,13 @@ func (s *sscService) HandleCXTCall(req *api.CXTCallSSCRequest) *api.CXTCallResul
 		executionType = vm.SimulationReCall
 	}
 
-	s.timerMgr.StartPoolTimer(txHash, header.NumberU64(), s.SelfShard)
+	s.timerMgr.StartPoolTimer(txHash, req.Epochs, header.NumberU64(), s.SelfShard)
 
 	callNode := api.NewCallNode(req.TxHash, req.CallIndex, s.SelfShard)
 	simuState.CallForest.Insert(callNode)
+	defer func() {
+		callNode.Done()
+	}()
 	// create sscvm instance
 	vmCtx := core.NewSSCVMContext(req.Caller, txHash, req.CallIndex, req.GasPrice, header, s.bc, nil)
 	sscvm := vm.NewSSCVM(vmCtx, state, chainConfig, *vmConfig, s, executionType)
@@ -1859,7 +2494,14 @@ func (s *sscService) HandleCXTCall(req *api.CXTCallSSCRequest) *api.CXTCallResul
 	simuState, stateErr = s.getState(txHash)
 	if stateErr != nil {
 		s.stateLock.RUnlock()
-		return &api.CXTCallResult{Err: "transaction has been closed"}
+		return &api.CXTCallResult{
+			Err:           "transaction has been closed",
+			RelatedShards: []uint32{s.SelfShard},
+			BaseSSCMessage: api.BaseSSCMessage{
+				Epochs:     req.Epochs,
+				SenderAddr: s.SelfAddr,
+			},
+		}
 	}
 	relatedShards := simuState.RelatedShards.Merge(req.RelatedShards).Add(req.FromShardId)
 	s.stateLock.RUnlock()
@@ -1883,19 +2525,24 @@ func (s *sscService) HandleCXTCall(req *api.CXTCallSSCRequest) *api.CXTCallResul
 	sign, err := s.signerMgr.GetSSCSigner().Sign(result)
 	if err != nil {
 		utils.SSCLogger().Error().Err(err).Msg("failed to sign cxt call result")
-		return nil
+		return &api.CXTCallResult{
+			Err:           "failed to sign cxt call result",
+			RelatedShards: []uint32{s.SelfShard},
+			BaseSSCMessage: api.BaseSSCMessage{
+				Epochs:     req.Epochs,
+				SenderAddr: s.SelfAddr,
+			},
+		}
 	}
 	result.BaseSSCMessage = api.BaseSSCMessage{
 		Signature:  sign,
 		SenderAddr: s.SelfAddr,
-		Epoch:      req.Epoch,
+		Epochs:     req.Epochs,
 	}
 	utils.SSCLogger().Debug().
 		Str("txHash", txHash.Hex()).
 		Str("callIndex", req.CallIndex.ToString()).
-		Interface("ret", ret).
 		Msgf("cxt call result: %s, err: %s", common.Bytes2Hex(result.Result), result.Err)
-	callNode.Done()
 	return result
 }
 
@@ -1921,22 +2568,16 @@ func (s *sscService) startCall(req *api.CXTCallSSCRequest) (*api.SimulationCallS
 		s.stateLock.Unlock()
 		return state.SimulationCallStates[state.SimulationNum].Get(req.CallIndex), nil
 	}
-	// update new callIndex and clear current index
-	if state.CurrentCallFrame != nil {
-		state.CallStack.Push(state.CurrentCallFrame)
-	}
-	state.CurrentCallFrame = &api.CallFrame{
-		CallIndex: req.CallIndex,
-		PC:        0,
-	}
-	utils.SSCLogger().Debug().Str("txHash", txHash.Hex()).Str("callIndex", state.CurrentCallFrame.CallIndex.ToString()).Int("currentIndex", state.CurrentCallFrame.PC).
+	utils.SSCLogger().Debug().Str("txHash", txHash.Hex()).
 		Str("simulatedCallStates", state.SimulationCallStates[state.SimulationNum].ToString()).
 		Msgf("start call, simulationNum=%d, callIndex=%s", state.SimulationNum, req.CallIndex.ToString())
+	callState := state.SimulationCallStates[req.SimulationNum].Get(req.CallIndex)
 	s.stateLock.Unlock()
 
-	callState := state.SimulationCallStates[state.SimulationNum].Get(req.CallIndex)
 	if callState == nil {
 		callState = &api.SimulationCallState{
+			SimulationNum:     req.SimulationNum,
+			BlockNum:          req.BlockNum,
 			BlockHash:         req.BlockHash,
 			CallIndex:         req.CallIndex,
 			CallRequest:       req,
@@ -1947,17 +2588,33 @@ func (s *sscService) startCall(req *api.CXTCallSSCRequest) (*api.SimulationCallS
 			Executed:          false,
 			Lock:              sync.Mutex{},
 		}
-		header := s.bc.GetHeaderByHash(callState.BlockHash)
+		header := s.bc.GetHeaderByHash(req.BlockHash)
 		// need to sync state
 		if header == nil {
 			utils.SSCLogger().Debug().Msgf("block header not found, waiting for sync")
-			s.waitForSync(callState)
+			s.waitForSync(txHash, callState)
 			utils.SSCLogger().Debug().Msgf("sync completed, block header founded")
+			header = s.bc.GetHeaderByHash(req.BlockHash)
 		}
-		s.bc.StateAt(header.Root())
+		stateAt, err := s.bc.StateAt(header.Root())
+		if err != nil {
+			utils.SSCLogger().Error().Err(err).Msg("failed to get stateDB")
+			return nil, err
+		}
+		callState.DB = stateAt
 		s.stateLock.Lock()
-		state.SimulationCallStates[state.SimulationNum] = state.SimulationCallStates[state.SimulationNum].Add(callState)
+		state, err = s.getState(txHash)
+		if err != nil {
+			utils.SSCLogger().Error().Err(err).Msg("failed to get state")
+			s.stateLock.Unlock()
+			return nil, err
+		}
+		if state.SimulationCallStates[req.SimulationNum] != nil {
+			state.SimulationCallStates[req.SimulationNum] = state.SimulationCallStates[req.SimulationNum].Add(callState)
+		}
+		s.stateLock.Unlock()
 		s.pendingLock.Lock()
+		utils.SSCLogger().Info().Str("txHash", txHash.Hex()).Str("callIndex", req.CallIndex.ToString()).Msgf("add callState, simulationNum=%d, callIndex=%s", state.SimulationNum, req.CallIndex.ToString())
 		pendingList := s.pendingRequests[txHash]
 		s.pendingRequests[txHash] = make([]*pendingCXTRequest, 0)
 		if len(pendingList) > 0 {
@@ -1982,7 +2639,6 @@ func (s *sscService) startCall(req *api.CXTCallSSCRequest) (*api.SimulationCallS
 			}
 		}
 		s.pendingLock.Unlock()
-		s.stateLock.Unlock()
 	}
 	return callState, nil
 }
@@ -1991,15 +2647,21 @@ func (s *sscService) endCall(req *api.CXTCallSSCRequest) {
 	txHash := req.TxHash
 	s.stateLock.Lock()
 	defer s.stateLock.Unlock()
-	state, _ := s.getState(txHash)
-	if state == nil {
+	state, err := s.getState(txHash)
+	if err != nil {
+		utils.SSCLogger().Error().Str("txHash", txHash.Hex()).Err(err).Msg("failed to get state during endCall")
 		return
 	}
-	utils.SSCLogger().Debug().Str("txHash", txHash.Hex()).Str("callIndex", req.CallIndex.ToString()).Msgf("end call")
-	state.CurrentCallFrame = state.CallStack.Pop()
+	// CallStack.Pop() 可能返回 nil（栈为空时）
+	state.CallStack.Pop()
+	if frame := state.CallStack.Top(); frame != nil {
+		state.CurrentCallFrame = frame
+	} else {
+		utils.SSCLogger().Info().Str("txHash", txHash.Hex()).Msgf("callStack.Pop() returned nil, execution successfully, simulationNum=%d, callIndex=%s, popNum=%d, poshNum=%d", state.SimulationNum, req.CallIndex.ToString(), state.CallStack.PopNum, state.CallStack.PushNum)
+	}
 }
 
-func (s *sscService) waitForSync(callState *api.SimulationCallState) {
+func (s *sscService) waitForSync(txHash common.Hash, callState *api.SimulationCallState) {
 	callState.SyncedCh = make(chan struct{})
 
 	func() {
@@ -2011,6 +2673,12 @@ func (s *sscService) waitForSync(callState *api.SimulationCallState) {
 		}
 		s.callStatesInWaiting[callState.BlockHash] = append(callStates, callState)
 	}()
+
+	utils.SSCLogger().Info().Str("txHash", txHash.Hex()).
+		Str("callIndex", callState.CallIndex.ToString()).
+		Str("blockHash", callState.BlockHash.Hex()).
+		Uint64("blockNum", callState.BlockNum).
+		Msgf("callState is waiting for sync")
 
 	select {
 	case <-callState.SyncedCh:
@@ -2030,6 +2698,14 @@ func (s *sscService) SignSimulationCommit(commit *api.SimulationCommit) []byte {
 }
 
 func (s *sscService) SignCXTSimulation(simulation *api.CXTSimulation) []byte {
+	txHash := simulation.TxHash
+	// stop pool timer
+	s.timerMgr.removePoolTx(txHash)
+	s.stateLock.Lock()
+	if state, err := s.getState(txHash); err == nil {
+		state.RelatedShards = simulation.RelatedShards
+	}
+	s.stateLock.Unlock()
 	signature, err := s.BLSSignerMgr.GetSSCSigner().Sign(simulation)
 	if err != nil {
 		utils.SSCLogger().Error().Err(err).Str("txHash", simulation.TxHash.Hex()).Msgf("failed to sign simulation commit, txHash: %s", simulation.TxHash.Hex())
@@ -2049,10 +2725,10 @@ func (s *sscService) HandleCommitVote(vote *api.CXTCommitVote) {
 	var threshold int
 	sscOrValidator := true
 	if vote.Type == api.Recall {
-		threshold = int(math.Ceil(float64(len(s.GetCommittee(vote.Epoch, vote.ShardId).Members)) / 2))
+		threshold = s.GetCommittee(vote.Epochs[vote.ShardId], vote.ShardId).Threshold
 		sscOrValidator = true
 	} else {
-		threshold = int(math.Ceil(float64(len(s.GetValidators(vote.Epoch, vote.ShardId))) / 2))
+		threshold = s.GetCommittee(vote.Epochs[vote.ShardId], vote.ShardId).ValidatorThreshold
 		sscOrValidator = false
 	}
 	if vote.ShardId != s.SelfShard && vote.Type == api.Rollback && vote.Reason == api.ReasonInvalidSimulation {
@@ -2064,6 +2740,11 @@ func (s *sscService) HandleCommitVote(vote *api.CXTCommitVote) {
 	reachThreshold := false
 	var sscVote *api.CXTCommitSSCVote
 	txHash := vote.TxHash
+	s.stateLock.Lock()
+	if state, err := s.getState(txHash); err == nil {
+		state.Status = api.BUILDING_COMMIT_PROOF
+	}
+	s.stateLock.Unlock()
 
 	func() {
 		s.commitLock.Lock()
@@ -2118,7 +2799,7 @@ func (s *sscService) HandleCommitVote(vote *api.CXTCommitVote) {
 
 	if reachThreshold {
 		// 3
-		leader := s.GetLeader(vote.Epoch, vote.OriginShardId)
+		leader := s.GetLeader(vote.Epochs[vote.OriginShardId], vote.OriginShardId)
 
 		ctx, cancel := context.WithTimeout(s.ctx, s.Config.CallTimeout)
 		defer cancel()
@@ -2168,7 +2849,7 @@ func (s *sscService) aggregateSSCCommitVote(votes []*api.CXTCommitVote, sscOrVal
 			ShardId:    s.SelfShard,
 			Signatures: aggregatedSig,
 			BLSBitMap:  bitMap,
-			Epoch:      result.Epoch,
+			Epochs:     result.Epochs,
 		},
 	}
 	return sscResult
@@ -2213,25 +2894,31 @@ func (s *sscService) HandleCXTRecallProof(proof *api.CXTCommitProof) {
 func (s *sscService) HandleCXTSSCCall(req *api.CXTCallSSCRequest) *api.CXTCallSSCResult {
 	if req == nil {
 		utils.SSCLogger().Error().Msg("nil request")
-		return &api.CXTCallSSCResult{Err: "nil request"}
+		return &api.CXTCallSSCResult{
+			BaseBLSSignedMessage: api.BaseBLSSignedMessage{}, Err: "nil request"}
 	}
 	err := s.BLSSignerMgr.GetSSCSigner().Verify(req)
 	if err != nil {
 		utils.SSCLogger().Error().Str("txHash", req.TxHash.String()).Err(err).Interface("req", req).Msg("invalid cxt ssc call signature")
-		return &api.CXTCallSSCResult{Err: err.Error(), BaseBLSSignedMessage: api.BaseBLSSignedMessage{Epoch: req.Epoch}}
+		return &api.CXTCallSSCResult{Err: err.Error(), BaseBLSSignedMessage: api.BaseBLSSignedMessage{Epochs: req.Epochs}}
 	}
 
 	// select the consistent state
+	startTime := time.Now()
 	header := s.bc.CurrentHeader()
 	req.BlockHash = header.Hash()
-	utils.SSCLogger().Debug().Str("txHash", req.TxHash.String()).Str("callIndex", req.CallIndex.ToString()).Msg("handle cxt ssc call, start")
-	committee := s.GetCommittee(req.Epoch, s.SelfShard)
+	req.BlockNum = header.NumberU64()
+	utils.SSCLogger().Info().Str("txHash", req.TxHash.String()).Str("callIndex", req.CallIndex.ToString()).Msg("handle cxt ssc call, start")
+	committee := s.GetCommittee(req.Epochs[s.SelfShard], s.SelfShard)
 	t := committee.Threshold
 	n := committee.Number
 	txHash := req.TxHash
 	_, err = s.startCall(req)
 	if err != nil {
-		return &api.CXTCallSSCResult{Err: fmt.Sprintf("error from targetShard %d, err=%s", req.TargetShardId, err.Error())}
+		return &api.CXTCallSSCResult{
+			BaseBLSSignedMessage: api.BaseBLSSignedMessage{
+				Epochs: req.Epochs,
+			}, Err: fmt.Sprintf("error from targetShard %d, err=%s", req.TargetShardId, err.Error())}
 	}
 	s.stateLock.Lock()
 	state, err := s.getState(txHash)
@@ -2253,14 +2940,18 @@ func (s *sscService) HandleCXTSSCCall(req *api.CXTCallSSCRequest) *api.CXTCallSS
 	)
 	// 预分配容量，但长度动态控制
 	results = make([]api.SSCMessage, 0, t)
+	addrMap := make(map[common.Address]bool)
 
 	for i := 0; i < n; i++ {
 		member := committee.Members[i]
-		go func(m *api.Member) {
+		go func(index int, m *api.Member) {
 			defer wg.Done()
 			ret := new(api.CXTCallResult)
 			callErr := s.Comm.Call(ctx, ret, member, api.Method_HandleCXTCall, req)
 			if callErr != nil {
+				if !errors.Is(callErr, context.Canceled) {
+					utils.SSCLogger().Error().Str("txHash", txHash.Hex()).Err(callErr).Msg("failed to call cxt ssc call")
+				}
 				return
 			}
 
@@ -2275,13 +2966,17 @@ func (s *sscService) HandleCXTSSCCall(req *api.CXTCallSSCRequest) *api.CXTCallSS
 			if bytes.Compare(m.Address.Bytes(), s.SelfAddr.Bytes()) == 0 {
 				hasSelf = true
 				if len(results) < t {
+					addrMap[m.Address] = true
 					results = append([]api.SSCMessage{ret}, results...)
 				} else {
+					delete(addrMap, results[0].GetSenderAddr())
+					addrMap[m.Address] = true
 					results[0] = ret // 替换最后一个
 				}
 			} else {
 				if len(results) < t {
 					results = append(results, ret)
+					addrMap[m.Address] = true
 				}
 			}
 
@@ -2289,42 +2984,57 @@ func (s *sscService) HandleCXTSSCCall(req *api.CXTCallSSCRequest) *api.CXTCallSS
 			if hasSelf && len(results) == t {
 				cancel()
 			}
-		}(member)
+		}(i, member)
 	}
 	wg.Wait()
+
+	utils.SSCLogger().Info().Str("txHash", txHash.Hex()).Int("n", n).Int("t", t).Int("results", len(results)).Int("addrs", len(addrMap)).Interface("addrMap", addrMap).Msg("receive sigs")
 
 	if len(results) < t {
 		if len(results) == 0 {
 			utils.SSCLogger().Error().Str("txHash", txHash.Hex()).Err(err).Msgf("handle cxt ssc call failed, error from targetShard %d", req.TargetShardId)
 			return &api.CXTCallSSCResult{
 				TxHash:               txHash,
+				RelatedShards:        state.RelatedShards.Merge(req.RelatedShards),
 				Err:                  fmt.Sprintf("handle ssc call failed, error from targetShard %d", req.TargetShardId),
-				BaseBLSSignedMessage: api.BaseBLSSignedMessage{Epoch: req.Epoch, ShardId: req.ShardId},
+				BaseBLSSignedMessage: api.BaseBLSSignedMessage{Epochs: req.Epochs, ShardId: req.ShardId},
 			}
 		}
-		errRet := results[len(results)-1].(*api.CXTCallResult)
-		utils.SSCLogger().Error().Str("txHash", txHash.Hex()).Err(err).Msgf("handle cxt ssc call failed, error from targetShard %d, err=%s", req.TargetShardId, errRet.Err)
+		utils.SSCLogger().Error().Str("txHash", txHash.Hex()).Err(err).Msgf("handle cxt ssc call failed, no enough ret: [%d, %d]", len(results), t)
 		return &api.CXTCallSSCResult{
 			TxHash:               txHash,
-			Err:                  fmt.Sprintf("handle ssc call failed, error from targetShard %d, err=%s", req.TargetShardId, errRet.Err),
-			BaseBLSSignedMessage: api.BaseBLSSignedMessage{Epoch: req.Epoch, ShardId: req.ShardId},
+			RelatedShards:        state.RelatedShards.Merge(req.RelatedShards),
+			Err:                  "no enough ret",
+			BaseBLSSignedMessage: api.BaseBLSSignedMessage{Epochs: req.Epochs, ShardId: req.ShardId},
 		}
 	}
 
 	var sscResult *api.CXTCallSSCResult
 	leaderRet := results[0].(*api.CXTCallResult)
 	if leaderRet.Err != "" {
-		sscResult = &api.CXTCallSSCResult{Err: leaderRet.Err, TxHash: txHash, BaseBLSSignedMessage: api.BaseBLSSignedMessage{Epoch: req.Epoch, ShardId: req.ShardId}}
+		sscResult = &api.CXTCallSSCResult{
+			TxHash:               txHash,
+			Err:                  leaderRet.Err,
+			RelatedShards:        leaderRet.RelatedShards.Merge(req.RelatedShards),
+			BaseBLSSignedMessage: api.BaseBLSSignedMessage{Epochs: req.Epochs, ShardId: req.ShardId}}
 		utils.SSCLogger().Error().Str("txHash", txHash.String()).Err(errors.New(leaderRet.Err)).Msg("failed to simulate transaction")
 	} else {
 		sscResult, err = s.aggregateCXSSCCallResult(results)
 		if err != nil {
 			utils.SSCLogger().Error().
 				Str("txHash", txHash.String()).Err(err).Msg("failed to aggregate cxt call results")
+			result1 := results[1].(*api.CXTCallResult)
+			if strings.Contains(result1.Err, "locked by") {
+				utils.SSCLogger().Error().
+					Str("txHash", txHash.String()).
+					Str("otherErr", result1.Err).
+					Msg("leader is not locked, but other member found key is locked by other tx")
+			}
 			return &api.CXTCallSSCResult{
 				TxHash:               txHash,
+				RelatedShards:        leaderRet.RelatedShards,
 				Err:                  fmt.Sprintf("error from targetShard %d, err=%s", req.TargetShardId, err.Error()),
-				BaseBLSSignedMessage: api.BaseBLSSignedMessage{Epoch: req.Epoch, ShardId: req.ShardId},
+				BaseBLSSignedMessage: api.BaseBLSSignedMessage{Epochs: req.Epochs, ShardId: req.ShardId},
 			}
 		}
 	}
@@ -2335,35 +3045,39 @@ func (s *sscService) HandleCXTSSCCall(req *api.CXTCallSSCRequest) *api.CXTCallSS
 	if err != nil {
 		return &api.CXTCallSSCResult{
 			TxHash:               txHash,
+			RelatedShards:        leaderRet.RelatedShards.Merge(req.RelatedShards),
 			Err:                  fmt.Sprintf("error from targetShard %d, err=%s", req.TargetShardId, err.Error()),
-			BaseBLSSignedMessage: api.BaseBLSSignedMessage{Epoch: req.Epoch, ShardId: req.ShardId},
+			BaseBLSSignedMessage: api.BaseBLSSignedMessage{Epochs: req.Epochs, ShardId: req.ShardId},
 		}
 	}
 	if state.SimulationCallStates[req.SimulationNum] == nil {
 		return &api.CXTCallSSCResult{
 			TxHash:               txHash,
+			RelatedShards:        leaderRet.RelatedShards.Merge(req.RelatedShards),
 			Err:                  fmt.Sprintf("no related simulation num"),
-			BaseBLSSignedMessage: api.BaseBLSSignedMessage{Epoch: req.Epoch, ShardId: req.ShardId},
+			BaseBLSSignedMessage: api.BaseBLSSignedMessage{Epochs: req.Epochs, ShardId: req.ShardId},
 		}
 	}
 	callStates := state.SimulationCallStates[req.SimulationNum]
 	if callStates.Get(req.CallIndex) == nil {
 		return &api.CXTCallSSCResult{
 			TxHash:               txHash,
+			RelatedShards:        leaderRet.RelatedShards.Merge(req.RelatedShards),
 			Err:                  fmt.Sprintf("no related call index"),
-			BaseBLSSignedMessage: api.BaseBLSSignedMessage{Epoch: req.Epoch, ShardId: req.ShardId},
+			BaseBLSSignedMessage: api.BaseBLSSignedMessage{Epochs: req.Epochs, ShardId: req.ShardId},
 		}
 	}
 	callState := callStates.Get(req.CallIndex)
 	if callState == nil {
 		return &api.CXTCallSSCResult{
 			TxHash:               txHash,
+			RelatedShards:        leaderRet.RelatedShards.Merge(req.RelatedShards),
 			Err:                  fmt.Sprintf("no related call index"),
-			BaseBLSSignedMessage: api.BaseBLSSignedMessage{Epoch: req.Epoch, ShardId: req.ShardId},
+			BaseBLSSignedMessage: api.BaseBLSSignedMessage{Epochs: req.Epochs, ShardId: req.ShardId},
 		}
 	}
 	callState.CallSSCResult = sscResult
-	utils.SSCLogger().Debug().Str("txHash", req.TxHash.String()).Interface("sscResult", sscResult).Msg("handle cxt ssc call, end")
+	utils.SSCLogger().Info().Str("txHash", req.TxHash.String()).Dur("cost", time.Since(startTime)).Msg("handle cxt ssc call, end")
 	return sscResult
 }
 
@@ -2391,7 +3105,7 @@ func (s *sscService) aggregateCXSSCCallResult(results []api.SSCMessage) (*api.CX
 			ShardId:    s.SelfShard,
 			Signatures: aggregatedSig,
 			BLSBitMap:  bitMap,
-			Epoch:      result.Epoch,
+			Epochs:     result.Epochs,
 		},
 	}
 	return sscResult, nil
@@ -2407,11 +3121,11 @@ func (s *sscService) CommitSimulation(commit *api.SimulationCommit) {
 		return
 	case api.ExecutionFailed:
 		utils.SSCLogger().Error().Str("txHash", txHash.Hex()).Msgf("simulation failed, status=%s", commit.Status.String())
-		s.closeTransaction(txHash, false)
+		s.closeTransaction(txHash, false, api.ExecutionFailed.String())
 		return
 	case api.PoolTimeout: // TODO deprecated, just close transaction if pool timeout
 		utils.SSCLogger().Error().Str("txHash", txHash.Hex()).Msgf("simulation is pool timeout, status=%s", commit.Status.String())
-		s.closeTransaction(txHash, false)
+		s.closeTransaction(txHash, false, api.PoolTimeout.String())
 		return
 	}
 
@@ -2433,9 +3147,6 @@ func (s *sscService) CommitSimulation(commit *api.SimulationCommit) {
 	simulationCallStates := simuState.SimulationCallStates[commit.SimulationNum]
 	s.stateLock.Unlock()
 
-	// wait for simulation finished
-	// <-simuState.SimulateCh
-
 	// build commit simulation
 	callStates := make([]*api.CXTCallState, 0)
 	for i, simulationCallState := range simulationCallStates {
@@ -2443,7 +3154,9 @@ func (s *sscService) CommitSimulation(commit *api.SimulationCommit) {
 		for _, dc := range simulationCallState.DependentCXTCalls {
 			depentResults = append(depentResults, dc.SSCResult)
 			if dc.SSCResult == nil {
-				utils.SSCLogger().Error().Str("txHash", txHash.Hex()).Interface("dc", dc).Msgf("dependent callIndex %s has no result", dc.CallIndex.ToString())
+				utils.SSCLogger().Error().Str("txHash", txHash.Hex()).Msgf("dependent callIndex %s has no result", dc.CallIndex.ToString())
+				s.closeTransaction(txHash, false, fmt.Sprintf("no result for dependent callIndex %s", dc.CallIndex.ToString()))
+				return
 			}
 		}
 		sort.Slice(depentResults, func(i, j int) bool {
@@ -2461,9 +3174,10 @@ func (s *sscService) CommitSimulation(commit *api.SimulationCommit) {
 		callStates = append(callStates, callState)
 		if callState.TopResult == nil && callState.CallResult == nil {
 			utils.SSCLogger().Error().Str("txHash", txHash.Hex()).Msgf("callIndex %s has no result", simulationCallState.CallIndex.ToString())
+			s.closeTransaction(txHash, false, fmt.Sprintf("no result for callIndex %s", simulationCallState.CallIndex.ToString()))
+			return
 		}
 		utils.SSCLogger().Debug().Str("txHash", txHash.Hex()).Msgf("build commit simulation [%d/%d], callIndex: %s, rwset: %v", i+1, len(simulationCallStates), simulationCallState.CallIndex.ToString(), simulationCallState.RWSet.WriteState.State)
-
 	}
 
 	simulation := &api.CXTSimulation{
@@ -2476,11 +3190,11 @@ func (s *sscService) CommitSimulation(commit *api.SimulationCommit) {
 		RelatedShards: commit.RelatedShards,
 		CallStates:    callStates,
 		BaseBLSSignedMessage: api.BaseBLSSignedMessage{
-			Epoch: commit.Epoch,
+			Epochs: commit.Epochs,
 		},
 	}
 
-	utils.SSCLogger().Debug().Str("txHash", txHash.Hex()).Msgf("build commit simulation completed")
+	utils.SSCLogger().Info().Str("txHash", txHash.Hex()).Msgf("build commit simulation completed")
 
 	s.buildSignaturesForSimulation(simuState, simulation)
 	err = s.txSubmitter.SubmitSimulationTx(simulation)
@@ -2488,13 +3202,22 @@ func (s *sscService) CommitSimulation(commit *api.SimulationCommit) {
 		utils.SSCLogger().Error().Err(err).Msg("failed to submit simulation tx")
 		return
 	}
-	utils.SSCLogger().Debug().Str("txHash", txHash.Hex()).Msgf("simulation committed")
+	s.stateLock.Lock()
+	simuState, err = s.getState(txHash)
+	if err != nil {
+		s.stateLock.Unlock()
+		utils.SSCLogger().Error().Str("txHash", txHash.Hex()).Err(err).Msg("commit simulation failed")
+		return
+	}
+	simuState.Status = api.SIMULATION_COMMMITTING
+	s.stateLock.Unlock()
+	utils.SSCLogger().Info().Str("txHash", txHash.Hex()).Msgf("simulation committed")
 }
 
 func (s *sscService) buildSignaturesForSimulation(state *api.CXTSimulationState, simulation *api.CXTSimulation) {
 	txHash := simulation.TxHash
 	utils.SSCLogger().Debug().Str("txHash", txHash.Hex()).Msgf("begin to build signatures for simulation")
-	committee := s.GetCommittee(simulation.Epoch, s.SelfShard)
+	committee := s.GetCommittee(simulation.Epochs[s.SelfShard], s.SelfShard)
 	n := committee.Number
 	t := committee.Threshold
 
@@ -2510,20 +3233,25 @@ func (s *sscService) buildSignaturesForSimulation(state *api.CXTSimulationState,
 	)
 	// 预分配容量，但长度动态控制
 	results = make([]api.SSCMessage, 0, t)
+	addrMap := make(map[common.Address]bool)
+	epochs := simulation.Epochs
 
 	for i := 0; i < n; i++ {
 		member := committee.Members[i]
 		go func(m *api.Member) {
 			defer wg.Done()
 			signature := make([]byte, 0)
-			err := s.Comm.Call(ctx, &signature, member, api.Method_SignCXTSimulation, simulation)
+			err := s.Comm.Call(ctx, &signature, m, api.Method_SignCXTSimulation, simulation)
 			if err != nil {
+				if !errors.Is(err, context.Canceled) {
+					utils.SSCLogger().Error().Str("txHash", txHash.Hex()).Err(err).Msgf("failed to call %s", m.Address.Hex())
+				}
 				return
 			}
 			ret := api.BaseSSCMessage{
 				Signature:  signature,
-				SenderAddr: member.Address,
-				Epoch:      simulation.Epoch,
+				SenderAddr: m.Address,
+				Epochs:     epochs,
 			}
 
 			lock.Lock()
@@ -2537,12 +3265,16 @@ func (s *sscService) buildSignaturesForSimulation(state *api.CXTSimulationState,
 			if bytes.Compare(m.Address.Bytes(), s.SelfAddr.Bytes()) == 0 {
 				hasSelf = true
 				if len(results) < t {
+					addrMap[m.Address] = true
 					results = append([]api.SSCMessage{ret}, results...)
 				} else {
+					delete(addrMap, results[0].GetSenderAddr())
+					addrMap[m.Address] = true
 					results[0] = ret // 替换最后一个
 				}
 			} else {
 				if len(results) < t {
+					addrMap[m.Address] = true
 					results = append(results, ret)
 				}
 			}
@@ -2557,7 +3289,7 @@ func (s *sscService) buildSignaturesForSimulation(state *api.CXTSimulationState,
 
 	aggregatedSig, bitMap, err := s.BLSSignerMgr.GetSSCSigner().Aggregate(results)
 	if err != nil {
-		utils.SSCLogger().Error().Err(err)
+		utils.SSCLogger().Error().Str("txHash", txHash.Hex()).Err(err).Msg("aggregate signatures failed")
 		return
 	}
 	simulation.Signatures = aggregatedSig
@@ -2588,24 +3320,26 @@ func (s *sscService) HandleCXTCommitSSCVote(vote *api.CXTCommitSSCVote) {
 	}
 	var sscVotes map[uint32]*api.CXTCommitSSCVote
 
-	s.commitLock.RLock()
-	commitState := s.commitStates[txHash]
-	if vote.Type == api.Commit {
-		if commitState.CommitSSCVotes[vote.SimulationNum] == nil {
-			commitState.CommitSSCVotes[vote.SimulationNum] = make(map[uint32]*api.CXTCommitSSCVote)
+	func() {
+		s.commitLock.Lock()
+		defer s.commitLock.Unlock()
+		commitState := s.commitStates[txHash]
+		if vote.Type == api.Commit {
+			if commitState.CommitSSCVotes[vote.SimulationNum] == nil {
+				commitState.CommitSSCVotes[vote.SimulationNum] = make(map[uint32]*api.CXTCommitSSCVote)
+			}
+			commitState.CommitSSCVotes[vote.SimulationNum][vote.ShardId] = vote
+			sscVotes = commitState.CommitSSCVotes[vote.SimulationNum]
 		}
-		commitState.CommitSSCVotes[vote.SimulationNum][vote.ShardId] = vote
-		sscVotes = commitState.CommitSSCVotes[vote.SimulationNum]
-	}
-	if vote.Type == api.Rollback {
-		commitState.RollbackSSCVote = vote
-		sscVotes = map[uint32]*api.CXTCommitSSCVote{
-			vote.ShardId: vote,
+		if vote.Type == api.Rollback {
+			commitState.RollbackSSCVote = vote
+			sscVotes = map[uint32]*api.CXTCommitSSCVote{
+				vote.ShardId: vote,
+			}
 		}
-	}
-	s.commitLock.RUnlock()
+	}()
 
-	utils.SSCLogger().Debug().Str("txHash", txHash.Hex()).Msgf("received %s ssc vote [%d/%d], %d in %v, simulationNum=%d",
+	utils.SSCLogger().Info().Str("txHash", txHash.Hex()).Msgf("received %s ssc vote [%d/%d], %d in %v, simulationNum=%d",
 		vote.Type, len(sscVotes), len(relatedShards), vote.ShardId, relatedShards, vote.SimulationNum)
 
 	if vote.Type == api.Rollback || len(sscVotes) == len(relatedShards) {
@@ -2635,10 +3369,10 @@ func (s *sscService) HandleCXTCommitSSCVote(vote *api.CXTCommitSSCVote) {
 		defer cancel()
 		members := make([]*api.Member, 0, len(relatedShards))
 		for _, shardId := range relatedShards {
-			members = append(members, s.GetLeader(vote.Epoch, shardId))
+			members = append(members, s.GetLeader(vote.Epochs[shardId], shardId))
 		}
 
-		utils.SSCLogger().Debug().Str("txHash", txHash.Hex()).Msgf("receive all related ssc votes, commit type: %v, reason: %v, simulationNum: %d, relatedShards: %v",
+		utils.SSCLogger().Info().Str("txHash", txHash.Hex()).Msgf("receive all related ssc votes, commit type: %v, reason: %v, simulationNum: %d, relatedShards: %v",
 			commitType, commitReason, vote.SimulationNum, relatedShards)
 
 		switch commitType {
@@ -2711,18 +3445,23 @@ func (s *sscService) startReSimulation(txHash common.Hash, simulationNum int) {
 	}
 	req := &api.CXTSimulationRequest{
 		TxHash:        txHash,
-		Epoch:         lastReq.Epoch,
+		Epochs:        lastReq.Epochs,
 		SimulationNum: simulationNum,
 		Author:        lastReq.Author,
 		BlockHash:     header.Hash(),
+		BlockNum:      header.Number().Uint64(),
 		Tx:            lastReq.Tx,
 		From:          lastReq.From,
 		GasPool:       0,
 	}
 
-	utils.SSCLogger().Debug().Str("txHash", txHash.Hex()).Msgf("start recall simulation, simulationNum: %d", simulationNum)
+	startTime := time.Now()
+	utils.SSCLogger().Info().Str("txHash", txHash.Hex()).Msgf("recall simulation, simulationNum: %d, start", simulationNum)
+	defer func() {
+		utils.SSCLogger().Info().Str("txHash", txHash.Hex()).Msgf("recall simulation finished, simulationNum: %d, duration: %v, end", simulationNum, time.Since(startTime))
+	}()
 
-	committee := s.GetCommittee(req.Epoch, s.SelfShard)
+	committee := s.GetCommittee(req.Epochs[s.SelfShard], s.SelfShard)
 	n := committee.Number
 	t := committee.Threshold
 
@@ -2735,6 +3474,7 @@ func (s *sscService) startReSimulation(txHash common.Hash, simulationNum int) {
 	)
 	// 预分配容量，但长度动态控制
 	results = make([]api.SSCMessage, 0, t)
+	addrMap := make(map[common.Address]bool)
 
 	for i := 0; i < n; i++ {
 		member := committee.Members[i]
@@ -2743,7 +3483,9 @@ func (s *sscService) startReSimulation(txHash common.Hash, simulationNum int) {
 			ret := new(api.CXTSimulationResult)
 			callErr := s.Comm.Call(ctx, ret, member, api.Method_HandleSimulateRequest, req)
 			if callErr != nil {
-				utils.SSCLogger().Error().Str("txHash", txHash.String()).Err(err).Msg("failed to call simulate request")
+				if !errors.Is(callErr, context.Canceled) {
+					utils.SSCLogger().Error().Str("txHash", txHash.Hex()).Err(callErr).Msg("failed to call cxt ssc call")
+				}
 				return
 			}
 
@@ -2758,12 +3500,16 @@ func (s *sscService) startReSimulation(txHash common.Hash, simulationNum int) {
 			if bytes.Compare(m.Address.Bytes(), s.SelfAddr.Bytes()) == 0 {
 				hasSelf = true
 				if len(results) < t {
+					addrMap[m.Address] = true
 					results = append([]api.SSCMessage{ret}, results...)
 				} else {
+					delete(addrMap, results[0].GetSenderAddr())
+					addrMap[m.Address] = true
 					results[0] = ret // 替换最后一个
 				}
 			} else {
 				if len(results) < t {
+					addrMap[m.Address] = true
 					results = append(results, ret)
 				}
 			}
@@ -2823,7 +3569,7 @@ func (s *sscService) startReSimulation(txHash common.Hash, simulationNum int) {
 		Sender:        req.From,
 		RelatedShards: sscResult.RelatedShards,
 		BaseBLSSignedMessage: api.BaseBLSSignedMessage{
-			Epoch: req.Epoch,
+			Epochs: req.Epochs,
 		},
 	}
 
@@ -2838,10 +3584,10 @@ func (s *sscService) startReSimulation(txHash common.Hash, simulationNum int) {
 			utils.SSCLogger().Debug().Str("txHash", txHash.Hex()).Msgf("resimulation failed err=%s, it has subscribe to resimulate again, nextSimulationNum=%d", sscResult.Err, req.SimulationNum+1)
 			simulationCommit.Commit = false
 			simulationCommit.Status = api.LockConflict
-			if s.IsLeader() {
+			if s.IsLeader(req.Epochs[s.SelfShard]) {
 				s.retryScheduler.CallForRetry(&api.RetryTx{
 					TxHash:        txHash,
-					Epoch:         req.Epoch,
+					Epochs:        req.Epochs,
 					RelatedShards: sscResult.RelatedShards,
 					SimulationNum: req.SimulationNum + 1,
 					Condition:     api.Simulate,
@@ -2860,7 +3606,7 @@ func (s *sscService) startReSimulation(txHash common.Hash, simulationNum int) {
 	s.thresholdSignSimulationCommit(simulationCommit)
 	members := make([]*api.Member, 0, len(committee.Members))
 	for _, shardId := range simulationCommit.RelatedShards {
-		members = append(members, s.GetLeader(simulationCommit.Epoch, shardId))
+		members = append(members, s.GetLeader(simulationCommit.Epochs[shardId], shardId))
 	}
 	_ = s.Comm.Multicast(ctx, members, api.Method_CommitSimulation, simulationCommit)
 }
@@ -2877,10 +3623,23 @@ func (s *sscService) HandleCXTCommitProof(proof *api.CXTCommitProof) {
 		if proof.TxHash[0] == 0 {
 			s.txSubmitter.SubmitCommitOrRollbackTx(proof)
 		}
+		s.stateLock.Lock()
+		state, err := s.getState(proof.TxHash)
+		if err != nil {
+			utils.SSCLogger().Error().Err(err).Msg("failed to get state")
+			s.stateLock.Unlock()
+			return
+		}
+		if proof.Type == api.Commit {
+			state.Status = api.CXT_COMMITTING
+		} else {
+			state.Status = api.CXT_ROLLBACKING
+		}
+		s.stateLock.Unlock()
 	}
 
 	if proof.Type == api.Recall {
-		committee := s.GetCommittee(proof.Epoch, s.SelfShard)
+		committee := s.GetCommittee(proof.Epochs[s.SelfShard], s.SelfShard)
 		ctx, cancel := context.WithTimeout(s.ctx, s.Config.CallTimeout)
 		defer cancel()
 		_ = s.Comm.Multicast(ctx, committee.Members, api.Method_HandleCXTRecallProof, proof)
@@ -2888,7 +3647,7 @@ func (s *sscService) HandleCXTCommitProof(proof *api.CXTCommitProof) {
 }
 
 func (s *sscService) getState(txHash common.Hash) (*api.CXTSimulationState, error) {
-	if state, exists := s.simulationState[txHash]; exists {
+	if state := s.simulationState[txHash]; state != nil {
 		return state, nil
 	}
 	if _, exists := s.finishedTxs[txHash]; exists {
@@ -2897,12 +3656,14 @@ func (s *sscService) getState(txHash common.Hash) (*api.CXTSimulationState, erro
 	return nil, api.ErrTxNotExist
 }
 
-func (s *sscService) closeTransaction(txHash common.Hash, commitOrRollback bool) {
-	utils.SSCLogger().Info().Str("txHash", txHash.Hex()).Msgf("close transaction, commit: %v", commitOrRollback)
+func (s *sscService) closeTransaction(txHash common.Hash, commitOrRollback bool, reason string) {
 	s.stateLock.Lock()
 	state, _ := s.getState(txHash)
 	if state != nil {
 		state.CtxCancel()
+		if s.IsLeader(state.Epochs[s.SelfShard]) {
+			utils.SSCLogger().Info().Str("txHash", txHash.Hex()).Uint32("shardId", s.SelfShard).Interface("relatedShards", state.RelatedShards).Msgf("leader close transaction, commit: %v, status: %s, reason: %s", commitOrRollback, state.Status, reason)
+		}
 	}
 	delete(s.simulationState, txHash)
 	s.finishedTxs[txHash] = commitOrRollback
@@ -2913,6 +3674,7 @@ func (s *sscService) closeTransaction(txHash common.Hash, commitOrRollback bool)
 	s.verifyCtxLock.Lock()
 	delete(s.executionVerifyContexts, txHash)
 	s.verifyCtxLock.Unlock()
+
 	s.retryScheduler.StaleTx(txHash)
 }
 
@@ -2944,12 +3706,12 @@ func (s *sscService) StateLockManager() api.StateLockManager {
 }
 
 func (s *sscService) AddRetryTx(tx *api.RetryTx) {
-	if !s.IsLeader() {
+	if !s.IsLeader(tx.Epochs[s.SelfShard]) {
 		return
 	}
 	retryTx := &api.RetryTx{
 		TxHash:        tx.TxHash,
-		Epoch:         tx.Epoch,
+		Epochs:        tx.Epochs,
 		Sender:        tx.Sender,
 		Nonce:         tx.Nonce,
 		GasPrice:      tx.GasPrice,
@@ -2970,7 +3732,7 @@ func (s *sscService) AddRetryTx(tx *api.RetryTx) {
 		utils.SSCLogger().Error().Str("txHash", tx.TxHash.Hex()).Err(err).Msg("failed to get state")
 		return
 	}
-	for _, callState := range state.SimulationCallStates[tx.SimulationNum] {
+	for _, callState := range state.SimulationCallStates[tx.SimulationNum-1] {
 		for addr, account := range callState.RWSet.ReadState.State {
 			for key, _ := range account {
 				readSet = append(readSet, api.FormKey(addr, key))

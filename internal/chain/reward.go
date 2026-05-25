@@ -245,6 +245,13 @@ func AccumulateRewardsAndCountSigs(
 	epoch := header.Epoch()
 	isBeaconChain := bc.CurrentHeader().ShardID() == shard.BeaconChainShardID
 
+	utils.Logger().Info().
+		Uint64("block-number", blockNum).
+		Msg("begin to AccumulateRewardsAndCountSigs")
+	defer utils.Logger().Info().
+		Uint64("block-number", blockNum).
+		Msg("finished AccumulateRewardsAndCountSigs")
+
 	if blockNum == 0 {
 		err := waitForCommitSigs(sigsReady) // wait for commit signatures, or timeout and return err.
 		return numeric.ZeroDec(), network.EmptyPayout, err
@@ -272,7 +279,6 @@ func AccumulateRewardsAndCountSigs(
 	}
 
 	// Aggregated Rewards Era: Rewards are aggregated every 64 blocks.
-
 	// Wait for commit signatures, or timeout and return err.
 	if err := waitForCommitSigs(sigsReady); err != nil {
 		return numeric.ZeroDec(), network.EmptyPayout, err
@@ -290,10 +296,12 @@ func waitForCommitSigs(sigsReady chan bool) error {
 	select {
 	case success := <-sigsReady:
 		if !success {
+			utils.Logger().Warn().Msg("Failed to get commit sigs")
 			return errors.New("Failed to get commit sigs")
 		}
-		// utils.Logger().Info().Msg("Commit sigs are ready")
+		utils.Logger().Info().Msg("Commit sigs are ready")
 	case <-time.After(AsyncBlockProposalTimeout):
+		utils.Logger().Warn().Msg("CallTimeout waiting for commit sigs for reward calculation")
 		return errors.New("CallTimeout waiting for commit sigs for reward calculation")
 	}
 	return nil

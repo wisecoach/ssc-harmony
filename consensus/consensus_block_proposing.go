@@ -1,10 +1,11 @@
 package consensus
 
 import (
-	"github.com/harmony-one/harmony/core/genesis"
 	"sort"
 	"strings"
 	"time"
+
+	"github.com/harmony-one/harmony/core/genesis"
 
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/harmony-one/harmony/core"
@@ -92,17 +93,17 @@ func (consensus *Consensus) ProposeNewBlock(commitSigs chan []byte) (*types.Bloc
 			utils.Logger().Err(err).Msg("Failed to fetch pending transactions")
 			return nil, err
 		}
-		pendingSSCTxs := make(types.Transactions, 0)
-		utils.Logger().Info().Msgf("[ProposeNewBlock] Found %d pending ssc transactions in pool", len(pendingPoolTxs[genesis.SSCSubmitterAddr]))
-		if len(pendingPoolTxs[genesis.SSCSubmitterAddr]) > 0 {
-			for _, tx := range pendingPoolTxs[genesis.SSCSubmitterAddr] {
-				utils.SSCLogger().Info().Str("txHash", tx.Hash().Hex()).Msgf("Found pending SSC tx %s to propose, nonce=%d", tx.Hash().Hex(), tx.Nonce())
-				if sscTx, ok := tx.(*types.Transaction); ok {
-					pendingSSCTxs = append(pendingSSCTxs, sscTx)
+		pendingSSCTxs := make(map[common.Address]types.Transactions)
+		consensus.GetLogger().Info().Msgf("[ProposeNewBlock] Found %d pending ssc transactions in pool", len(pendingPoolTxs[genesis.SSCSubmitterAddr]))
+		for _, onChainAddr := range consensus.GetOnChainSSCAddrs() {
+			if pendingPoolTxs[onChainAddr] != nil && pendingPoolTxs[onChainAddr].Len() > 0 {
+				for _, tx := range pendingPoolTxs[onChainAddr] {
+					if sscTx, ok := tx.(*types.Transaction); ok {
+						pendingSSCTxs[onChainAddr] = append(pendingSSCTxs[onChainAddr], sscTx)
+					}
 				}
+				delete(pendingPoolTxs, onChainAddr)
 			}
-			// delete it
-			delete(pendingPoolTxs, genesis.SSCSubmitterAddr)
 		}
 		pendingPlainTxs := map[common.Address]types.Transactions{}
 		pendingStakingTxs := staking.StakingTransactions{}
@@ -117,7 +118,7 @@ func (consensus *Consensus) ProposeNewBlock(commitSigs chan []byte) (*types.Bloc
 						pendingStakingTxs = append(pendingStakingTxs, stakingTx)
 					}
 				} else {
-					utils.Logger().Err(types.ErrUnknownPoolTxType).
+					consensus.GetLogger().Err(types.ErrUnknownPoolTxType).
 						Msg("Failed to parse pending transactions")
 					return nil, types.ErrUnknownPoolTxType
 				}
@@ -127,20 +128,12 @@ func (consensus *Consensus) ProposeNewBlock(commitSigs chan []byte) (*types.Bloc
 			}
 		}
 
-		fromNonce := uint64(0)
-		toNonce := uint64(0)
-		if len(pendingSSCTxs) > 0 {
-			fromNonce = pendingSSCTxs[0].Nonce()
-			toNonce = pendingSSCTxs[len(pendingSSCTxs)-1].Nonce()
-		}
 		// Try commit normal and staking transactions based on the current state
 		// The successfully committed transactions will be put in the proposed block
-		utils.SSCLogger().Debug().Msgf("ProposeNewBlock: begin to commit transactions, ssc_txs=%d, plain_txs=%d, staking_txs=%d, ssc_nonce from %d to %d",
-			len(pendingSSCTxs), len(pendingPlainTxs), len(pendingStakingTxs), fromNonce, toNonce)
 		if err := worker.CommitTransactions(
 			pendingSSCTxs, pendingPlainTxs, pendingStakingTxs, beneficiary,
 		); err != nil {
-			utils.Logger().Error().Err(err).Msg("cannot commit transactions")
+			consensus.GetLogger().Error().Err(err).Msg("cannot commit transactions")
 			return nil, err
 		}
 		utils.AnalysisEnd("proposeNewBlockChooseFromTxnPool")
@@ -254,15 +247,15 @@ func (consensus *Consensus) ProposeNewBlock(commitSigs chan []byte) (*types.Bloc
 		coinbase, make(types.CrossLinks, 0), shardState,
 	)
 	if err != nil {
-		utils.Logger().Error().Err(err).Msg("[ProposeNewBlock] Failed finalizing the new block")
+		consensus.GetLogger().Error().Err(err).Msg("[ProposeNewBlock] Failed finalizing the new block")
 		return nil, err
 	}
 
-	utils.Logger().Info().Msg("[ProposeNewBlock] verifying the new block header")
+	consensus.GetLogger().Info().Uint64("blockNum", finalizedBlock.NumberU64()).Msg("[ProposeNewBlock] verifying the new block header")
 	err = core.NewBlockValidator(consensus.Blockchain()).ValidateHeader(finalizedBlock, true)
 
 	if err != nil {
-		utils.Logger().Error().Err(err).Msg("[ProposeNewBlock] Failed verifying the new block header")
+		consensus.GetLogger().Error().Err(err).Msg("[ProposeNewBlock] Failed verifying the new block header")
 		return nil, err
 	}
 
@@ -308,7 +301,7 @@ Loop:
 		}
 		// check double spent
 		if consensus.Blockchain().IsSpent(cxp) {
-			utils.Logger().Debug().Interface("cxp", cxp).Msg("[proposeReceiptsProof] CXReceipt is spent")
+			consensus.GetLogger().Debug().Interface("cxp", cxp).Msg("[proposeReceiptsProof] CXReceipt is spent")
 			continue
 		}
 		hash := cxp.MerkleProof.BlockHash
@@ -452,7 +445,7 @@ func (consensus *Consensus) WaitForConsensusReadyV2(stopChan chan struct{}, stop
 			case proposal := <-consensus.GetReadySignal():
 				for retryCount := 0; retryCount < 3 && consensus.IsLeader(); retryCount++ {
 					time.Sleep(SleepPeriod)
-					utils.Logger().Info().
+					consensus.GetLogger().Info().
 						Uint64("blockNum", consensus.Blockchain().CurrentBlock().NumberU64()+1).
 						Bool("asyncProposal", proposal.Type == AsyncProposal).
 						Str("called", proposal.Caller).
@@ -469,19 +462,20 @@ func (consensus *Consensus) WaitForConsensusReadyV2(stopChan chan struct{}, stop
 						select {
 						case <-time.After(waitTime):
 							if waitTime == 0 {
-								utils.Logger().Info().Msg("[ProposeNewBlock] Sync block proposal, reading commit sigs directly from DB")
+								consensus.GetLogger().Info().Msg("[ProposeNewBlock] Sync block proposal, reading commit sigs directly from DB")
 							} else {
-								utils.Logger().Info().Msg("[ProposeNewBlock] CallTimeout waiting for commit sigs, reading directly from DB")
+								consensus.GetLogger().Info().Msg("[ProposeNewBlock] CallTimeout waiting for commit sigs, reading directly from DB")
 							}
 							sigs, err := consensus.BlockCommitSigs(consensus.Blockchain().CurrentBlock().NumberU64())
 
 							if err != nil {
-								utils.Logger().Error().Err(err).Msg("[ProposeNewBlock] Cannot get commit signatures from last block")
+								consensus.GetLogger().Error().Err(err).Msg("[ProposeNewBlock] Cannot get commit signatures from last block")
+								newCommitSigsChan <- make([]byte, 0)
 							} else {
 								newCommitSigsChan <- sigs
 							}
 						case commitSigs := <-consensus.GetCommitSigChannel():
-							utils.Logger().Info().Msg("[ProposeNewBlock] received commit sigs asynchronously")
+							consensus.GetLogger().Info().Msg("[ProposeNewBlock] received commit sigs asynchronously")
 							if len(commitSigs) > bls.BLSSignatureSizeInBytes {
 								newCommitSigsChan <- commitSigs
 							}
@@ -491,15 +485,34 @@ func (consensus *Consensus) WaitForConsensusReadyV2(stopChan chan struct{}, stop
 					go func() {
 						select {
 						case <-proposeCh:
-							utils.Logger().Info().Msgf("propose block succuessfully, blockNum=%d", consensus.Blockchain().CurrentBlock().NumberU64()+1)
-						case <-time.After(time.Second * 5):
-							utils.Logger().Error().Msgf("propose block timeout, blockNum=%d", consensus.Blockchain().CurrentBlock().NumberU64()+1)
+							consensus.GetLogger().Info().Msgf("propose block succuessfully, blockNum=%d", consensus.Blockchain().CurrentBlock().NumberU64()+1)
+						case <-time.After(time.Second * 20):
+							consensus.GetLogger().Error().Msgf("propose block timeout, blockNum=%d", consensus.Blockchain().CurrentBlock().NumberU64()+1)
 						}
 					}()
+
+					proposeStartTime := time.Now()
+					consensus.GetLogger().Info().Uint64("blockNum", consensus.Blockchain().CurrentBlock().NumberU64()+1).Msg("[ProposeNewBlock] begin to propose new block")
+
 					newBlock, err := consensus.ProposeNewBlock(newCommitSigsChan)
+					if err != nil {
+						consensus.GetLogger().Error().
+							Err(err).
+							Uint64("blockNum", consensus.Blockchain().CurrentBlock().NumberU64()+1).
+							Msg("[ProposeNewBlock] failed to propose new block")
+						continue
+					} else {
+						consensus.GetLogger().Info().
+							Uint64("blockNum", newBlock.NumberU64()).
+							Uint64("epoch", newBlock.Epoch().Uint64()).
+							Int("numTxs", newBlock.Transactions().Len()).
+							Dur("proposeTime", time.Since(proposeStartTime)).
+							Msg("[ProposeNewBlock] proposed new block")
+					}
+
 					proposeCh <- struct{}{}
 					if err == nil {
-						utils.Logger().Info().
+						consensus.GetLogger().Info().
 							Uint64("blockNum", newBlock.NumberU64()).
 							Uint64("epoch", newBlock.Epoch().Uint64()).
 							Uint64("viewID", newBlock.Header().ViewID().Uint64()).
@@ -512,7 +525,7 @@ func (consensus *Consensus) WaitForConsensusReadyV2(stopChan chan struct{}, stop
 						consensus.BlockChannel(newBlock)
 						break
 					} else {
-						utils.Logger().Err(err).Int("retryCount", retryCount).
+						consensus.GetLogger().Err(err).Int("retryCount", retryCount).
 							Msg("!!!!!!!!!Failed Proposing New Block!!!!!!!!!")
 						continue
 					}

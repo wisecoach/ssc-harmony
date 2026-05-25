@@ -804,11 +804,6 @@ func (pool *TxPool) validateTx(tx types.PoolTransaction, local bool) error {
 	currNonce := pool.currentState.GetNonce(from)
 	// Ensure the transaction adheres to nonce ordering
 	if currNonce > tx.Nonce() {
-		utils.SSCLogger().Error().Str("txHash", tx.Hash().Hex()).
-			Uint64("Nonce", tx.Nonce()).
-			Uint64("CurrentNonce", currNonce).
-			Str("from", from.Hex()).
-			Str("originTxHash", tx.Hash().Hex()).Msgf("nonce too low, nonce=%d", tx.Nonce())
 		return errors.WithMessagef(ErrNonceTooLow, "transaction nonce is %d", tx.Nonce())
 	}
 	// Transactor should have enough funds to cover the costs
@@ -1005,9 +1000,11 @@ func (pool *TxPool) add(tx types.PoolTransaction, local bool) (replaced bool, er
 
 	if tx.CrossShard() {
 		from, _ := tx.SenderAddress()
+		currentNonce := pool.pendingState.GetNonce(from)
 		utils.SSCLogger().Info().Str("txHash", tx.Hash().Hex()).
 			Bool("isPreCompiled", vm.IsSSCAddrApplyOnChain(*tx.To())).
 			Str("from", from.Hex()).
+			Uint64("currentNonce", currentNonce).
 			Msgf("add a cross shard Tx, preCompiled: %v, nonce=%d, simulation: %v", vm.IsSSCAddrApplyOnChain(*tx.To()), tx.Nonce(), tx.To().Hex() == vm.SimulationCommitAddr.Hex())
 	}
 
@@ -1409,11 +1406,14 @@ func (pool *TxPool) promoteExecutables(accounts []common.Address) {
 		}
 		// Drop all transactions that are deemed too old (low nonce)
 		nonce := pool.currentState.GetNonce(addr)
+		utils.Logger().Info().Str("addr", addr.String()).
+			Uint64("nonce", nonce).
+			Msg("Promoting transaction for account")
 		for _, tx := range list.Forward(nonce) {
 			hash := tx.Hash()
 			pool.all.Remove(hash)
 			pool.priced.Removed()
-			logger.Debug().Str("hash", hash.Hex()).Msg("Removed old queued transaction")
+			logger.Info().Str("hash", hash.Hex()).Uint64("txNonce", tx.Nonce()).Uint64("currentNonce", nonce).Msg("Removed old queued transaction")
 			// Do not report to error sink as old txs are on chain or meaningful error caught elsewhere.
 		}
 		// Drop all transactions that are too costly (low balance or out of gas)
@@ -1580,17 +1580,20 @@ func (pool *TxPool) promoteExecutables(accounts []common.Address) {
 func (pool *TxPool) demoteUnexecutables(bn uint64) {
 	// Iterate over all accounts and demote any non-executable transactions
 	logger := utils.Logger().With().Stack().Logger()
+	utils.Logger().Info().Uint64("blockNum", bn).Int("addrs", len(pool.pending)).Msgf("demoteUnexecutables")
 
 	for addr, list := range pool.pending {
 		nonce := pool.currentState.GetNonce(addr)
 
+		utils.Logger().Info().Str("addr", addr.String()).
+			Uint64("nonce", nonce).
+			Msg("Demoting transaction for account")
 		// Drop all transactions that are deemed too old (low nonce)
 		for _, tx := range list.Forward(nonce) {
 			hash := tx.Hash()
 			pool.all.Remove(hash)
 			pool.priced.Removed()
-			logger.Debug().Str("hash", hash.Hex()).Msg("Removed old pending transaction")
-			// Do not report to error sink as old txs are on chain or meaningful error caught elsewhere.
+			utils.Logger().Info().Str("hash", hash.Hex()).Uint64("txNonce", tx.Nonce()).Uint64("currentNonce", nonce).Msg("Removed old queued transaction")
 		}
 		// Drop all transactions that are too costly (low balance or out of gas), and queue any invalids back for later
 		drops, errs, invalids := list.FilterValid(pool, addr, bn)

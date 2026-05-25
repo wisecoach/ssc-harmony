@@ -1,8 +1,9 @@
 package core
 
 import (
-	"github.com/harmony-one/harmony/ssc/api"
 	"math/big"
+
+	"github.com/harmony-one/harmony/ssc/api"
 
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/ethdb"
