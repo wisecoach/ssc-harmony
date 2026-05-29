@@ -71,8 +71,8 @@ type txTask struct {
 	done         chan error
 }
 
-// priorityQueue 优先级队列，包含 5 个独立 channel（索引 0=最高优先级）
-type priorityQueue struct {
+// TxPriorityQueue 优先级队列，包含 5 个独立 channel（索引 0=最高优先级）
+type TxPriorityQueue struct {
 	queues [5]chan *txTask
 }
 
@@ -83,7 +83,7 @@ func NewTxSubmitter(selfShard uint32, txSigner api.TxSigner, nodeAPI hmy.NodeAPI
 		txSigner:  txSigner,
 		nodeAPI:   nodeAPI,
 		config:    config,
-		queue: priorityQueue{
+		queue: TxPriorityQueue{
 			queues: [5]chan *txTask{
 				make(chan *txTask, 256), // 索引 0: NewEpochTx (优先级 5)
 				make(chan *txTask, 256), // 索引 1: UploadOpinionsTx (优先级 4)
@@ -106,7 +106,7 @@ type txSubmitter struct {
 	nonce     uint64
 	nodeAPI   hmy.NodeAPI
 	config    *api.Config
-	queue     priorityQueue // 优先级队列（5 个独立 channel）
+	queue     TxPriorityQueue // 优先级队列（5 个独立 channel）
 	ctx       context.Context
 
 	// 监控计数器

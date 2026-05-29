@@ -114,6 +114,8 @@ func (rs *retryScheduler) AddToRetry(tx *api.RetryTx) {
 	}
 
 	rs.retryPool[tx.TxHash] = tx
+	rs.sscService.stats.RetryAddCount.Add(1)
+	rs.sscService.stats.sampleRetryPool(len(rs.retryPool))
 	utils.SSCLogger().Info().
 		Str("txHash", tx.TxHash.Hex()).
 		Interface("relatedShards", tx.RelatedShards).
@@ -138,6 +140,8 @@ func (rs *retryScheduler) OnBlockCommitted(block *types.Block) {
 	}
 	rs.staleTxs = make(map[common.Hash]struct{})
 
+	rs.sscService.stats.sampleRetryPool(len(rs.retryPool))
+
 	shard2SignalReadyNum := make(map[uint32]int)
 	shard2Epoch2RetrySignals := make(map[uint32]map[api.Epoch]*api.ReSimulationSignals)
 	for i := uint32(0); i < rs.sscService.ShardNum(); i++ {
@@ -155,9 +159,11 @@ func (rs *retryScheduler) OnBlockCommitted(block *types.Block) {
 		}
 		if rs.tempLockView.CanLock(txHash, tx.ReadSet, tx.WriteSet) {
 			signal.Ready = true
+			rs.sscService.stats.RetryReadySignal.Add(1)
 			shard2SignalReadyNum[tx.OriginShardID]++
 		} else {
 			signal.Ready = false
+			rs.sscService.stats.RetryNotReadySignal.Add(1)
 		}
 		signals := shard2Epoch2RetrySignals[tx.OriginShardID][signal.Epoch]
 		if signals == nil {
@@ -282,6 +288,7 @@ func (rs *retryScheduler) tryToReSimulation(retryTx *api.RetryTx) {
 		}
 	}
 	if success {
+		rs.sscService.stats.RetrySuccessCount.Add(1)
 		utils.SSCLogger().Info().Str("txHash", txHash.Hex()).Msg("retry commit success")
 		go rs.sscService.startReSimulation(retryTx.TxHash, retryTx.SimulationNum)
 		rs.mu.Lock()
@@ -289,6 +296,8 @@ func (rs *retryScheduler) tryToReSimulation(retryTx *api.RetryTx) {
 		delete(rs.retryPool, txHash)
 		rs.mu.Unlock()
 	} else {
+		rs.sscService.stats.RetryFailCount.Add(1)
+		utils.SSCLogger().Info().Str("txHash", txHash.Hex()).Msg("retry commit failed")
 		for shardId, resp := range resps {
 			// 如果失败，则将临时上锁的交易解锁
 			if resp.Locked {

@@ -1,6 +1,6 @@
 #!/bin/bash
 
-TIME_FOR_FINISH=150
+TIME_FOR_FINISH=60
 
 
 function set_expr_env() {

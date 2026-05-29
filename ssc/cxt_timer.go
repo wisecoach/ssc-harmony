@@ -50,6 +50,7 @@ func (c *CXTTimerManager) StartPoolTimer(txHash common.Hash, epochs []api.Epoch,
 	}
 
 	if _, exists := c.txs[txHash]; !exists {
+		c.service.stats.PoolTimerStarted.Add(1)
 		poolTimeout := blockNum + c.config.PoolTimeout
 		utils.SSCLogger().Info().Str("txHash", txHash.String()).Msgf("start pool timer for cxt, which will timeout at block %d committed, [%d->%d]", poolTimeout, blockNum, poolTimeout)
 		if c.bkNum2txForPoolTimeout[poolTimeout] == nil {
@@ -80,6 +81,7 @@ func (c *CXTTimerManager) removePoolTx(txHash common.Hash) bool {
 	if !exists {
 		return false
 	}
+	c.service.stats.PoolTimerRemoved.Add(1)
 	poolTimeout := tx.poolTimeout
 	if txs, exists := c.bkNum2txForPoolTimeout[poolTimeout]; exists {
 		delete(txs, txHash)
@@ -91,11 +93,12 @@ func (c *CXTTimerManager) removePoolTx(txHash common.Hash) bool {
 	return false
 }
 
-func (c *CXTTimerManager) StartTimer(txHash common.Hash, epochs []api.Epoch, blockNum uint64, originShardId uint32) {
+func (c *CXTTimerManager) StartSp1Timer(txHash common.Hash, epochs []api.Epoch, blockNum uint64, originShardId uint32) {
 	c.lock.Lock()
 	defer c.lock.Unlock()
 
 	if originShardId == c.selfShard {
+		c.service.stats.Sp1TimerStarted.Add(1)
 		sp1 := blockNum + c.config.Sp1
 		utils.SSCLogger().Info().Str("txHash", txHash.String()).Msgf("start sp1 timer for cxt, which will timeout at block %d committed", sp1)
 		if c.bkNum2txForSp1[sp1] == nil {
@@ -119,11 +122,12 @@ func (c *CXTTimerManager) BlockCommitted(blockNum uint64) {
 	c.blockNum = blockNum
 
 	if txs, exists := c.bkNum2txForSp1[blockNum]; exists {
-		for hash, _ := range txs {
+		for hash := range txs {
 			txInfo, exists := c.txs[hash]
 			if !exists {
 				continue
 			}
+			c.service.stats.Sp1TimerFired.Add(1)
 			utils.SSCLogger().Info().Str("txHash", hash.String()).Msgf("cxt sp1 timeout at block %d committed", blockNum)
 			go c.service.handleTxSp1Timeout(txInfo)
 			delete(c.txs, hash)
@@ -132,11 +136,12 @@ func (c *CXTTimerManager) BlockCommitted(blockNum uint64) {
 	}
 
 	if txs, exists := c.bkNum2txForPoolTimeout[blockNum]; exists {
-		for hash, _ := range txs {
+		for hash := range txs {
 			txInfo, exists := c.txs[hash]
 			if !exists {
 				continue
 			}
+			c.service.stats.PoolTimerFired.Add(1)
 			utils.SSCLogger().Debug().Str("txHash", hash.String()).Msgf("cxt pool timeout at block %d committed, close the transaction", blockNum)
 			go c.service.handleTxPoolTimeout(txInfo)
 			delete(c.txs, hash)
@@ -150,6 +155,7 @@ func (c *CXTTimerManager) RemoveTx(txHash common.Hash) {
 	c.lock.Lock()
 	defer c.lock.Unlock()
 
+	c.service.stats.Sp1TimerRemoved.Add(1)
 	txInfo, exists := c.txs[txHash]
 	if !exists {
 		return

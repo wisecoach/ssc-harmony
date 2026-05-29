@@ -11,12 +11,20 @@ import (
 	"github.com/harmony-one/harmony/ssc/api"
 )
 
+// ============================================================================
+// lockedTxKey — 用于对锁状态按 (nonce, sender) 排序
+// 死锁预防：全局写锁顺序按此结构排序，确保 Lock 不产生循环等待。
+// ============================================================================
+
+// lockedTxKey 定义全局锁的顺序键。
+// compareLockedTx 提供排序比较，先比较 nonce，再比较 sender 地址。
 type lockedTxKey struct {
 	nonce         uint64
 	simulationNum int
 	sender        common.Address
 }
 
+// compareLockedTx 比较两个 lockedTxKey，按 (nonce, sender) 字典序。
 func compareLockedTx(a any, b any) int {
 	tx1 := a.(lockedTxKey)
 	tx2 := b.(lockedTxKey)
@@ -26,6 +34,16 @@ func compareLockedTx(a any, b any) int {
 	return bytes.Compare(tx1.sender[:], tx2.sender[:])
 }
 
+// ============================================================================
+// lockedStates — 锁状态存储核心数据结构
+//
+// 存储所有写锁（lockedStates）和读锁（rlockedStates）的全局状态。
+// 提供按 txHash+callIndex 的反向索引，用于高效清理和 unlock。
+//
+// 注意：本结构体不是线程安全的，调用方需在更高层加锁。
+// ============================================================================
+
+// newLockedStates 创建一个空的锁状态集合。
 func newLockedStates() *lockedStates {
 	return &lockedStates{
 		lockedStates:          make(map[api.LockKey]*lockedState),
@@ -33,12 +51,21 @@ func newLockedStates() *lockedStates {
 	}
 }
 
-// not thread safe
+// lockedStates 存储跨分片交易模拟过程中的所有锁状态。
+// 包含四个映射：
+//
+//	lockedStates           — LockKey → *lockedState（写锁：谁锁了哪个状态）
+//	rlockedStates          — LockKey → *rlockedState（读锁：谁在读哪个状态）
+//	callIndex2lockedState  — txHash → callIndex → LockKey → value（写锁反向索引）
+//	callIndex2rlockedState — txHash → callIndex → LockKey → struct{}（读锁反向索引）
+//
+// 正向映射用于冲突检测：给定一个 LockKey，快速判断是否已被其他交易锁住。
+// 反向映射用于事务清理：给定一个 txHash，快速找出其所有锁并释放。
 type lockedStates struct {
 	rlockedStates          map[api.LockKey]*rlockedState
-	lockedStates           map[api.LockKey]*lockedState                           // address + key -> TxHash, used for mu
-	callIndex2lockedState  map[common.Hash]map[string]map[api.LockKey]common.Hash // TxHash -> callIndex -> lockKey -> value, used for unlock
-	callIndex2rlockedState map[common.Hash]map[string]map[api.LockKey]struct{}    // TxHash -> callIndex -> lockKey -> value, used for unlock
+	lockedStates           map[api.LockKey]*lockedState                           // address + key → TxHash, 写锁主映射
+	callIndex2lockedState  map[common.Hash]map[string]map[api.LockKey]common.Hash // TxHash → callIndex → lockKey → value, 写锁反向索引
+	callIndex2rlockedState map[common.Hash]map[string]map[api.LockKey]struct{}    // TxHash → callIndex → lockKey → value, 读锁反向索引
 }
 
 func (s *lockedStates) RLockedStates() map[api.LockKey]*rlockedState {
@@ -53,10 +80,13 @@ func (s *lockedStates) CallIndex2LockedStates() map[common.Hash]map[string]map[a
 	return s.callIndex2lockedState
 }
 
+// length 返回写锁的数量。
 func (s *lockedStates) length() int {
 	return len(s.lockedStates)
 }
 
+// clear 清除所有未被占用的写锁（lockedBy 为零值的锁）。
+// 在 handleLockCommit 的 Commit 阶段被调用，释放那些已提交的临时锁。
 func (s *lockedStates) clear() {
 	for key, state := range s.lockedStates {
 		if bytes.Compare(state.lockedBy.Bytes(), common.Hash{}.Bytes()) == 0 {
@@ -65,6 +95,7 @@ func (s *lockedStates) clear() {
 	}
 }
 
+// init 为给定的 LockKey 创建一个初始状态（lockedBy = zero hash，表示空闲）。
 func (s *lockedStates) init(key api.LockKey) *lockedState {
 	s.lockedStates[key] = &lockedState{
 		lockedBy: common.Hash{},
@@ -72,14 +103,17 @@ func (s *lockedStates) init(key api.LockKey) *lockedState {
 	return s.lockedStates[key]
 }
 
+// getCallIndex2LockedStates 返回给定 txHash 的写锁反向映射。
 func (s *lockedStates) getCallIndex2LockedStates(txHash common.Hash) map[string]map[api.LockKey]common.Hash {
 	return s.callIndex2lockedState[txHash]
 }
 
+// getCallIndex2RLockedStates 返回给定 txHash 的读锁反向映射。
 func (s *lockedStates) getCallIndex2RLockedStates(txHash common.Hash) map[string]map[api.LockKey]struct{} {
 	return s.callIndex2rlockedState[txHash]
 }
 
+// getLockedValue 返回给定 (txHash, callIndex, key) 的锁定值。
 func (s *lockedStates) getLockedValue(txHash common.Hash, callIndexStr string, key api.LockKey) common.Hash {
 	if s.callIndex2lockedState[txHash] == nil {
 		return common.Hash{}
@@ -90,6 +124,7 @@ func (s *lockedStates) getLockedValue(txHash common.Hash, callIndexStr string, k
 	return s.callIndex2lockedState[txHash][callIndexStr][key]
 }
 
+// setLockedValue 设置给定 (txHash, callIndex, key) 的锁定值（自动创建映射层级）。
 func (s *lockedStates) setLockedValue(txHash common.Hash, callIndexStr string, key api.LockKey, value common.Hash) {
 	if s.callIndex2lockedState[txHash] == nil {
 		s.callIndex2lockedState[txHash] = make(map[string]map[api.LockKey]common.Hash)
@@ -100,6 +135,7 @@ func (s *lockedStates) setLockedValue(txHash common.Hash, callIndexStr string, k
 	s.callIndex2lockedState[txHash][callIndexStr][key] = value
 }
 
+// addLockedState 添加一个写锁条目到反向索引，同时设置 lockedStates[key]。
 func (s *lockedStates) addLockedState(txHash common.Hash, callIndexStr string, key api.LockKey, value common.Hash, state *lockedState) {
 	if s.callIndex2lockedState[txHash] == nil {
 		s.callIndex2lockedState[txHash] = make(map[string]map[api.LockKey]common.Hash)
@@ -111,6 +147,12 @@ func (s *lockedStates) addLockedState(txHash common.Hash, callIndexStr string, k
 	s.lockedStates[key] = state
 }
 
+// addRLockedState 添加一个读锁条目到反向索引，同时设置 rlockedStates[key]。
+//
+// 注意：这里有一个潜在 bug——
+// 读锁的 value 被写入了 writeLock 的反向索引 callIndex2lockedState（而不是 rlocked 版本）。
+// 见 addRLockedState 第 121 行写入的是 callIndex2rlockedState，而 Getters 第 114 行也在操作 callIndex2lockedState。
+// 这可能不会导致运行时错误，但反映了历史迁移时的不一致。
 func (s *lockedStates) addRLockedState(txHash common.Hash, callIndexStr string, key api.LockKey, state *rlockedState) {
 	if s.callIndex2lockedState[txHash] == nil {
 		s.callIndex2lockedState[txHash] = make(map[string]map[api.LockKey]common.Hash)
@@ -122,6 +164,8 @@ func (s *lockedStates) addRLockedState(txHash common.Hash, callIndexStr string, 
 	s.rlockedStates[key] = state
 }
 
+// deleteLockedState 从反向索引和正向映射中删除一个写锁。
+// 返回被删除的值。
 func (s *lockedStates) deleteLockedState(txHash common.Hash, callIndexStr string, key api.LockKey) common.Hash {
 	if s.lockedStates[key] == nil {
 		return common.Hash{}
@@ -138,6 +182,7 @@ func (s *lockedStates) deleteLockedState(txHash common.Hash, callIndexStr string
 	return value
 }
 
+// deleteRLockedState 从反向索引和正向映射中删除一个读锁。
 func (s *lockedStates) deleteRLockedState(txHash common.Hash, callIndexStr string, key api.LockKey) {
 	if s.rlockedStates[key] == nil {
 		return
@@ -153,33 +198,44 @@ func (s *lockedStates) deleteRLockedState(txHash common.Hash, callIndexStr strin
 
 // ============================================================================
 // stateLockManager with Versioning Support
+//
+// stateLockManager 是全局锁状态的管理器，负责：
+// 1. 保存所有已上链交易的锁状态（lockedStates）
+// 2. 在每次 stateDB.Commit() 时创建锁状态快照（按 stateRoot 索引）
+// 3. 为每个模拟交易提供与其 stateRoot 匹配的 stateLocker 实例
+//
+// 快照机制解决了 stateDB（版本化）和 locker（实时全局）之间的一致性问题：
+// 模拟交易在 stateRoot A 上执行，就应该看到 stateRoot A 时的锁状态。
+// 不能因为后续区块提交导致锁状态变化，而影响正在模拟中的交易判断。
 // ============================================================================
 
-// stateLockManager extends stateLockManager with snapshot capabilities
+// stateLockManager 是锁状态管理器的顶层结构。
+// 它持有一个共享的 lockedStates 实例（全局锁状态），
+// 以及每个 stateRoot 的快照用于版本化访问。
 type stateLockManager struct {
 	sscService   *sscService
 	tempLockView *TempLockView
 
 	mu sync.RWMutex
 
-	// Original fields (unchanged)
+	// 基础锁状态字段
 	commitCnt    uint64
-	lockedStates *lockedStates
-	finishedTxs  map[common.Hash]bool
+	lockedStates *lockedStates        // 全局写锁/读锁状态
+	finishedTxs  map[common.Hash]bool // 已完成（已提交）的交易
 
-	// === NEW: Versioning support ===
-	currentRoot  common.Hash                           // Current block's stateRoot
-	snapshots    map[common.Hash]*lockedStatesSnapshot // stateRoot → snapshot
-	snapshotMeta map[common.Hash]*snapshotMetadata     // stateRoot → access metadata
-	maxSnapshots int                                   // LRU limit
-	snapshotTTL  time.Duration                         // Time-to-live for snapshots
+	// 版本化支持（NEW）
+	currentRoot  common.Hash                           // 当前区块的 stateRoot
+	snapshots    map[common.Hash]*lockedStatesSnapshot // stateRoot → 快照
+	snapshotMeta map[common.Hash]*snapshotMetadata     // stateRoot → 访问元数据（LRU用）
+	maxSnapshots int                                   // LRU 上限
+	snapshotTTL  time.Duration                         // 快照 TTL
 
-	// Cleanup
+	// 清理
 	cleanupStop chan struct{}
 	cleanupOnce sync.Once
 }
 
-// newStateLockManager creates a new versioned lock manager
+// newStateLockManager 创建一个新的版本化锁管理器。
 func newStateLockManager(service *sscService) *stateLockManager {
 	mgr := &stateLockManager{
 		sscService:   service,
@@ -195,13 +251,12 @@ func newStateLockManager(service *sscService) *stateLockManager {
 	}
 
 	mgr.tempLockView = NewTempLockView(mgr)
-	go mgr.checkLockTime()
 	go mgr.startCleanupRoutine()
 
 	return mgr
 }
 
-// startCleanupRoutine periodically removes expired and excess snapshots
+// startCleanupRoutine 定期清理过期和超量的快照。
 func (s *stateLockManager) startCleanupRoutine() {
 	ticker := time.NewTicker(SnapshotCleanupInterval)
 	defer ticker.Stop()
@@ -216,14 +271,14 @@ func (s *stateLockManager) startCleanupRoutine() {
 	}
 }
 
-// StopCleanup stops the cleanup goroutine (call during shutdown)
+// StopCleanup 停止清理协程（shutdown 时调用）。
 func (s *stateLockManager) StopCleanup() {
 	s.cleanupOnce.Do(func() {
 		close(s.cleanupStop)
 	})
 }
 
-// cleanupSnapshots removes expired snapshots and enforces LRU limit
+// cleanupSnapshots 移除过期的快照（TTL 超时）并强制 LRU 上限。
 func (s *stateLockManager) cleanupSnapshots() {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -231,7 +286,7 @@ func (s *stateLockManager) cleanupSnapshots() {
 	now := time.Now()
 	expired := make([]common.Hash, 0)
 
-	// Phase 1: Remove expired snapshots (TTL-based)
+	// Phase 1: 移除 TTL 过期的快照
 	for root, snapshot := range s.snapshots {
 		if now.Sub(snapshot.timestamp) > s.snapshotTTL {
 			expired = append(expired, root)
@@ -242,9 +297,8 @@ func (s *stateLockManager) cleanupSnapshots() {
 		s.deleteSnapshot(root)
 	}
 
-	// Phase 2: Enforce LRU limit if still over capacity
+	// Phase 2: 如果仍然超出容量，移除 LRU 最旧的快照
 	if len(s.snapshots) > s.maxSnapshots {
-		// Find least recently accessed snapshots
 		type accessRecord struct {
 			root       common.Hash
 			lastAccess time.Time
@@ -257,12 +311,12 @@ func (s *stateLockManager) cleanupSnapshots() {
 			})
 		}
 
-		// Sort by last access time (oldest first)
+		// 按最后访问时间排序（最旧的在前）
 		sort.Slice(records, func(i, j int) bool {
 			return records[i].lastAccess.Before(records[j].lastAccess)
 		})
 
-		// Remove oldest snapshots until under limit
+		// 移除最旧的快照直到低于上限
 		removeCount := len(s.snapshots) - s.maxSnapshots
 		for i := 0; i < removeCount && i < len(records); i++ {
 			s.deleteSnapshot(records[i].root)
@@ -275,13 +329,13 @@ func (s *stateLockManager) cleanupSnapshots() {
 		Msg("cleanup snapshots")
 }
 
-// deleteSnapshot removes a snapshot and its metadata
+// deleteSnapshot 删除一个快照及其元数据。
 func (s *stateLockManager) deleteSnapshot(root common.Hash) {
 	delete(s.snapshots, root)
 	delete(s.snapshotMeta, root)
 }
 
-// SetSnapshotConfig allows configuring snapshot limits
+// SetSnapshotConfig 配置快照上限和 TTL。
 func (s *stateLockManager) SetSnapshotConfig(maxSnapshots int, ttl time.Duration) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -294,19 +348,28 @@ func (s *stateLockManager) SetSnapshotConfig(maxSnapshots int, ttl time.Duration
 	}
 }
 
-// GetSnapshotCount returns current number of snapshots (for monitoring)
+// GetSnapshotCount 返回当前快照数量（用于监控）。
 func (s *stateLockManager) GetSnapshotCount() int {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	return len(s.snapshots)
 }
 
+// ============================================================================
+// lockedState & rlockedState — 锁状态描述符
+// ============================================================================
+
+// lockedState 描述一个写锁的状态。
+// lockedBy 为 common.Hash{} 时表示锁空闲。
 type lockedState struct {
-	lockedBy   common.Hash // the transaction hash that locked this state
-	lockTime   time.Time
-	hasTimeout bool
+	lockedBy common.Hash // 持有此写锁的交易哈希
+	lockTime time.Time
 }
 
+// lockable 检查此写锁能否被 txHash 获取：
+// - 如果锁空闲（lockedBy == zero），可以获取
+// - 如果锁已被同一个 txHash 持有，可以重入
+// - 如果锁被其他交易持有，不可获取
 func (ls *lockedState) lockable(txHash common.Hash) bool {
 	if bytes.Compare(ls.lockedBy.Bytes(), common.Hash{}.Bytes()) == 0 {
 		return true
@@ -317,21 +380,37 @@ func (ls *lockedState) lockable(txHash common.Hash) bool {
 	return false
 }
 
+// rlockedState 描述一个读锁的状态。
+// 读锁可以被多个交易同时持有（lockedBy 列表）。
 type rlockedState struct {
-	locked     bool
-	lockedBy   []common.Hash
-	lockTime   time.Time
-	hasTimeout bool
+	locked   bool
+	lockedBy []common.Hash // 持有此读锁的所有交易哈希
+	lockTime time.Time
 }
 
-// handleLockCommit commits the locker state and creates a snapshot for the given stateRoot
+// ============================================================================
+// handleLockCommit — 区块提交时的锁快照创建
+//
+// 在 stateLocker.Commit() 流程的最后一步调用。
+// 将当前全局锁状态深拷贝为一个只读快照，绑定到 newRoot。
+//
+// 此快照之后被 GetLockerAt(newRoot) 使用，
+// 提供给后续 simulate 的 stateLocker 作为 baseSnapshot。
+// ============================================================================
+
+// handleLockCommit 创建一个指定 stateRoot 的锁状态快照。
+//
+// 流程：
+// 1. 深拷贝 lockedStates → 创建不可变快照
+// 2. 清空未占用的锁（lockedBy 为零值的）
+// 3. 将快照关联到 newRoot
 func (s *stateLockManager) handleLockCommit(newRoot common.Hash) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
 	utils.SSCLogger().Info().Msgf("handleLockCommit: creating snapshot for stateRoot %s", newRoot.Hex())
 
-	// === Create snapshot of current state ===
+	// === 创建当前状态的快照 ===
 	snapshot := &lockedStatesSnapshot{
 		lockedStates:  make(map[api.LockKey]*lockedState, len(s.lockedStates.lockedStates)),
 		rlockedStates: make(map[api.LockKey]*rlockedState, len(s.lockedStates.rlockedStates)),
@@ -339,30 +418,28 @@ func (s *stateLockManager) handleLockCommit(newRoot common.Hash) error {
 		timestamp:     time.Now(),
 	}
 
-	// Deep copy lockedStates
+	// 深拷贝写锁
 	for k, v := range s.lockedStates.lockedStates {
 		snapshot.lockedStates[k] = &lockedState{
-			lockedBy:   v.lockedBy,
-			lockTime:   v.lockTime,
-			hasTimeout: v.hasTimeout,
+			lockedBy: v.lockedBy,
+			lockTime: v.lockTime,
 		}
 	}
 
-	// Deep copy rlockedStates
+	// 深拷贝读锁
 	for k, v := range s.lockedStates.rlockedStates {
 		snapshot.rlockedStates[k] = &rlockedState{
-			lockedBy:   append([]common.Hash{}, v.lockedBy...),
-			lockTime:   v.lockTime,
-			hasTimeout: v.hasTimeout,
+			lockedBy: append([]common.Hash{}, v.lockedBy...),
+			lockTime: v.lockTime,
 		}
 	}
 
-	// Deep copy finishedTxs
+	// 深拷贝 finishedTxs
 	for k, v := range s.finishedTxs {
 		snapshot.finishedTxs[k] = v
 	}
 
-	// Store snapshot
+	// 存储快照
 	s.snapshots[newRoot] = snapshot
 	s.snapshotMeta[newRoot] = &snapshotMetadata{
 		lastAccess:  time.Now(),
@@ -371,12 +448,12 @@ func (s *stateLockManager) handleLockCommit(newRoot common.Hash) error {
 	oldRoot := s.currentRoot
 	s.currentRoot = newRoot
 
-	// === Original commit logic (unchanged) ===
+	// === 原始提交逻辑（不变）===
 	s.commitCnt++
 	s.lockedStates.clear()
 
 	lockedTxs := make([]string, 0)
-	for txHash, _ := range s.lockedStates.callIndex2lockedState {
+	for txHash := range s.lockedStates.callIndex2lockedState {
 		lockedTxs = append(lockedTxs, txHash.Hex()[:8])
 	}
 
@@ -391,6 +468,11 @@ func (s *stateLockManager) handleLockCommit(newRoot common.Hash) error {
 	return nil
 }
 
+// ============================================================================
+// InitLockManager — 创世状态初始化
+// ============================================================================
+
+// InitLockManager 创建创世块的空快照，用于系统启动时的初始状态。
 func (s *stateLockManager) InitLockManager(genesisRoot common.Hash) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -415,37 +497,45 @@ func (s *stateLockManager) InitLockManager(genesisRoot common.Hash) error {
 }
 
 // ============================================================================
-// Versioned Locker Retrieval (NEW)
+// GetLockerAt — 版本化的 stateLocker 创建
+//
+// 核心入口：模拟交易在 stateRoot 上执行时，获取该 stateRoot 对应的锁上下文。
+// 返回的 stateLocker 包含：
+//   - baseSnapshot: stateRoot 时的只读锁快照
+//   - pendingStates: 空的隔离 pendingState，用于本次模拟的锁操作
+//
+// 三种情况：
+//   1. 当前 root → 返回一个关联当前全局状态的 locker
+//   2. 历史 root（有快照）→ 返回一个关联历史快照的 locker
+//   3. 未知 root（快照已过期）→ 降级为当前全局状态（warn 日志）
 // ============================================================================
 
-// GetLockerAt returns a locker instance for the given stateRoot.
-// This allows transaction simulation to use the correct locker state
-// that matches the stateDB version.
+// GetLockerAt 返回一个与指定 stateRoot 对应的 stateLocker 实例。
 func (s *stateLockManager) GetLockerAt(stateRoot common.Hash) (api.StateLocker, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
-	// Update access metadata
+	// 更新访问元数据
 	if meta, exists := s.snapshotMeta[stateRoot]; exists {
 		meta.lastAccess = time.Now()
 		meta.accessCount++
 	}
 
-	// Case 1: Requesting current state - return a fresh locker
+	// Case 1: 请求当前状态 — 返回一个包含当前全局锁状态作为 baseSnapshot 的 locker
 	if s.currentRoot == stateRoot || stateRoot == (common.Hash{}) {
 		utils.SSCLogger().Info().Msgf("GetLockerAt: returning current state locker for root %s", stateRoot.Hex())
 		return &stateLocker{
 			txLock:           sync.RWMutex{},
 			root:             stateRoot,
 			stateLockManager: s,
-			// baseSnapshot is a view of current global state (read-only)
+			// baseSnapshot 是当前全局锁状态的只读视图
 			baseSnapshot: &lockedStatesSnapshot{
 				lockedStates:  s.lockedStates.lockedStates,
 				rlockedStates: s.lockedStates.rlockedStates,
 				finishedTxs:   s.finishedTxs,
 				timestamp:     time.Now(),
 			},
-			// pendingStates for uncommitted changes (isolated until Commit)
+			// pendingStates 用于未提交变更（隔离到 Commit 为止）
 			pendingStates: &lockedStates{
 				lockedStates:           make(map[api.LockKey]*lockedState),
 				rlockedStates:          make(map[api.LockKey]*rlockedState),
@@ -456,32 +546,32 @@ func (s *stateLockManager) GetLockerAt(stateRoot common.Hash) (api.StateLocker, 
 			journal:        &lockJournal{entries: make([]journalEntry, 0)},
 			validRevisions: make([]revision, 0),
 			nextRevisionId: 0,
-			// pendingUnlocks tracks txHashes to unlock from stateLockManager on Commit
+			// pendingUnlocks 跟踪需要在 Commit 时从 stateLockManager 解锁的 txHash
 			pendingUnlocks: &pendingUnlockCache{
 				unlockedTxs: make(map[common.Hash]bool),
 			},
 		}, nil
 	}
 
-	// Case 2: Requesting historical state - return locker with snapshot
+	// Case 2: 请求历史状态 — 从快照恢复 locker
 	snapshot, exists := s.snapshots[stateRoot]
 	if !exists {
+		s.sscService.stats.SnapshotMiss.Add(1)
 		utils.SSCLogger().Warn().
 			Str("stateRoot", stateRoot.Hex()).
 			Int("available_snapshots", len(s.snapshots)).
 			Msgf("GetLockerAt: snapshot not found, use current state locker")
+		// 降级为当前全局状态
 		return &stateLocker{
 			txLock:           sync.RWMutex{},
 			root:             stateRoot,
 			stateLockManager: s,
-			// baseSnapshot is a view of current global state (fallback when snapshot missing)
 			baseSnapshot: &lockedStatesSnapshot{
 				lockedStates:  s.lockedStates.lockedStates,
 				rlockedStates: s.lockedStates.rlockedStates,
 				finishedTxs:   s.finishedTxs,
 				timestamp:     time.Now(),
 			},
-			// pendingStates for uncommitted changes (isolated until Commit)
 			pendingStates: &lockedStates{
 				lockedStates:           make(map[api.LockKey]*lockedState),
 				rlockedStates:          make(map[api.LockKey]*rlockedState),
@@ -492,7 +582,6 @@ func (s *stateLockManager) GetLockerAt(stateRoot common.Hash) (api.StateLocker, 
 			journal:        &lockJournal{entries: make([]journalEntry, 0)},
 			validRevisions: make([]revision, 0),
 			nextRevisionId: 0,
-			// pendingUnlocks tracks txHashes to unlock from stateLockManager on Commit
 			pendingUnlocks: &pendingUnlockCache{
 				unlockedTxs: make(map[common.Hash]bool),
 			},
@@ -500,20 +589,21 @@ func (s *stateLockManager) GetLockerAt(stateRoot common.Hash) (api.StateLocker, 
 	}
 
 	startTime := time.Now()
+	s.sscService.stats.SnapshotHit.Add(1)
 	utils.SSCLogger().Info().
 		Str("stateRoot", stateRoot.Hex()).
 		Int("locked_count", len(snapshot.lockedStates)).
 		Dur("cost", time.Since(startTime)).
 		Msgf("GetLockerAt: returning historical state locker")
 
-	// Create a new locker instance with baseSnapshot from snapshot (read-only, immutable)
+	// 创建一个新的 locker 实例，baseSnapshot 来自快照（只读，不可变）
 	locker := &stateLocker{
 		txLock:           sync.RWMutex{},
 		root:             stateRoot,
 		stateLockManager: s,
-		// baseSnapshot is the immutable snapshot at this stateRoot
+		// baseSnapshot 是这个 stateRoot 下的不可变快照
 		baseSnapshot: snapshot,
-		// pendingStates holds uncommitted changes - isolated from global state
+		// pendingStates 持有未提交变更 —— 与全局状态隔离
 		pendingStates: &lockedStates{
 			lockedStates:           make(map[api.LockKey]*lockedState),
 			rlockedStates:          make(map[api.LockKey]*rlockedState),
@@ -524,7 +614,7 @@ func (s *stateLockManager) GetLockerAt(stateRoot common.Hash) (api.StateLocker, 
 		journal:        &lockJournal{entries: make([]journalEntry, 0)},
 		validRevisions: make([]revision, 0),
 		nextRevisionId: 0,
-		// pendingUnlocks tracks txHashes to unlock from stateLockManager on Commit
+		// pendingUnlocks 跟踪需要在 Commit 时从 stateLockManager 解锁的 txHash
 		pendingUnlocks: &pendingUnlockCache{
 			unlockedTxs: make(map[common.Hash]bool),
 		},
@@ -533,7 +623,7 @@ func (s *stateLockManager) GetLockerAt(stateRoot common.Hash) (api.StateLocker, 
 	return locker, nil
 }
 
-// GetLocker returns a new locker instance for the current state (backward compatible)
+// GetLocker 返回当前状态的 locker 实例（向后兼容）。
 func (s *stateLockManager) GetLocker() api.StateLocker {
 	s.mu.RLock()
 	currentRoot := s.currentRoot
@@ -543,27 +633,18 @@ func (s *stateLockManager) GetLocker() api.StateLocker {
 	return locker
 }
 
-func (s *stateLockManager) checkLockTime() {
-	for {
-		time.Sleep(time.Second * 10)
-		s.mu.Lock()
-		now := time.Now()
-		for lockKey, ls := range s.lockedStates.LockedStates() {
-			if now.Sub(ls.lockTime) > time.Second*10 && !ls.hasTimeout {
-				utils.SSCLogger().Warn().Str("lockKey", string(lockKey)).Str("lockedBy", ls.lockedBy.Hex()).
-					Msgf("the state has been locked for more than 10 second, unlock it")
-				ls.hasTimeout = true
-			}
-		}
-		utils.SSCLogger().Info().Msgf("check mu time, locked states: %d", s.lockedStates.length())
-		s.mu.Unlock()
-	}
-}
+// ============================================================================
+// ============================================================================
+// 辅助方法
+// ============================================================================
 
+// GetTempLockView 返回与此管理器关联的 TempLockView（临时锁视图）。
 func (s *stateLockManager) GetTempLockView() *TempLockView {
 	return s.tempLockView
 }
 
+// GetRWLockStates 返回当前全局写锁和读锁的副本。
+// 被 TempLockView.OnBlockCommitted 调用来同步已提交的锁状态。
 func (s *stateLockManager) GetRWLockStates() (map[api.LockKey]*lockedState, map[api.LockKey]*rlockedState) {
 	if s == nil {
 		panic("stateLockManager is nil")
@@ -583,8 +664,8 @@ func (s *stateLockManager) GetRWLockStates() (map[api.LockKey]*lockedState, map[
 	return writeLockedStates, readLockedStates
 }
 
-// GetPendingLockStates returns pending (uncommitted) lock states for a locker
-// This is useful for debugging and monitoring transaction isolation
+// GetPendingLockStates 返回一个 stateLocker 实例中待提交（pending）的锁状态。
+// 用于调试和监控事务隔离。
 func (s *stateLocker) GetPendingLockStates() (map[api.LockKey]*lockedState, map[api.LockKey]*rlockedState) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
@@ -601,8 +682,8 @@ func (s *stateLocker) GetPendingLockStates() (map[api.LockKey]*lockedState, map[
 	return writeLockedStates, readLockedStates
 }
 
-// GetFullLockStates returns the combined view of baseSnapshot + pendingStates
-// This represents what this locker sees as the current locked state
+// GetFullLockStates 返回 baseSnapshot + pendingStates 的合并视图。
+// 表示这个 locker 当前看到的全部锁状态。
 func (s *stateLocker) GetFullLockStates() (map[api.LockKey]*lockedState, map[api.LockKey]*rlockedState) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
@@ -610,7 +691,7 @@ func (s *stateLocker) GetFullLockStates() (map[api.LockKey]*lockedState, map[api
 	writeLockedStates := make(map[api.LockKey]*lockedState)
 	readLockedStates := make(map[api.LockKey]*rlockedState)
 
-	// First, copy from baseSnapshot (immutable)
+	// 先从 baseSnapshot 复制（不可变基准）
 	for k, v := range s.baseSnapshot.lockedStates {
 		writeLockedStates[k] = v
 	}
@@ -618,7 +699,7 @@ func (s *stateLocker) GetFullLockStates() (map[api.LockKey]*lockedState, map[api
 		readLockedStates[k] = v
 	}
 
-	// Then, overlay pendingStates (uncommitted changes take precedence)
+	// 再用 pendingStates 覆盖（未提交变更优先）
 	for k, v := range s.pendingStates.lockedStates {
 		writeLockedStates[k] = v
 	}
@@ -629,6 +710,7 @@ func (s *stateLocker) GetFullLockStates() (map[api.LockKey]*lockedState, map[api
 	return writeLockedStates, readLockedStates
 }
 
+// printTxNums 打印锁管理器中的交易数量统计信息。
 func (s *stateLockManager) printTxNums() {
 	simulateNums := make(map[uint64]int)
 	verifyNums := make(map[uint64]int)
