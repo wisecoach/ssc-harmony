@@ -85,6 +85,7 @@ const (
 	ReasonConflictRWSetFailedLock
 	ReasonConflictRWSetRecall
 	ReasonCxtTimeoutForSp1
+	ReasonMaxOnChainRetriesExceeded
 )
 
 func (c CXTCommitReason) String() string {
@@ -101,6 +102,8 @@ func (c CXTCommitReason) String() string {
 		return "ConflictRWSet_Recall"
 	case ReasonCxtTimeoutForSp1:
 		return "ReasonCxtTimeoutForSp1"
+	case ReasonMaxOnChainRetriesExceeded:
+		return "MaxOnChainRetriesExceeded"
 	default:
 		return "Unknown"
 	}
@@ -295,8 +298,9 @@ type ShardSimulateCommittee struct {
 }
 
 type TimeoutConfig struct {
-	Sp1         uint64 `json:"sp1" yaml:"sp1"`                   // source phase 1, used to notify origin shard to rollback cxt for timeout
-	PoolTimeout uint64 `json:"pool_timeout" yaml:"pool_timeout"` // the timeout to remove cxt from pool
+	Sp1               uint64 `json:"sp1" yaml:"sp1"`                                   // source phase 1, used to notify origin shard to rollback cxt for timeout
+	PoolTimeout       uint64 `json:"pool_timeout" yaml:"pool_timeout"`                 // the timeout to remove cxt from pool
+	MaxOnChainRetries uint64 `json:"max_on_chain_retries" yaml:"max_on_chain_retries"` // max retries for on-chain verification
 }
 
 type ReputationConfig struct {
@@ -1055,6 +1059,7 @@ type SimulationCommit struct {
 	RelatedShards RelatedShards
 	Commit        bool
 	Status        SimulationCommitStatus
+	Reason        string
 	BaseBLSSignedMessage
 }
 
@@ -1129,6 +1134,7 @@ const (
 	InvalidSignature
 	InvalidExecution
 	CXTTimeout
+	MaxRetryExceeded
 )
 
 type CXTInvalidSimulationPayload struct {
@@ -1338,25 +1344,26 @@ func (c *CallStack) String() string {
 }
 
 type CXTSimulationState struct {
-	Nonce                 uint64
-	TxSender              common.Address
-	Epochs                []Epoch
-	CurrentCallFrame      *CallFrame
-	CallStack             *CallStack
-	Status                CXTStatus
-	SimulationRequest     *CXTSimulationRequest // the simulation request, only origin member has this
-	SimulationResult      *CXTSimulationSSCResult
-	SimulationCallStates  map[int]SimulationCallStates
-	SimulationNum         int       // the number of the simulation used to identify the recall
-	LockedCallIndex       CallIndex // the locked call index, only the recall after this call index need to be executed
-	OriginShardId         uint32
-	RelatedShards         RelatedShards
-	ReSimulationSignals   map[int]map[uint32]*ReSimulationSignal
-	CallForest            *CallForest
-	SimulateCh            chan struct{}      `json:"-"`
-	SimulationReentryLock sync.Mutex         `json:"-"`
-	Ctx                   context.Context    `json:"-"`
-	CtxCancel             context.CancelFunc `json:"-"`
+	Nonce                      uint64
+	TxSender                   common.Address
+	Epochs                     []Epoch
+	CurrentCallFrame           *CallFrame
+	CallStack                  *CallStack
+	Status                     CXTStatus
+	SimulationRequest          *CXTSimulationRequest // the simulation request, only origin member has this
+	SimulationResult           *CXTSimulationSSCResult
+	SimulationCallStates       map[int]SimulationCallStates
+	SimulationNum              int       // the number of the simulation used to identify the recall
+	OnChainLockedSimulationNum int       // the simulationNum when the tx was first locked on-chain (0 = not yet locked)
+	LockedCallIndex            CallIndex // the locked call index, only the recall after this call index need to be executed
+	OriginShardId              uint32
+	RelatedShards              RelatedShards
+	ReSimulationSignals        map[int]map[uint32]*ReSimulationSignal
+	CallForest                 *CallForest
+	SimulateCh                 chan struct{}      `json:"-"`
+	SimulationReentryLock      sync.Mutex         `json:"-"`
+	Ctx                        context.Context    `json:"-"`
+	CtxCancel                  context.CancelFunc `json:"-"`
 }
 
 type SimulationCallStates []*SimulationCallState

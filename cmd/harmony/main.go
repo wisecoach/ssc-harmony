@@ -904,7 +904,25 @@ func setupConsensusAndNode(hc harmonyconfig.HarmonyConfig, nodeConfig *nodeconfi
 	}
 	blsKey := bls.WrapperFromPrivateKey(blsSecretKey)
 	chainId := registry.GetBlockchain().Config().ChainID
-	txSigner := ssc.NewTxSigner(chainId, submitterKey.PrivateKey)
+	simSigner := ssc.NewTxSigner(chainId, submitterKey.PrivateKey)
+
+	// 加载 CommitOrRollback signer key（独立账户，拥有独立 nonce 序列）
+	var crSigner api.TxSigner
+	if len(hc.SSC.CommitRollbackKeyPath) > 0 {
+		crKey := new(keystore.Key)
+		crKeyBytes, err := os.ReadFile(hc.SSC.CommitRollbackKeyPath)
+		if err != nil {
+			utils.Logger().Error().Err(err).Msg("cannot load commit/rollback key")
+			return nil
+		}
+		if err := crKey.UnmarshalJSON(crKeyBytes); err != nil {
+			utils.Logger().Error().Err(err).Msg("cannot unmarshal commit/rollback key")
+			return nil
+		}
+		crSigner = ssc.NewTxSigner(chainId, crKey.PrivateKey)
+		utils.Logger().Info().Msg("commit/rollback key loaded successfully")
+	}
+
 	signerMgr := ssc.NewBLSSignerMgr(nodeConfig.ShardID, ethCommon.Address(sscSelfAddr), &blsKey)
 	sscConfig := &api.Config{
 		SimulationLimit:          hc.SSC.SimulationLimit,
@@ -916,9 +934,9 @@ func setupConsensusAndNode(hc harmonyconfig.HarmonyConfig, nodeConfig *nodeconfi
 	}
 	ctx := context.Background()
 	comm := ssc.NewComm()
-	txSub := ssc.NewTxSubmitter(nodeConfig.ShardID, txSigner, currentNode, sscConfig)
+	txSub := ssc.NewTxSubmitter(nodeConfig.ShardID, simSigner, crSigner, currentNode, sscConfig)
 	cm := ssc.NewCommitteeMechanism(ctx, ethCommon.Address(sscSelfAddr), nodeConfig.ShardID, sscOnChainConfig, signerMgr, txSub, comm)
-	sscService := ssc.NewService(ctx, sscConfig, cm, sscOnChainConfig, signerMgr, bc, txSigner, comm)
+	sscService := ssc.NewService(ctx, sscConfig, cm, sscOnChainConfig, signerMgr, bc, simSigner, comm)
 	currentNode.SetSSCService(sscService)
 
 	if hc.Legacy != nil && hc.Legacy.TPBroadcastInvalidTxn != nil {

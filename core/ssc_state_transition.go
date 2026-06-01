@@ -92,18 +92,12 @@ func (st *SSCStateTransition) buyGas() error {
 func (st *SSCStateTransition) preCheck() error {
 	// Make sure this transaction's nonce is correct.
 	if st.msg.CheckNonce() && vm.IsSSCAddrApplyOnChain(st.to()) {
-		// just check the nonce if is lower
 		nonce := st.state.GetNonce(st.msg.From())
-		if nonce > st.msg.Nonce() {
-			utils.SSCLogger().Error().Err(ErrNonceTooLow).Str("from", st.msg.From().Hex()).Msgf("nonce too low, tx nonce: %d, state nonce: %d", st.msg.Nonce(), nonce)
-			return ErrNonceTooLow
-		}
-
 		if nonce < st.msg.Nonce() {
 			utils.SSCLogger().Error().Err(ErrNonceTooHigh).Str("from", st.msg.From().Hex()).Msgf("nonce too high, tx nonce: %d, state nonce: %d", st.msg.Nonce(), nonce)
 			return ErrNonceTooHigh
 		} else if nonce > st.msg.Nonce() {
-			utils.SSCLogger().Error().Err(ErrNonceTooHigh).Str("from", st.msg.From().Hex()).Msgf("nonce too high, tx nonce: %d, state nonce: %d", st.msg.Nonce(), nonce)
+			utils.SSCLogger().Error().Err(ErrNonceTooLow).Str("from", st.msg.From().Hex()).Msgf("nonce too low, tx nonce: %d, state nonce: %d", st.msg.Nonce(), nonce)
 			return ErrNonceTooLow
 		}
 	}
@@ -130,6 +124,13 @@ func (st *SSCStateTransition) TransitionDb() (ExecutionResult, error) {
 		return ExecutionResult{}, err
 	}
 	if err = st.useGas(gas); err != nil {
+		utils.SSCLogger().Error().
+			Uint64("haveGas", st.gas).
+			Uint64("needIntrinsicGas", gas).
+			Int("dataLen", len(st.data)).
+			Uint64("txGasLimit", st.msg.Gas()).
+			Uint64("txNonce", st.msg.Nonce()).
+			Msgf("intrinsic gas too low, have %d, need %d, dataLen=%d", st.gas, gas, len(st.data))
 		return ExecutionResult{}, fmt.Errorf("%w: have %d, want %d", ErrIntrinsicGas, st.gas, gas)
 	}
 	sscvm := st.vm

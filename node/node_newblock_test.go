@@ -66,6 +66,7 @@ func TestFinalizeNewBlockAsync(t *testing.T) {
 	stks := staking.StakingTransactions{}
 	node.Worker.CommitTransactions(
 		make(types.Transactions, 0), txs, stks, common.Address{},
+		nil,
 	)
 	commitSigs := make(chan []byte, 1)
 	commitSigs <- []byte{}

@@ -89,6 +89,7 @@ func TestCommitTransactions(t *testing.T) {
 	txs[testBankAddress] = types.Transactions{tx}
 	err := worker.CommitTransactions(
 		make(types.Transactions, 0), txs, nil, testBankAddress,
+		nil,
 	)
 	if err != nil {
 		t.Error(err)

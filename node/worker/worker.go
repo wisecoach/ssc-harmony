@@ -101,11 +101,21 @@ func (w *Worker) SetSSCService(sscService api.Service) {
 	w.sscService = sscService
 }
 
+// CommitSSCTransactions 处理 SSC 交易区块
+// maxTxns 控制单块最多处理的 SSC 交易数，0 表示不限制
 func (w *Worker) CommitSSCTransactions(
 	txs *types.TransactionsByPriceAndNonce,
 	coinbase common.Address,
+	maxTxns int,
 ) {
+	count := 0
 	for {
+		// 单块 SSC 交易上限
+		if maxTxns > 0 && count >= maxTxns {
+			utils.Logger().Info().Int("count", maxTxns).Msg("Reached max SSC transactions per block")
+			break
+		}
+		count++
 		// If we don't have enough gas for any further transactions then we're done
 		if w.current.gasPool.Gas() < params.TxGas {
 			utils.Logger().Info().Uint64("have", w.current.gasPool.Gas()).Uint64("want", params.TxGas).Msg("Not enough gas for further transactions")
@@ -171,11 +181,20 @@ func (w *Worker) CommitSSCTransactions(
 }
 
 // CommitSortedTransactions commits transactions for new block.
+// maxTxns 控制单块最多处理的普通交易数，0 表示不限制。
 func (w *Worker) CommitSortedTransactions(
 	txs *types.TransactionsByPriceAndNonce,
 	coinbase common.Address,
+	maxTxns int,
 ) {
+	count := 0
 	for {
+		// 单块普通交易上限
+		if maxTxns > 0 && count >= maxTxns {
+			utils.Logger().Info().Int("count", maxTxns).Msg("Reached max normal transactions per block")
+			break
+		}
+		count++
 		// If we don't have enough gas for any further transactions then we're done
 		if w.current.gasPool.Gas() < params.TxGas {
 			utils.Logger().Info().Uint64("have", w.current.gasPool.Gas()).Uint64("want", params.TxGas).Msg("Not enough gas for further transactions")
@@ -246,6 +265,7 @@ func (w *Worker) CommitTransactions(
 	pendingSSCTxs map[common.Address]types.Transactions,
 	pendingNormal map[common.Address]types.Transactions,
 	pendingStaking staking.StakingTransactions, coinbase common.Address,
+	pendingCRTxs map[common.Address]types.Transactions,
 ) error {
 	if w.current.gasPool == nil {
 		w.current.gasPool = new(core.GasPool).AddGas(w.current.header.GasLimit())
@@ -284,6 +304,23 @@ func (w *Worker) CommitTransactions(
 	}
 
 	// HARMONY TXNS
+	// 单块所有交易上限（总 300 笔）
+	remaining := 200
+
+	// 1. CommitOrRollbackTx 最高优先级
+	if len(pendingCRTxs) > 0 {
+		crTxns := types.NewTransactionsByPriceAndNonce(w.current.signer, w.current.ethSigner, pendingCRTxs)
+		crTxAddrs := make([]common.Address, 0)
+		for address := range pendingCRTxs {
+			crTxAddrs = append(crTxAddrs, address)
+		}
+		utils.Logger().Info().Uint64("blockNum", w.current.header.NumberU64()).Int("txn", len(pendingCRTxs)).Interface("addrs", crTxAddrs).Msg("Leader apply CommitOrRollback txns first")
+		before := len(w.current.txs)
+		w.CommitSSCTransactions(crTxns, coinbase, remaining)
+		remaining -= (len(w.current.txs) - before)
+	}
+
+	// 2. 其他 SSC 交易
 	sscTxns := types.NewTransactionsByPriceAndNonce(w.current.signer, w.current.ethSigner, pendingSSCTxs)
 	normalTxns := types.NewTransactionsByPriceAndNonce(w.current.signer, w.current.ethSigner, pendingNormal)
 
@@ -294,14 +331,20 @@ func (w *Worker) CommitTransactions(
 		sscTxAddrs = append(sscTxAddrs, address)
 	}
 	utils.Logger().Info().Uint64("blockNum", w.current.header.NumberU64()).Int("txn", len(pendingSSCTxs)).Interface("addrs", sscTxAddrs).Str("duration", time.Since(startTime).String()).Msg("Leader apply ssctxs for duration")
-	w.CommitSSCTransactions(sscTxns, coinbase)
+	if remaining > 0 {
+		before := len(w.current.txs)
+		w.CommitSSCTransactions(sscTxns, coinbase, remaining)
+		remaining -= (len(w.current.txs) - before)
+	}
 
 	normalTxAddrs := make([]common.Address, 0)
 	for address := range pendingNormal {
 		normalTxAddrs = append(normalTxAddrs, address)
 	}
 	utils.Logger().Info().Uint64("blockNum", w.current.header.NumberU64()).Int("txn", len(pendingNormal)).Interface("addrs", normalTxAddrs).Str("duration", time.Since(startTime).String()).Msg("Leader apply txs for duration")
-	w.CommitSortedTransactions(normalTxns, coinbase)
+	if remaining > 0 {
+		w.CommitSortedTransactions(normalTxns, coinbase, remaining)
+	}
 
 	// STAKING - only beaconchain process staking transaction
 	// if w.chain.ShardID() == shard.BeaconChainShardID {
@@ -336,7 +379,6 @@ func (w *Worker) CommitTransactions(
 	// }
 
 	utils.SSCLogger().Info().
-		Int("newSSCTxns", len(pendingSSCTxs)).
 		Int("newTxns", len(w.current.txs)).
 		Int("newStakingTxns", len(w.current.stakingTxs)).
 		Uint64("blockGasLimit", w.current.header.GasLimit()).
@@ -429,6 +471,7 @@ func (w *Worker) commitTransaction(
 		utils.SSCLogger().Error().
 			Err(err).Str("txHash", tx.Hash().Hex()).
 			Uint64("blockNum", w.current.header.NumberU64()).
+			Uint64("viewID", w.current.header.ViewID().Uint64()).
 			Str("senderAddress", senderAddress.String()).
 			Uint64("currentNonce", currentNonce).
 			Uint64("txNonce", tx.Nonce()).

@@ -28,13 +28,14 @@ import (
 )
 
 type Validator struct {
-	Index        int
-	Address      string // account HMY address
-	EthAddr      string // account ETH address
-	BLSPublicKey string // account public BLS key
-	ShardID      uint32 // shardID of the account
-	EcdsaKeyPath string
-	BLSKeyPATH   string
+	Index                 int
+	Address               string // account HMY address
+	EthAddr               string // account ETH address
+	BLSPublicKey          string // account public BLS key
+	ShardID               uint32 // shardID of the account
+	EcdsaKeyPath          string
+	BLSKeyPATH            string
+	CommitRollbackKeyPath string // CommitOrRollbackTx independent signer key
 }
 
 func build_client_keys() {
@@ -62,8 +63,10 @@ func build_client_keys() {
 func build_validators() {
 	blsOutput := ".hmy/validator_bls"
 	ecdsaOutput := ".hmy/validator_ecdsa"
+	crEcdsaOutput := ".hmy/commit_rollback_ecdsa"
 	os.MkdirAll(blsOutput, fs.ModeDir)
 	os.MkdirAll(ecdsaOutput, fs.ModeDir)
+	os.MkdirAll(crEcdsaOutput, fs.ModeDir)
 
 	deployAccounts := make([]*genesis.DeployAccount, 0)
 	shard2validators := make(map[uint32][]*Validator)
@@ -89,13 +92,22 @@ func build_validators() {
 			blsFile := fmt.Sprintf(".hmy/validator_bls/%s", blsFileName)
 			os.Rename(blsFileName, blsFile)
 
+			// Generate independent CommitOrRollback signer key (one per validator)
+			crPrivateKey, _ := ecdsa.GenerateKey(crypto.S256(), rand.Reader)
+			crKey := newKeyFromECDSA(crPrivateKey)
+			crAddr := crKey.Address
+			crOneAddr, _ := common2.AddressToBech32(crAddr)
+			crEcdsaFile := fmt.Sprintf(".hmy/commit_rollback_ecdsa/%s.key", crOneAddr)
+			writeFile(crEcdsaFile, crKey)
+
 			validator := &Validator{
-				Address:      oneAddr,
-				EthAddr:      addr.Hex(),
-				BLSPublicKey: common.Bytes2Hex(blsKey.GetPublicKey().Serialize()),
-				ShardID:      shardId,
-				EcdsaKeyPath: ecdsaFile,
-				BLSKeyPATH:   blsFile,
+				Address:               oneAddr,
+				EthAddr:               addr.Hex(),
+				BLSPublicKey:          common.Bytes2Hex(blsKey.GetPublicKey().Serialize()),
+				ShardID:               shardId,
+				EcdsaKeyPath:          ecdsaFile,
+				BLSKeyPATH:            blsFile,
+				CommitRollbackKeyPath: crEcdsaFile,
 			}
 
 			shard2validatorMap[shardId][addr] = validator
@@ -123,6 +135,58 @@ func build_validators() {
 	}
 	writeFile(".hmy/expr_deploy_accounts.json", deployAccounts)
 	writeFile(".hmy/validators.json", shard2validators)
+}
+
+// generate_commit_rollback_keys reads existing validators.json and only generates
+// CommitRollbackKey for each validator that doesn't have one yet.
+// This is non-destructive — it preserves existing ECDSA/BLS keys and configs.
+func generate_commit_rollback_keys() {
+	// Read existing validators.json
+	shard2validators := make(map[uint32][]*Validator)
+	file, err := os.Open(".hmy/validators.json")
+	if err != nil {
+		fmt.Printf("Failed to open validators.json: %v\n", err)
+		return
+	}
+	defer file.Close()
+	if err := json.NewDecoder(file).Decode(&shard2validators); err != nil {
+		fmt.Printf("Failed to decode validators.json: %v\n", err)
+		return
+	}
+
+	// Ensure commit_rollback_ecdsa directory exists
+	crEcdsaOutput := ".hmy/commit_rollback_ecdsa"
+	os.MkdirAll(crEcdsaOutput, fs.ModeDir)
+
+	generated := 0
+	skipped := 0
+	for _, validators := range shard2validators {
+		for _, validator := range validators {
+			if validator.CommitRollbackKeyPath != "" {
+				// Already has a key, verify file exists
+				if _, err := os.Stat(validator.CommitRollbackKeyPath); err == nil {
+					skipped++
+					continue
+				}
+				fmt.Printf("  Key file missing, regenerating: %s\n", validator.CommitRollbackKeyPath)
+			}
+
+			// Generate new commit/rollback ECDSA key
+			crPrivateKey, _ := ecdsa.GenerateKey(crypto.S256(), rand.Reader)
+			crKey := newKeyFromECDSA(crPrivateKey)
+			crOneAddr, _ := common2.AddressToBech32(crKey.Address)
+			crEcdsaFile := fmt.Sprintf(".hmy/commit_rollback_ecdsa/%s.key", crOneAddr)
+			writeFile(crEcdsaFile, crKey)
+			validator.CommitRollbackKeyPath = crEcdsaFile
+			generated++
+
+			fmt.Printf("  [%s] → %s (cr addr: %s)\n", validator.Address, crEcdsaFile, crOneAddr)
+		}
+	}
+
+	// Write back updated validators.json
+	writeFile(".hmy/validators.json", shard2validators)
+	fmt.Printf("\nDone: %d generated, %d skipped (already had key)\n", generated, skipped)
 }
 
 func getShard(addr common.Address, shardNum int) uint32 {
@@ -197,10 +261,10 @@ func buildConfig(config ShardConfig) {
 	for i := uint32(0); i < config.shard; i++ {
 		for j := 0; j < config.validator; j++ {
 			v := shard2validators[i][j]
-			local_launch_config_lines = append(local_launch_config_lines, fmt.Sprintf("%s %s %s %d %s %d %s",
-				v.Address, v.EthAddr, v.BLSKeyPATH, v.ShardID, "127.0.0.1", 9000+40*int(i)+j*2, v.EcdsaKeyPath))
-			dev_launch_config_lines = append(dev_launch_config_lines, fmt.Sprintf("%s %s %s %d %s %d %s",
-				v.Address, v.EthAddr, v.BLSKeyPATH, v.ShardID, devServers.IPs[nodeCnt/config.validatorPerNode], 9000+40*int(i)+j*2, v.EcdsaKeyPath))
+			local_launch_config_lines = append(local_launch_config_lines, fmt.Sprintf("%s %s %s %d %s %d %s %s",
+				v.Address, v.EthAddr, v.BLSKeyPATH, v.ShardID, "127.0.0.1", 9000+40*int(i)+j*2, v.EcdsaKeyPath, v.CommitRollbackKeyPath))
+			dev_launch_config_lines = append(dev_launch_config_lines, fmt.Sprintf("%s %s %s %d %s %d %s %s",
+				v.Address, v.EthAddr, v.BLSKeyPATH, v.ShardID, devServers.IPs[nodeCnt/config.validatorPerNode], 9000+40*int(i)+j*2, v.EcdsaKeyPath, v.CommitRollbackKeyPath))
 			nodeCnt++
 		}
 	}
@@ -218,8 +282,9 @@ func buildConfig(config ShardConfig) {
 		localSSCMembers := make([]*api.Member, 0)
 		devSSCMembers := make([]*api.Member, 0)
 		timeout := &api.TimeoutConfig{
-			Sp1:         config.delay,
-			PoolTimeout: config.delay,
+			Sp1:               config.delay,
+			PoolTimeout:       config.delay,
+			MaxOnChainRetries: 0,
 		}
 		for j := 0; j < config.validator; j++ {
 			v := shard2validators[i][j]
@@ -290,22 +355,25 @@ func buildConfig(config ShardConfig) {
 	localConfig.Reputation = repuConfig
 	devConfig.Reputation = repuConfig
 	type GenesisConfig struct {
-		SSCConfig           *api.ShardSimulateCommitteeConfig `json:"ssc_config" yaml:"ssc_config"`
-		GenesisAccountsDir  string                            `json:"genesis_accounts_dir" yaml:"genesis_accounts_dir"`
-		ContractDeployerDir string                            `json:"contract_deployer_dir" yaml:"contract_deployer_dir"`
-		ValidatorKeyDir     string                            `json:"validator_key_dir" yaml:"validator_key_dir"`
+		SSCConfig            *api.ShardSimulateCommitteeConfig `json:"ssc_config" yaml:"ssc_config"`
+		GenesisAccountsDir   string                            `json:"genesis_accounts_dir" yaml:"genesis_accounts_dir"`
+		ContractDeployerDir  string                            `json:"contract_deployer_dir" yaml:"contract_deployer_dir"`
+		ValidatorKeyDir      string                            `json:"validator_key_dir" yaml:"validator_key_dir"`
+		CommitRollbackKeyDir string                            `json:"commit_rollback_key_dir" yaml:"commit_rollback_key_dir"`
 	}
 	local_genesis := &GenesisConfig{
-		SSCConfig:           localConfig,
-		GenesisAccountsDir:  ".hmy/expr_accounts",
-		ContractDeployerDir: ".hmy/contract_deploy_accounts",
-		ValidatorKeyDir:     ".hmy/validator_ecdsa",
+		SSCConfig:            localConfig,
+		GenesisAccountsDir:   ".hmy/expr_accounts",
+		ContractDeployerDir:  ".hmy/contract_deploy_accounts",
+		ValidatorKeyDir:      ".hmy/validator_ecdsa",
+		CommitRollbackKeyDir: ".hmy/commit_rollback_ecdsa",
 	}
 	dev_genesis := &GenesisConfig{
-		SSCConfig:           devConfig,
-		GenesisAccountsDir:  ".hmy/expr_accounts",
-		ContractDeployerDir: ".hmy/contract_deploy_accounts",
-		ValidatorKeyDir:     ".hmy/validator_ecdsa",
+		SSCConfig:            devConfig,
+		GenesisAccountsDir:   ".hmy/expr_accounts",
+		ContractDeployerDir:  ".hmy/contract_deploy_accounts",
+		ValidatorKeyDir:      ".hmy/validator_ecdsa",
+		CommitRollbackKeyDir: ".hmy/commit_rollback_ecdsa",
 	}
 	writeYaml(local_path+"/"+"genesis_config_local.yaml", local_genesis)
 	writeYaml(dev_path+"/"+"genesis_config_dev.yaml", dev_genesis)
@@ -325,6 +393,10 @@ func buildConfig(config ShardConfig) {
 }
 
 func main() {
+	// Step 1: generate commit/rollback keys for existing validators
+	generate_commit_rollback_keys()
+
+	// Step 2: build configs for each test scenario
 	configs := []ShardConfig{
 		{
 			name:             "基准测试",

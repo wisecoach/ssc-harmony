@@ -65,7 +65,7 @@ func (c *cxtCommitOrRollback) RequiredGas(vm *SSCVM, contract *Contract, input [
 
 func (c *cxtCommitOrRollback) RunWriteCapable(vm *SSCVM, contract *Contract, input []byte) ([]byte, error) {
 	// unlock when it's executed on chain
-	err := vm.SSCService.CommitOrRollbackWithProof(input, vm.StateDB)
+	err := vm.SSCService.CommitOrRollbackWithProof(input, vm.StateDB, vm.Context.Header.Number().Uint64())
 	if err != nil {
 		return nil, err
 	}

@@ -151,6 +151,10 @@ func (c *CXTTimerManager) BlockCommitted(blockNum uint64) {
 
 }
 
+func (c *CXTTimerManager) GetTimeoutConfig() *api.TimeoutConfig {
+	return c.config
+}
+
 func (c *CXTTimerManager) RemoveTx(txHash common.Hash) {
 	c.lock.Lock()
 	defer c.lock.Unlock()

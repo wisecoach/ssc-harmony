@@ -298,6 +298,7 @@ var (
 		blsKeyPathFlag,
 		privateKeyFlag,
 		submitterKeyPathFlag,
+		commitRollbackKeyPathFlag,
 		selfAddrHexFlag,
 		simulationCommitGasLimitFlag,
 		simulationCommitGasPriceFlag,
@@ -2283,6 +2284,7 @@ var (
 	blsKeyPathFlag               = cli.StringFlag{Name: "ssc.bls-key-path", Usage: "bls key path", DefValue: defaultConfig.SSC.BLSKeyPath}
 	privateKeyFlag               = cli.StringFlag{Name: "ssc.private-key-path", Usage: "private key path", DefValue: defaultConfig.SSC.PrivateKey}
 	submitterKeyPathFlag         = cli.StringFlag{Name: "ssc.submitter-key-path", Usage: "submitter key path", DefValue: defaultConfig.SSC.SubmitterKeyPath}
+	commitRollbackKeyPathFlag    = cli.StringFlag{Name: "ssc.commit-rollback-key-path", Usage: "commit/rollback submitter key path", DefValue: defaultConfig.SSC.CommitRollbackKeyPath}
 	selfAddrHexFlag              = cli.StringFlag{Name: "ssc.self-addr-hex", Usage: "self address hex", DefValue: defaultConfig.SSC.SelfAddrHex}
 	simulationCommitGasLimitFlag = cli.Uint64Flag{Name: "ssc.simulation-commit-gas-limit", Usage: "simulation commit gas limit", DefValue: defaultConfig.SSC.SimulationCommitGasLimit}
 	simulationCommitGasPriceFlag = cli.Uint64Flag{Name: "ssc.simulation-commit-gas-price", Usage: "simulation commit gas price", DefValue: defaultConfig.SSC.SimulationCommitGasPrice.Uint64()}
@@ -2314,6 +2316,9 @@ func applySSCFlags(cmd *cobra.Command, cfg *harmonyconfig.HarmonyConfig) {
 	}
 	if cli.IsFlagChanged(cmd, submitterKeyPathFlag) {
 		cfg.SSC.SubmitterKeyPath = cli.GetStringFlagValue(cmd, submitterKeyPathFlag)
+	}
+	if cli.IsFlagChanged(cmd, commitRollbackKeyPathFlag) {
+		cfg.SSC.CommitRollbackKeyPath = cli.GetStringFlagValue(cmd, commitRollbackKeyPathFlag)
 	}
 	if cli.IsFlagChanged(cmd, selfAddrHexFlag) {
 		cfg.SSC.SelfAddrHex = cli.GetStringFlagValue(cmd, selfAddrHexFlag)

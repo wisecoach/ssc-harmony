@@ -76,11 +76,12 @@ type TxPriorityQueue struct {
 	queues [5]chan *txTask
 }
 
-func NewTxSubmitter(selfShard uint32, txSigner api.TxSigner, nodeAPI hmy.NodeAPI, config *api.Config) api.TxSubmitter {
+func NewTxSubmitter(selfShard uint32, simSigner, crSigner api.TxSigner, nodeAPI hmy.NodeAPI, config *api.Config) api.TxSubmitter {
 	t := &txSubmitter{
 		lock:      lm.NewMutex(),
 		selfShard: selfShard,
-		txSigner:  txSigner,
+		simSigner: simSigner,
+		crSigner:  crSigner,
 		nodeAPI:   nodeAPI,
 		config:    config,
 		queue: TxPriorityQueue{
@@ -102,17 +103,44 @@ func NewTxSubmitter(selfShard uint32, txSigner api.TxSigner, nodeAPI hmy.NodeAPI
 type txSubmitter struct {
 	lock      lm.Mutex
 	selfShard uint32
-	txSigner  api.TxSigner
-	nonce     uint64
+	simSigner api.TxSigner
+	crSigner  api.TxSigner
+	simNonce  uint64
+	crNonce   uint64
 	nodeAPI   hmy.NodeAPI
 	config    *api.Config
-	queue     TxPriorityQueue // 优先级队列（5 个独立 channel）
+	queue     TxPriorityQueue
 	ctx       context.Context
 
 	// 监控计数器
 	pendingCount   atomic.Int64 // 队列中待处理的任务数
 	completedCount atomic.Int64 // 已完成的任务总数（成功 + 失败）
 	failedCount    atomic.Int64 // 失败的任务数
+}
+
+// getSigner 根据交易类型返回对应的签名器
+func (t *txSubmitter) getSigner(txType TxType) api.TxSigner {
+	if txType == CommitOrRollbackTx {
+		return t.crSigner
+	}
+	return t.simSigner
+}
+
+// getNonce 根据交易类型返回对应的 nonce
+func (t *txSubmitter) getNonce(txType TxType) uint64 {
+	if txType == CommitOrRollbackTx {
+		return t.crNonce
+	}
+	return t.simNonce
+}
+
+// incNonce 根据交易类型自增对应的 nonce
+func (t *txSubmitter) incNonce(txType TxType) {
+	if txType == CommitOrRollbackTx {
+		t.crNonce++
+	} else {
+		t.simNonce++
+	}
 }
 
 func (t *txSubmitter) SubmitSimulationTx(simulation *api.CXTSimulation) error {
@@ -127,7 +155,7 @@ func (t *txSubmitter) SubmitSimulationTx(simulation *api.CXTSimulation) error {
 	}
 	utils.Logger().Info().
 		Str("txHash", simulation.TxHash.Hex()).
-		Uint64("Nonce", t.GetNonce()).
+		Uint64("Nonce", t.GetNonce(SimulationTx)).
 		Int64("pendingCnt", t.pendingCount.Load()).
 		Str("originTxHash", simulation.TxHash.Hex()).
 		Msg("[SimulationTx] submitting")
@@ -266,13 +294,18 @@ func (t *txSubmitter) processQueue() {
 
 // processTask 处理单个交易任务，负责 nonce 分配和重试
 func (t *txSubmitter) processTask(task *txTask) {
-	// 获取当前 nonce（只在成功提交后才自增）
 	t.lock.Lock()
-	currentNonce := t.nonce
+	currentNonce := t.getNonce(task.txType)
+	signer := t.getSigner(task.txType)
+	if signer == nil {
+		t.lock.Unlock()
+		task.done <- errors.New("signer not configured for tx type: " + string(task.txType))
+		return
+	}
 	gasPrice := new(big.Int).Set(t.config.SimulationCommitGasPrice)
 	t.lock.Unlock()
 
-	err := t.submitWithRetry(task.txBuilder, task.txType, task.originTxHash, currentNonce, gasPrice, 0)
+	err := t.submitWithRetry(task.txBuilder, task.txType, task.originTxHash, currentNonce, gasPrice, 0, signer)
 	task.done <- err
 }
 
@@ -284,11 +317,15 @@ func (t *txSubmitter) submitWithRetry(
 	nonce uint64,
 	gasPrice *big.Int,
 	retryCount int,
+	signer api.TxSigner,
 ) error {
 	tx := txBuilder(nonce, gasPrice)
 	txHash := tx.Hash()
+	if needed, _ := vm.IntrinsicGas(tx.Data(), false, false, false, false); needed > tx.GasLimit() {
+		return core.ErrIntrinsicGas
+	}
 
-	signedTx, err := t.txSigner.Sign(tx)
+	signedTx, err := signer.Sign(tx)
 	if err != nil {
 		utils.SSCLogger().Error().Str("txHash", txHash.Hex()).
 			Err(err).
@@ -308,13 +345,13 @@ func (t *txSubmitter) submitWithRetry(
 			// nonce 太小：说明当前 nonce 已过期，需要递增 nonce 重试
 			utils.SSCLogger().Warn().Uint64("Nonce", nonce).
 				Err(err).Msgf("nonce too low, retry with nonce+1")
-			return t.submitWithRetry(txBuilder, txType, originTxHash, nonce+1, gasPrice, retryCount)
+			return t.submitWithRetry(txBuilder, txType, originTxHash, nonce+1, gasPrice, retryCount, signer)
 		} else if errors.Is(err, core.ErrNonceTooHigh) {
 			// nonce 太大：说明中间有跳号，需要递减 nonce 重试
 			utils.SSCLogger().Warn().Uint64("Nonce", nonce).
 				Err(err).Msgf("nonce too high, retry with nonce-1")
 			if nonce > 0 {
-				return t.submitWithRetry(txBuilder, txType, originTxHash, nonce-1, gasPrice, retryCount)
+				return t.submitWithRetry(txBuilder, txType, originTxHash, nonce-1, gasPrice, retryCount, signer)
 			}
 			return errors.New("nonce too high but nonce is 0")
 		} else if errors.Is(err, core.ErrUnderpriced) {
@@ -331,14 +368,8 @@ func (t *txSubmitter) submitWithRetry(
 				return err
 			}
 
-			// utils.SSCLogger().Warn().Uint64("Nonce", nonce).
-			//	Err(err).
-			//	Str("oldGasPrice", gasPrice.String()).
-			//	Str("newGasPrice", nextGasPrice.String()).
-			//	Int("retry", retryCount).Msgf("retrying %s with higher gasPrice", txType)
-
 			// 使用更高 gasPrice 重试（同一 nonce，用于替换交易）
-			return t.submitWithRetry(txBuilder, txType, originTxHash, nonce, nextGasPrice, retryCount)
+			return t.submitWithRetry(txBuilder, txType, originTxHash, nonce, nextGasPrice, retryCount, signer)
 		} else {
 			// 其他错误：记录日志并返回
 			utils.SSCLogger().Error().Str("txHash", signedTx.Hash().Hex()).
@@ -349,10 +380,10 @@ func (t *txSubmitter) submitWithRetry(
 		}
 	}
 
-	// 提交成功，递增 nonce
+	// 提交成功，递增对应类型的 nonce
 	t.lock.Lock()
-	if t.nonce == nonce {
-		t.nonce = nonce + 1
+	if t.getNonce(txType) == nonce {
+		t.incNonce(txType)
 	}
 	t.lock.Unlock()
 
@@ -372,18 +403,29 @@ func (t *txSubmitter) increaseGasPrice(currentGasPrice *big.Int) *big.Int {
 	return new(big.Int).Add(currentGasPrice, increase)
 }
 
-// GetNonce 获取当前 nonce（用于调试/监控）
-func (t *txSubmitter) GetNonce() uint64 {
+// GetNonce 获取指定交易类型的当前 nonce（用于调试/监控）
+func (t *txSubmitter) GetNonce(txType TxType) uint64 {
 	t.lock.Lock()
 	defer t.lock.Unlock()
-	return t.nonce
+	return t.getNonce(txType)
 }
 
-// SetNonce 设置 nonce（用于初始化/恢复）
-func (t *txSubmitter) SetNonce(nonce uint64) {
+// GetStats 获取完整统计信息
+func (t *txSubmitter) GetStats() (pending, completed, failed int64, simNonce, crNonce uint64) {
 	t.lock.Lock()
 	defer t.lock.Unlock()
-	t.nonce = nonce
+	return t.pendingCount.Load(), t.completedCount.Load(), t.failedCount.Load(), t.simNonce, t.crNonce
+}
+
+// SetNonce 设置指定交易类型的 nonce（用于初始化/恢复）
+func (t *txSubmitter) SetNonce(txType TxType, nonce uint64) {
+	t.lock.Lock()
+	defer t.lock.Unlock()
+	if txType == CommitOrRollbackTx {
+		t.crNonce = nonce
+	} else {
+		t.simNonce = nonce
+	}
 }
 
 // GetPendingCount 获取队列中待处理的任务数
@@ -404,9 +446,4 @@ func (t *txSubmitter) GetFailedCount() int64 {
 // GetQueueSize 获取当前队列长度（与 GetPendingCount 相同，别名）
 func (t *txSubmitter) GetQueueSize() int64 {
 	return t.pendingCount.Load()
-}
-
-// GetStats 获取完整统计信息
-func (t *txSubmitter) GetStats() (pending, completed, failed int64, nonce uint64) {
-	return t.pendingCount.Load(), t.completedCount.Load(), t.failedCount.Load(), t.GetNonce()
 }

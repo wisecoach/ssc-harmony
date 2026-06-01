@@ -295,6 +295,7 @@ var defaultCacheConfig = harmonyconfig.CacheConfig{
 var defaultSSCConfig = harmonyconfig.SSCConfig{
 	PrivateKey:               "",
 	SubmitterKeyPath:         "",
+	CommitRollbackKeyPath:    "",
 	BLSKeyPath:               "",
 	SelfAddrHex:              "",
 	CallTimeout:              time.Hour,

@@ -89,7 +89,7 @@ function simple_launch_shard() {
     sleep 2
 
     echo $PWD
-    while read -r addr ethAddrHex bls_key shard_id ip port submitterKeyPath; do
+    while read -r addr ethAddrHex bls_key shard_id ip port submitterKeyPath commitRollbackKeyPath; do
         if [[ "$shard_id" -ge "${shard_num}" ]]; then
           echo "shard_num ${shard_num} is full, skipping node ${i}"
           continue
@@ -126,6 +126,7 @@ function simple_launch_shard() {
           args=("${args[@]}" --ssc.bls-key-path "${PROJECT_ROOT}/${bls_key}")
           args=("${args[@]}" --ssc.self-addr-hex "${ethAddrHex}")
           args=("${args[@]}" --ssc.submitter-key-path "${submitterKeyPath}")
+          args=("${args[@]}" --ssc.commit-rollback-key-path "${PROJECT_ROOT}/${commitRollbackKeyPath}")
         elif [[ -d "$bls_key" ]]; then
           args=("${args[@]}" --blsfolder "${PROJECT_ROOT}/${bls_key}")
         else

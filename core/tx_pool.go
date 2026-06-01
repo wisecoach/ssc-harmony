@@ -833,6 +833,7 @@ func (pool *TxPool) validateTx(tx types.PoolTransaction, local bool) error {
 		return err
 	}
 	if tx.GasLimit() < intrGas {
+		utils.SSCLogger().Error().Str("txHash", tx.Hash().String()).Err(ErrIntrinsicGas).Msgf("intrinsic gas too low, need: %d, limit: %d", intrGas, tx.GasLimit())
 		return errors.WithMessagef(ErrIntrinsicGas, "transaction gas is %d", tx.GasLimit())
 	}
 	// Do more checks if it is a staking transaction

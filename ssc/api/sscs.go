@@ -159,7 +159,7 @@ type InternalService interface {
 	//	@Description: verify the simulation and vote for commit or rollback
 	VerifySimulation(simulationBytes []byte, stateDB StateDB, header *block.Header)
 
-	CommitOrRollbackWithProof(commitProofBytes []byte, stateDB StateDB) error
+	CommitOrRollbackWithProof(commitProofBytes []byte, stateDB StateDB, blockNum uint64) error
 
 	NewEpoch(newEpochBytes []byte, vm VM, stateDB StateDB, blockNum uint64) error
 

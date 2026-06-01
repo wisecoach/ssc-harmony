@@ -1,16 +1,16 @@
 package consensus
 
 import (
+	"bytes"
 	"sort"
 	"strings"
 	"time"
-
-	"github.com/harmony-one/harmony/core/genesis"
 
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/harmony-one/harmony/core"
 	"github.com/harmony-one/harmony/core/rawdb"
 	"github.com/harmony-one/harmony/core/types"
+	"github.com/harmony-one/harmony/core/vm"
 	"github.com/harmony-one/harmony/crypto/bls"
 	"github.com/harmony-one/harmony/internal/utils"
 	"github.com/harmony-one/harmony/node/worker"
@@ -93,45 +93,60 @@ func (consensus *Consensus) ProposeNewBlock(commitSigs chan []byte) (*types.Bloc
 			utils.Logger().Err(err).Msg("Failed to fetch pending transactions")
 			return nil, err
 		}
-		pendingSSCTxs := make(map[common.Address]types.Transactions)
-		consensus.GetLogger().Info().Msgf("[ProposeNewBlock] Found %d pending ssc transactions in pool", len(pendingPoolTxs[genesis.SSCSubmitterAddr]))
-		for _, onChainAddr := range consensus.GetOnChainSSCAddrs() {
-			if pendingPoolTxs[onChainAddr] != nil && pendingPoolTxs[onChainAddr].Len() > 0 {
-				for _, tx := range pendingPoolTxs[onChainAddr] {
-					if sscTx, ok := tx.(*types.Transaction); ok {
-						pendingSSCTxs[onChainAddr] = append(pendingSSCTxs[onChainAddr], sscTx)
-					}
-				}
-				delete(pendingPoolTxs, onChainAddr)
-			}
+		// Build a set of known SSC submitter addresses for quick lookup
+		sscAddrSet := make(map[common.Address]bool)
+		for _, addr := range consensus.GetOnChainSSCAddrs() {
+			sscAddrSet[addr] = true
 		}
+
+		pendingCRTxs := make(map[common.Address]types.Transactions)
+		pendingSSCTxs := make(map[common.Address]types.Transactions)
 		pendingPlainTxs := map[common.Address]types.Transactions{}
 		pendingStakingTxs := staking.StakingTransactions{}
+
+		// Single pass: sort all pending txs by type
+		//   To() == CxtCommitOrRollbackAddr → CommitOrRollback tx (any sender)
+		//   sender in sscAddrSet           → other SSC tx
+		//   else                           → plain tx
 		for addr, poolTxs := range pendingPoolTxs {
-			plainTxsPerAcc := types.Transactions{}
+			_, isSSCAddr := sscAddrSet[addr]
 			for _, tx := range poolTxs {
-				if plainTx, ok := tx.(*types.Transaction); ok {
-					plainTxsPerAcc = append(plainTxsPerAcc, plainTx)
-				} else if stakingTx, ok := tx.(*staking.StakingTransaction); ok {
-					// Only process staking transactions after pre-staking epoch happened.
-					if consensus.Blockchain().Config().IsPreStaking(worker.GetCurrentHeader().Epoch()) {
-						pendingStakingTxs = append(pendingStakingTxs, stakingTx)
+				switch t := tx.(type) {
+				case *types.Transaction:
+					if t.To() != nil && bytes.Equal(t.To().Bytes(), vm.CxtCommitOrRollbackAddr.Bytes()) {
+						pendingCRTxs[addr] = append(pendingCRTxs[addr], t)
+					} else if isSSCAddr {
+						pendingSSCTxs[addr] = append(pendingSSCTxs[addr], t)
+					} else {
+						pendingPlainTxs[addr] = append(pendingPlainTxs[addr], t)
 					}
-				} else {
+				case *staking.StakingTransaction:
+					if consensus.Blockchain().Config().IsPreStaking(worker.GetCurrentHeader().Epoch()) {
+						pendingStakingTxs = append(pendingStakingTxs, t)
+					}
+				default:
 					consensus.GetLogger().Err(types.ErrUnknownPoolTxType).
 						Msg("Failed to parse pending transactions")
 					return nil, types.ErrUnknownPoolTxType
 				}
 			}
-			if plainTxsPerAcc.Len() > 0 {
-				pendingPlainTxs[addr] = plainTxsPerAcc
-			}
 		}
+
+		countFunc := func(txs map[common.Address]types.Transactions) int {
+			cnt := 0
+			for _, acTxs := range txs {
+				cnt += len(acTxs)
+			}
+			return cnt
+		}
+
+		consensus.GetLogger().Info().Msgf("[ProposeNewBlock] begin to commit transaction, [cr, ssc, plain] = [%d, %d, %d]", countFunc(pendingCRTxs), countFunc(pendingSSCTxs), countFunc(pendingPlainTxs))
 
 		// Try commit normal and staking transactions based on the current state
 		// The successfully committed transactions will be put in the proposed block
 		if err := worker.CommitTransactions(
 			pendingSSCTxs, pendingPlainTxs, pendingStakingTxs, beneficiary,
+			pendingCRTxs,
 		); err != nil {
 			consensus.GetLogger().Error().Err(err).Msg("cannot commit transactions")
 			return nil, err

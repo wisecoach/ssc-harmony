@@ -104,6 +104,7 @@ func (hc HarmonyConfig) ToRPCServerConfig() nodeconfig.RPCServerConfig {
 type SSCConfig struct {
 	PrivateKey               string
 	SubmitterKeyPath         string
+	CommitRollbackKeyPath    string
 	BLSKeyPath               string
 	SelfAddrHex              string
 	CallTimeout              time.Duration

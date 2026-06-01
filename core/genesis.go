@@ -90,10 +90,11 @@ type Genesis struct {
 	ShardStateHash common.Hash          `json:"shardStateHash" yaml:"shardStateHash,omitempty" gencodec:"required"`
 	ShardState     shard.State          `json:"shardState" yaml:"shardState,omitempty"     gencodec:"required"`
 
-	SSCConfig           *api.ShardSimulateCommitteeConfig `json:"ssc_config" yaml:"ssc_config"`
-	GenesisAccountsDir  string                            `json:"genesis_accounts_dir" yaml:"genesis_accounts_dir"`
-	ContractDeployerDir string                            `json:"contract_deployer_dir" yaml:"contract_deployer_dir"`
-	ValidatorKeyDir     string                            `json:"validator_key_dir" yaml:"validator_key_dir"`
+	SSCConfig            *api.ShardSimulateCommitteeConfig `json:"ssc_config" yaml:"ssc_config"`
+	GenesisAccountsDir   string                            `json:"genesis_accounts_dir" yaml:"genesis_accounts_dir"`
+	ContractDeployerDir  string                            `json:"contract_deployer_dir" yaml:"contract_deployer_dir"`
+	ValidatorKeyDir      string                            `json:"validator_key_dir" yaml:"validator_key_dir"`
+	CommitRollbackKeyDir string                            `json:"commit_rollback_key_dir" yaml:"commit_rollback_key_dir"`
 
 	// These fields are used for consensus tests. Please don't use them
 	// in actual genesis blocks.
@@ -231,6 +232,23 @@ func NewGenesisSpec(netType nodeconfig.NetworkType, shardID uint32, configPath s
 						bech32ToAddress, err := common2.Bech32ToAddress(strings.TrimSuffix(d.Name(), ".key"))
 						initBalance := big.NewInt(InitFreeFund).Mul(big.NewInt(InitFreeFund), big.NewInt(denominations.One))
 						utils.SSCLogger().Debug().Str("addr", bech32ToAddress.Hex()).Msgf("init validator account, balance: %s", initBalance.String())
+						if err != nil {
+							utils.Logger().Error().Msgf("genesis account: %s, bech32ToAddress: %s, err: %v", path, bech32ToAddress, err)
+							return err
+						}
+						gen.Alloc[bech32ToAddress] = GenesisAccount{
+							Balance: initBalance,
+						}
+					}
+					return nil
+				})
+			}
+			if len(gen.CommitRollbackKeyDir) > 0 {
+				_ = filepath.WalkDir(gen.CommitRollbackKeyDir, func(path string, d os.DirEntry, err error) error {
+					if strings.HasSuffix(d.Name(), ".key") {
+						bech32ToAddress, err := common2.Bech32ToAddress(strings.TrimSuffix(d.Name(), ".key"))
+						initBalance := big.NewInt(InitFreeFund).Mul(big.NewInt(InitFreeFund), big.NewInt(denominations.One))
+						utils.SSCLogger().Debug().Str("addr", bech32ToAddress.Hex()).Msgf("init commit_rollback account, balance: %s", initBalance.String())
 						if err != nil {
 							utils.Logger().Error().Msgf("genesis account: %s, bech32ToAddress: %s, err: %v", path, bech32ToAddress, err)
 							return err
