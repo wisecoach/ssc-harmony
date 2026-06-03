@@ -3,7 +3,9 @@ package ssc
 import (
 	"context"
 	"fmt"
+	"net/http"
 	"sync"
+	"time"
 
 	"github.com/harmony-one/harmony/eth/rpc"
 	"github.com/harmony-one/harmony/internal/utils"
@@ -73,7 +75,13 @@ func (c *Comm) getOrCreateClient(endpoint string) (*rpc.Client, error) {
 	defer c.rwLock.Unlock()
 
 	if _, ok := c.clients[endpoint]; !ok {
-		client, err := rpc.Dial(endpoint)
+		transport := &http.Transport{
+			MaxIdleConnsPerHost: 32,
+			MaxIdleConns:        128,
+			IdleConnTimeout:     90 * time.Second,
+		}
+		httpClient := &http.Client{Transport: transport}
+		client, err := rpc.DialHTTPWithClient(endpoint, httpClient)
 		if err != nil {
 			return nil, err
 		}

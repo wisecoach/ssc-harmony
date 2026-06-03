@@ -147,7 +147,9 @@ func (t *txSubmitter) SubmitSimulationTx(simulation *api.CXTSimulation) error {
 	task := &txTask{
 		txBuilder: func(nonce uint64, gasPrice *big.Int) *types.Transaction {
 			input, _ := json.Marshal(simulation)
-			return types.NewCrossShardTransaction(nonce, &vm.SimulationCommitAddr, t.selfShard, t.selfShard, big.NewInt(0), t.config.SimulationCommitGasLimit, gasPrice, input)
+			intrinsicGas, _ := vm.IntrinsicGas(input, false, false, false, false)
+			gasLimit := t.config.SimulationCommitGasLimit + intrinsicGas*2
+			return types.NewCrossShardTransaction(nonce, &vm.SimulationCommitAddr, t.selfShard, t.selfShard, big.NewInt(0), gasLimit, gasPrice, input)
 		},
 		txType:       SimulationTx,
 		originTxHash: simulation.TxHash,

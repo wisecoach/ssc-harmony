@@ -166,7 +166,7 @@ func (s *stateLocker) Lockable(key api.LockKey, txHash common.Hash) error {
 		if !ls.lockable(txHash) {
 			s.sscService.stats.LockableFailBase.Add(1)
 			s.sscService.stats.RecordLockConflict(string(key))
-			utils.SSCLogger().Warn().Str("txHash", txHash.Hex()).
+			utils.SSCLogger().Debug().Str("txHash", txHash.Hex()).
 				Str("key", string(key)).
 				Str("root", s.root.Hex()).
 				Msgf("key is locked by other tx %s in base snapshot", ls.lockedBy.Hex())
@@ -179,7 +179,7 @@ func (s *stateLocker) Lockable(key api.LockKey, txHash common.Hash) error {
 		if !ls.lockable(txHash) {
 			s.sscService.stats.LockableFailPending.Add(1)
 			s.sscService.stats.RecordLockConflict(string(key))
-			utils.SSCLogger().Warn().Str("txHash", txHash.Hex()).
+			utils.SSCLogger().Debug().Str("txHash", txHash.Hex()).
 				Str("key", string(key)).
 				Str("root", s.root.Hex()).
 				Msgf("key is locked by other tx %s in pending states", ls.lockedBy.Hex())

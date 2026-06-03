@@ -863,6 +863,9 @@ func (node *Node) StartPubSub() error {
 				case <-node.psCtx.Done():
 					return
 				case m := <-msgChanConsensus:
+					utils.Logger().Info().
+						Int("chanBuf", len(msgChanConsensus)).
+						Msg("[msgChan] Consensus message dequeued, starting handler")
 					// should not take more than 30 seconds to process one message
 					ctx, cancel := context.WithTimeout(node.psCtx, 30*time.Second)
 					msg := m

@@ -1231,7 +1231,7 @@ func (s *sscService) verifyExecuteForCallState(simulation *api.CXTSimulation, tx
 	_, finished := s.finishedTxs[txHash]
 	s.stateLock.RUnlock()
 	if finished {
-		return api.ErrTxHasBeenClosed
+		return nil
 	}
 	if verifyContext == nil {
 		return errors.New("execution verify context is nil")
@@ -3549,7 +3549,11 @@ func (s *sscService) HandleCXTCommitSSCVote(vote *api.CXTCommitSSCVote) {
 	state, err := s.getState(txHash)
 	if err != nil {
 		s.stateLock.RUnlock()
-		utils.SSCLogger().Error().Str("txHash", txHash.Hex()).Err(err).Msgf("handle commit ssc vote failed")
+		if errors.Is(err, api.ErrTxHasBeenClosed) {
+			utils.SSCLogger().Info().Str("txHash", txHash.Hex()).Msg("handle commit ssc vote: tx already closed, drop vote")
+		} else {
+			utils.SSCLogger().Error().Str("txHash", txHash.Hex()).Err(err).Msg("handle commit ssc vote failed: state not found")
+		}
 		return
 	}
 	relatedShards := state.RelatedShards
