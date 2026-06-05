@@ -487,13 +487,13 @@ func setupNodeAndRun(hc harmonyconfig.HarmonyConfig) {
 	}
 
 	// Setup services
-	if hc.Sync.Enabled {
-		if hc.Sync.StagedSync {
-			setupStagedSyncService(currentNode, myHost, hc)
-		} else {
-			setupSyncService(currentNode, myHost, hc)
-		}
-	}
+	// if hc.Sync.Enabled {
+	// 	if hc.Sync.StagedSync {
+	// 		setupStagedSyncService(currentNode, myHost, hc)
+	// 	} else {
+	// 		setupSyncService(currentNode, myHost, hc)
+	// 	}
+	// }
 	if currentNode.NodeConfig.Role() == nodeconfig.Validator {
 		currentNode.RegisterValidatorServices()
 	} else if currentNode.NodeConfig.Role() == nodeconfig.ExplorerNode {
@@ -1093,12 +1093,13 @@ func setupSyncService(node *node.Node, host p2p.Host, hc harmonyconfig.HarmonyCo
 	}
 	// If we are running side chain, we will need to do some extra works for beacon
 	// sync.
-	if !node.IsRunningBeaconChain() {
-		dConfig.BHConfig = &downloader.BeaconHelperConfig{
-			BlockC:     node.BeaconBlockChannel,
-			InsertHook: node.BeaconSyncHook,
-		}
-	}
+	// [REINA PATCH 2026-06-05] Disabled BHConfig to test if extra sync streams cause retry
+	// if !node.IsRunningBeaconChain() {
+	// 	dConfig.BHConfig = &downloader.BeaconHelperConfig{
+	// 		BlockC:     node.BeaconBlockChannel,
+	// 		InsertHook: node.BeaconSyncHook,
+	// 	}
+	// }
 	s := synchronize.NewService(host, blockchains, dConfig)
 
 	node.RegisterService(service.Synchronize, s)

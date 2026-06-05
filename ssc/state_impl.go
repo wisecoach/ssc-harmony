@@ -122,14 +122,8 @@ func (s *sscService) GetState(db api.StateDB, txHash common.Hash, address common
 	}
 
 	callState.StateLock.Lock()
-	// utils.SSCLogger().Debug().Str("txHash", txHash.Hex()).Str("callIndex", callState.CallIndex.ToString()).
-	// 	Int("simulationNum", callState.SimulationNum).
-	// 	Msgf("callState locked")
 	defer func() {
 		callState.StateLock.Unlock()
-		// utils.SSCLogger().Info().Str("txHash", txHash.Hex()).Str("callIndex", callState.CallIndex.ToString()).
-		// 	Int("simulationNum", callState.SimulationNum).
-		// 	Msgf("callState unlocked")
 	}()
 
 	rwset := callState.RWSet

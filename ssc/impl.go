@@ -47,9 +47,10 @@ type priorityQueueHeap []*pqItem
 func (pq priorityQueueHeap) Len() int { return len(pq) }
 
 func (pq priorityQueueHeap) Less(i, j int) bool {
-	// SimulationNum 大的优先；相同则 sequence 小的先出（=先到先得）
+	// SimulationNum 大的优先（重试多的交易接近超时，优先调度）
+	// 相同则 sequence 小的先出（=先到先得）
 	if pq[i].task.req.SimulationNum != pq[j].task.req.SimulationNum {
-		return pq[i].task.req.SimulationNum < pq[j].task.req.SimulationNum
+		return pq[i].task.req.SimulationNum > pq[j].task.req.SimulationNum
 	}
 	return pq[i].sequence < pq[j].sequence
 }
@@ -1838,6 +1839,51 @@ func (s *sscService) StartSimulateCXTransaction(req *api.CXTSimulationRequest) *
 
 	for _, ch := range chs {
 		ch <- sscResult
+	}
+
+	// TempLockView pre-check: 在 SubmitSimulationTx 前检查锁冲突
+	// 仿真结束知道 RWSet 了，用 TempLockView 预判 on-chain 是否会锁冲突
+	// 如果冲突，不进 on-chain 直接进 retryPool，避免浪费区块资源
+	if simulationCommit.Commit && s.IsLeader(req.Epochs[s.SelfShard]) {
+		if callStates, ok := state.SimulationCallStates[state.SimulationNum]; ok && len(callStates) > 0 {
+			callState := callStates[0]
+			if callState != nil && callState.RWSet != nil {
+				reads := make([]api.LockKey, 0)
+				writes := make([]api.LockKey, 0)
+				for addr, account := range callState.RWSet.ReadState.State {
+					for key := range account {
+						reads = append(reads, api.FormKey(addr, key))
+					}
+				}
+				for addr, account := range callState.RWSet.WriteState.State {
+					for key := range account {
+						writes = append(writes, api.FormKey(addr, key))
+					}
+				}
+				if !s.retryScheduler.tempLockView.TryLock(txHash, reads, writes) {
+					utils.SSCLogger().Warn().Str("txHash", txHash.Hex()).
+						Int("reads", len(reads)).Int("writes", len(writes)).
+						Msg("TempLockView pre-check failed, deferring to retry pool")
+					simulationCommit.Commit = false
+					simulationCommit.Status = api.LockConflict
+					simulationCommit.Reason = "temp lock conflict"
+					s.retryScheduler.CallForRetry(&api.RetryTx{
+						TxHash:        txHash,
+						Epochs:        req.Epochs,
+						RelatedShards: sscResult.RelatedShards,
+						SimulationNum: req.SimulationNum + 1,
+						Condition:     api.Simulate,
+					})
+					s.stateLock.Lock()
+					state, err = s.getState(txHash)
+					if err == nil {
+						state.Status = api.WAITING_FOR_RESIMULATION_OFF_CHAIN
+					}
+					s.stateLock.Unlock()
+					return sscResult
+				}
+			}
+		}
 	}
 
 	s.thresholdSignSimulationCommit(simulationCommit)

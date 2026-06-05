@@ -284,7 +284,7 @@ func buildConfig(config ShardConfig) {
 		timeout := &api.TimeoutConfig{
 			Sp1:               config.delay,
 			PoolTimeout:       config.delay,
-			MaxOnChainRetries: 0,
+			MaxOnChainRetries: 5,
 		}
 		for j := 0; j < config.validator; j++ {
 			v := shard2validators[i][j]

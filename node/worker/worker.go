@@ -304,8 +304,8 @@ func (w *Worker) CommitTransactions(
 	}
 
 	// HARMONY TXNS
-	// 单块所有交易上限（总 300 笔）
-	remaining := 200
+	// 单块所有交易上限（总 500 笔）
+	remaining := 500
 
 	// 1. CommitOrRollbackTx 最高优先级
 	if len(pendingCRTxs) > 0 {

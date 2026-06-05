@@ -144,7 +144,7 @@ function deploy() {
         mode='validator'
         node_config="test/configs/${env}/shard=${shard}_validator=${validator}_ssc=${ssc}_delay=${delay}_vpn=${validator_per_node}/default_config_${env}.toml"
 
-        bootnode="/ip4/10.7.95.200/tcp/19875/p2p/Qmc1V6W7BwX8Ugb42Ti8RnXF1rY5PF7nnZ6bKBryCgi6cv"
+        bootnode="/ip4/10.7.95.202/tcp/19875/p2p/Qmc1V6W7BwX8Ugb42Ti8RnXF1rY5PF7nnZ6bKBryCgi6cv"
         args=("${base_args[@]}" --ip "${ip}" --port "${port}" --key "/tmp/${ip}-${port}.key" --db_dir "${PROJECT_ROOT}/db/db-${ip}-${port}" \
           "--broadcast_invalid_tx=false" --shard_num "${shard_num}" --shard_size "${shard_size}" --run.shard "${shard_id} --bootnodes=$bootnode")
         if [[ -z "$ip" || -z "$port" || "$ip" == "#" ]]; then

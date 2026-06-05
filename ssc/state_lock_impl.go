@@ -148,17 +148,12 @@ func (s *lockedStates) addLockedState(txHash common.Hash, callIndexStr string, k
 }
 
 // addRLockedState 添加一个读锁条目到反向索引，同时设置 rlockedStates[key]。
-//
-// 注意：这里有一个潜在 bug——
-// 读锁的 value 被写入了 writeLock 的反向索引 callIndex2lockedState（而不是 rlocked 版本）。
-// 见 addRLockedState 第 121 行写入的是 callIndex2rlockedState，而 Getters 第 114 行也在操作 callIndex2lockedState。
-// 这可能不会导致运行时错误，但反映了历史迁移时的不一致。
 func (s *lockedStates) addRLockedState(txHash common.Hash, callIndexStr string, key api.LockKey, state *rlockedState) {
-	if s.callIndex2lockedState[txHash] == nil {
-		s.callIndex2lockedState[txHash] = make(map[string]map[api.LockKey]common.Hash)
+	if s.callIndex2rlockedState[txHash] == nil {
+		s.callIndex2rlockedState[txHash] = make(map[string]map[api.LockKey]struct{})
 	}
-	if s.callIndex2lockedState[txHash][callIndexStr] == nil {
-		s.callIndex2lockedState[txHash][callIndexStr] = make(map[api.LockKey]common.Hash)
+	if s.callIndex2rlockedState[txHash][callIndexStr] == nil {
+		s.callIndex2rlockedState[txHash][callIndexStr] = make(map[api.LockKey]struct{})
 	}
 	s.callIndex2rlockedState[txHash][callIndexStr][key] = struct{}{}
 	s.rlockedStates[key] = state
