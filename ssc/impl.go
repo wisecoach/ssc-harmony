@@ -1786,6 +1786,7 @@ func (s *sscService) StartSimulateCXTransaction(req *api.CXTSimulationRequest) *
 					RelatedShards: sscResult.RelatedShards,
 					SimulationNum: req.SimulationNum + 1,
 					Condition:     api.Simulate,
+					OriginShardID: state.OriginShardId,
 				})
 			}
 			s.stateLock.Lock()
@@ -1867,19 +1868,20 @@ func (s *sscService) StartSimulateCXTransaction(req *api.CXTSimulationRequest) *
 					simulationCommit.Commit = false
 					simulationCommit.Status = api.LockConflict
 					simulationCommit.Reason = "temp lock conflict"
-					s.retryScheduler.CallForRetry(&api.RetryTx{
-						TxHash:        txHash,
-						Epochs:        req.Epochs,
-						RelatedShards: sscResult.RelatedShards,
-						SimulationNum: req.SimulationNum + 1,
-						Condition:     api.Simulate,
-					})
 					s.stateLock.Lock()
 					state, err = s.getState(txHash)
 					if err == nil {
 						state.Status = api.WAITING_FOR_RESIMULATION_OFF_CHAIN
 					}
 					s.stateLock.Unlock()
+					s.retryScheduler.CallForRetry(&api.RetryTx{
+						TxHash:        txHash,
+						Epochs:        req.Epochs,
+						RelatedShards: sscResult.RelatedShards,
+						SimulationNum: req.SimulationNum + 1,
+						Condition:     api.Simulate,
+						OriginShardID: state.OriginShardId,
+					})
 					return sscResult
 				}
 			}
@@ -3478,12 +3480,42 @@ func (s *sscService) CommitSimulation(commit *api.SimulationCommit) {
 	utils.SSCLogger().Info().Str("txHash", txHash.Hex()).Msgf("build commit simulation completed")
 
 	s.buildSignaturesForSimulation(simuState, simulation)
-	err = s.txSubmitter.SubmitSimulationTx(simulation)
+
+	// NEW: 如果 commit.UseCRSigner=true, 用 CR signer 的 nonce 提交
+	// 确保 CR tx(crN) → SimTx(crN+1) 在同一个区块按序执行
+	if commit.UseCRSigner {
+		err = s.txSubmitter.SubmitSimulationTxWithSigner(simulation, "CommitOrRollbackTx")
+		utils.SSCLogger().Info().Str("txHash", txHash.Hex()).
+			Msg("commit simulation: submitted with CR signer (hot key chain)")
+	} else {
+		err = s.txSubmitter.SubmitSimulationTx(simulation)
+	}
 	s.recordTraceBlock(txHash, StageSimulationTxSubmit, s.bc.CurrentHeader().NumberU64())
 	if err != nil {
 		utils.SSCLogger().Error().Err(err).Msg("failed to submit simulation tx")
 		return
 	}
+
+	// NEW: CR tx 提交成功后，检查是否可以链式触发等待中的 retry tx（hot key chain）
+	// 无论是普通 CR 还是链式 CR 都触发——因为 CR 解锁了 key，retry pool 里的 tx 可能等这些 key
+	if s.IsLeader(commit.Epochs[s.SelfShard]) {
+		// 从 simulationCallStates 中提取完整 WriteSet 用于 chainHotKeyCR
+		writeSet := &api.RWSet{WriteState: api.NewStateSet()}
+		for _, callState := range simulationCallStates {
+			if callState.RWSet != nil && callState.RWSet.WriteState != nil {
+				for addr, state := range callState.RWSet.WriteState.State {
+					if writeSet.WriteState.State[addr] == nil {
+						writeSet.WriteState.State[addr] = make(map[common.Hash]common.Hash)
+					}
+					for key, val := range state {
+						writeSet.WriteState.State[addr][key] = val
+					}
+				}
+			}
+		}
+		s.retryScheduler.chainHotKeyCR(txHash, writeSet)
+	}
+
 	s.stats.setCxtStage(txHash, 2)
 	s.stateLock.Lock()
 	simuState, err = s.getState(txHash)
@@ -3722,6 +3754,10 @@ func (s *sscService) SignalReSimulation(signal *api.ReSimulationSignals) {
 	s.retryScheduler.HandleReSimulationSignal(signal)
 }
 
+func (s *sscService) HandleHotKeyRetrySignal(signal *api.ReSimulationSignal) {
+	s.retryScheduler.HandleHotKeyRetrySignal(signal)
+}
+
 func (s *sscService) startReSimulation(txHash common.Hash, simulationNum int) {
 	s.stateLock.Lock()
 	state, err := s.getState(txHash)
@@ -3888,6 +3924,17 @@ func (s *sscService) startReSimulation(txHash common.Hash, simulationNum int) {
 		},
 	}
 
+	// NEW: 检查是否有 CRHotWritePatch — 如果有则应该用 CR signer 提交
+	// 确保 CR tx 和这个 SimulationTx 在同一区块、按 nonce 顺序执行
+	s.stateLock.RLock()
+	if state, err := s.getState(txHash); err == nil && state != nil && state.CRHotWritePatch != nil {
+		simulationCommit.UseCRSigner = true
+		utils.SSCLogger().Info().Str("txHash", txHash.Hex()).
+			Int("patchSize", len(state.CRHotWritePatch.WriteState.State)).
+			Msg("startReSimulation: CRHotWritePatch detected, UseCRSigner=true")
+	}
+	s.stateLock.RUnlock()
+
 	if len(sscResult.Err) == 0 {
 		simulationCommit.Commit = true
 		simulationCommit.Status = api.OK
@@ -3901,6 +3948,12 @@ func (s *sscService) startReSimulation(txHash common.Hash, simulationNum int) {
 			simulationCommit.Commit = false
 			simulationCommit.Status = api.LockConflict
 			simulationCommit.Reason = sscResult.Err
+			var originShardId uint32
+			s.stateLock.Lock()
+			if state, es := s.getState(txHash); es == nil {
+				originShardId = state.OriginShardId
+			}
+			s.stateLock.Unlock()
 			if s.IsLeader(req.Epochs[s.SelfShard]) {
 				s.retryScheduler.CallForRetry(&api.RetryTx{
 					TxHash:        txHash,
@@ -3908,6 +3961,7 @@ func (s *sscService) startReSimulation(txHash common.Hash, simulationNum int) {
 					RelatedShards: sscResult.RelatedShards,
 					SimulationNum: req.SimulationNum + 1,
 					Condition:     api.Simulate,
+					OriginShardID: originShardId,
 				})
 			}
 			return

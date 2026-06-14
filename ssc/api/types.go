@@ -1061,6 +1061,10 @@ type SimulationCommit struct {
 	Status        SimulationCommitStatus
 	Reason        string
 	BaseBLSSignedMessage
+	// UseCRSigner tells the handler to submit the resulting SimTx using the
+	// CR signer's nonce chain (crSigner, crNonce) instead of the normal
+	// simulation signer. This ensures CR(crN) → SimTx(crN+1) ordering.
+	UseCRSigner bool `json:"usecrsigner"`
 }
 
 func (m *SimulationCommit) Bytes() []byte {
@@ -1271,10 +1275,15 @@ type ReSimulationSignals struct {
 
 type ReSimulationSignal struct {
 	TxHash        common.Hash
+	FromShard     uint32
 	Epoch         Epoch
 	SimulationNum int
-	Ready         bool
 	Condition     ConflictCondition
+	Ready         bool
+	// CRHotWritePatch carries the CR WriteSet for hot keys that were unlocked.
+	// When set, the origin shard stores this in CXTSimulationState.CRHotWritePatch
+	// so the retry simulation reads the CR's updated values.
+	CRHotWritePatch *RWSet `json:"cr_hot_write_patch,omitempty"`
 }
 
 func NewCallStack(txHash common.Hash, simulationNum int) *CallStack {
@@ -1360,10 +1369,14 @@ type CXTSimulationState struct {
 	RelatedShards              RelatedShards
 	ReSimulationSignals        map[int]map[uint32]*ReSimulationSignal
 	CallForest                 *CallForest
-	SimulateCh                 chan struct{}      `json:"-"`
-	SimulationReentryLock      sync.Mutex         `json:"-"`
-	Ctx                        context.Context    `json:"-"`
-	CtxCancel                  context.CancelFunc `json:"-"`
+	// CRHotWritePatch stores state values from a CR transaction's WriteSet
+	// for hot keys. When set, GetState() checks this patch FIRST before
+	// querying stateDB, allowing retry simulations to read post-CR values.
+	CRHotWritePatch       *RWSet             `json:"cr_hot_write_patch,omitempty"`
+	SimulateCh            chan struct{}      `json:"-"`
+	SimulationReentryLock sync.Mutex         `json:"-"`
+	Ctx                   context.Context    `json:"-"`
+	CtxCancel             context.CancelFunc `json:"-"`
 }
 
 type SimulationCallStates []*SimulationCallState
@@ -1456,6 +1469,10 @@ type RWSet struct {
 	ReadState    *StateSet
 	WriteState   *StateSet
 	CurrentState *StateSet
+}
+
+func NewStateSet() *StateSet {
+	return &StateSet{State: make(map[common.Address]map[common.Hash]common.Hash), Balance: make(map[common.Address]*big.Int)}
 }
 
 type StateSet struct {

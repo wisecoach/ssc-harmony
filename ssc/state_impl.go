@@ -114,6 +114,24 @@ func (s *sscService) GetBalance(db api.StateDB, txHash common.Hash, address comm
 }
 
 func (s *sscService) GetState(db api.StateDB, txHash common.Hash, address common.Address, key common.Hash) (common.Hash, error) {
+	// Step 0: 检查 CRHotWritePatch — 如果有 patch 且命中，直接返回 patch 值
+	s.stateLock.RLock()
+	state, err := s.getState(txHash)
+	if err == nil && state != nil && state.CRHotWritePatch != nil {
+		if addrState, ok := state.CRHotWritePatch.WriteState.State[address]; ok {
+			if val, exists := addrState[key]; exists {
+				s.stateLock.RUnlock()
+				utils.SSCLogger().Debug().Str("txHash", txHash.Hex()).
+					Str("address", address.Hex()).
+					Str("key", key.Hex()).
+					Str("value", val.Hex()).
+					Msg("GetState: CRHotWritePatch hit, returning patched value")
+				return val, nil
+			}
+		}
+	}
+	s.stateLock.RUnlock()
+
 	callState := s.GetCallState(txHash)
 	if callState == nil {
 		utils.SSCLogger().Error().Str("txHash", txHash.Hex()).

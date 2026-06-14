@@ -106,6 +106,13 @@ func (s *PublicSSCCrossService) SignalReSimulation(
 	return nil
 }
 
+func (s *PublicSSCCrossService) HandleHotKeyRetrySignal(
+	ctx context.Context,
+	signal *api.ReSimulationSignal) error {
+	s.internalService.HandleHotKeyRetrySignal(signal)
+	return nil
+}
+
 type PublicSSCShardService struct {
 	count           *atomic.Int32
 	internalService api.ShardService

@@ -172,6 +172,36 @@ func (t *txSubmitter) SubmitSimulationTx(simulation *api.CXTSimulation) error {
 	return err
 }
 
+// SubmitSimulationTxWithSigner 用指定的 signer 类型提交 SimulationTx。
+// 当 signerType="CommitOrRollbackTx" 时用 CR signer 的 nonce 提交，确保 CR(crN) → SimTx(crN+1) 排序。
+func (t *txSubmitter) SubmitSimulationTxWithSigner(simulation *api.CXTSimulation, signerType string) error {
+	task := &txTask{
+		txBuilder: func(nonce uint64, gasPrice *big.Int) *types.Transaction {
+			input, _ := json.Marshal(simulation)
+			intrinsicGas, _ := vm.IntrinsicGas(input, false, false, false, false)
+			gasLimit := t.config.SimulationCommitGasLimit + intrinsicGas*2
+			return types.NewCrossShardTransaction(nonce, &vm.SimulationCommitAddr, t.selfShard, t.selfShard, big.NewInt(0), gasLimit, gasPrice, input)
+		},
+		txType:       TxType(signerType),
+		originTxHash: simulation.TxHash,
+		done:         make(chan error, 1),
+	}
+	utils.Logger().Info().
+		Str("txHash", simulation.TxHash.Hex()).
+		Uint64("Nonce", t.GetNonce(TxType(signerType))).
+		Str("signerType", signerType).
+		Msg("[SimulationTx] submitting with CR signer (hot key chain)")
+	t.pendingCount.Add(1)
+	t.queue.queues[txTypeToChannelIndex(TxType(signerType))] <- task
+	err := <-task.done
+	if err != nil {
+		t.failedCount.Add(1)
+	}
+	t.completedCount.Add(1)
+	t.pendingCount.Add(-1)
+	return err
+}
+
 func (t *txSubmitter) SubmitCommitOrRollbackTx(proof *api.CXTCommitProof) error {
 	task := &txTask{
 		txBuilder: func(nonce uint64, gasPrice *big.Int) *types.Transaction {

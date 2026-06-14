@@ -1,6 +1,7 @@
 package ssc
 
 import (
+	"bytes"
 	"context"
 	"sync"
 	"time"
@@ -14,15 +15,17 @@ import (
 
 func NewRetryScheduler(ctx context.Context, sscService *sscService, comm *Comm, selfShard uint32, tempLockView *TempLockView) *retryScheduler {
 	rs := &retryScheduler{
-		ctx:          ctx,
-		tempLockView: tempLockView,
-		sscService:   sscService,
-		comm:         comm,
-		selfShard:    selfShard,
-		retryPool:    make(map[common.Hash]*api.RetryTx),
-		staleTxs:     make(map[common.Hash]struct{}),
-		signals:      make(map[common.Hash]map[int]map[uint32]*api.ReSimulationSignal),
-		mu:           sync.RWMutex{},
+		ctx:            ctx,
+		tempLockView:   tempLockView,
+		sscService:     sscService,
+		comm:           comm,
+		selfShard:      selfShard,
+		retryPool:      make(map[common.Hash]*api.RetryTx),
+		staleTxs:       make(map[common.Hash]struct{}),
+		signals:        make(map[common.Hash]map[int]map[uint32]*api.ReSimulationSignal),
+		mu:             sync.RWMutex{},
+		hotKeySet:      make(map[api.LockKey]struct{}),
+		hotKeyMaxCount: 100,
 	}
 	go rs.cycle()
 	return rs
@@ -30,12 +33,17 @@ func NewRetryScheduler(ctx context.Context, sscService *sscService, comm *Comm, 
 
 // retryScheduler 实现
 type retryScheduler struct {
-	mu sync.RWMutex
+	mu       sync.RWMutex
+	hotKeyMu sync.RWMutex
 
 	// 待重试交易池：txHash → RetryTx
 	retryPool map[common.Hash]*api.RetryTx
 	staleTxs  map[common.Hash]struct{}
 	signals   map[common.Hash]map[int]map[uint32]*api.ReSimulationSignal // txHash -> simulationNum -> relatedShards -> signal
+
+	// Hot key 链式重试相关
+	hotKeySet      map[api.LockKey]struct{} // 当前热键集合
+	hotKeyMaxCount int                      // hotKey 最多跟踪数量
 
 	// 依赖组件（通过接口解耦）
 	ctx          context.Context
@@ -79,6 +87,7 @@ func (rs *retryScheduler) CallForRetry(tx *api.RetryTx) {
 	}
 	utils.SSCLogger().Info().
 		Str("txHash", tx.TxHash.Hex()).
+		Uint32("originShardID", tx.OriginShardID).
 		Interface("relatedShards", tx.RelatedShards).
 		Msg("call for retry")
 	for _, shard := range tx.RelatedShards {
@@ -129,6 +138,9 @@ func (rs *retryScheduler) AddToRetry(tx *api.RetryTx) {
 func (rs *retryScheduler) OnBlockCommitted(block *types.Block) {
 	// 首先处理临时锁
 	rs.tempLockView.OnBlockCommitted(block)
+
+	// 定期更新热键集合
+	rs.updateHotKeys()
 
 	rs.mu.Lock()
 	defer rs.mu.Unlock()
@@ -206,6 +218,166 @@ func (rs *retryScheduler) sendReSimulationSignals(signals *api.ReSimulationSigna
 	if err != nil {
 		utils.SSCLogger().Error().Err(err).Msg("send signals resimulation failed")
 	}
+}
+
+// updateHotKeys 从冲突统计中更新热键集合
+func (rs *retryScheduler) updateHotKeys() {
+	topKeys := rs.sscService.stats.topHotKeys(rs.hotKeyMaxCount)
+	rs.hotKeyMu.Lock()
+	rs.hotKeySet = make(map[api.LockKey]struct{}, len(topKeys))
+	for _, keyStr := range topKeys {
+		rs.hotKeySet[api.LockKey(keyStr)] = struct{}{}
+	}
+	rs.hotKeyMu.Unlock()
+	utils.SSCLogger().Info().Int("hotKeys", len(topKeys)).
+		Interface("topKeys", topKeys).Msg("updateHotKeys")
+}
+
+// isHotKey 判断某个 LockKey 是否是热键
+func (rs *retryScheduler) isHotKey(key api.LockKey) bool {
+	rs.hotKeyMu.RLock()
+	defer rs.hotKeyMu.RUnlock()
+	_, ok := rs.hotKeySet[key]
+	return ok
+}
+
+// chainHotKeyCR 在 CR tx 提交后调用。
+// 分析 CR 的 WriteSet 中是否有 hot key，如果有则找到等待这些 key 的 retry tx，
+// 发送带 CRHotWritePatch 的 HandleHotKeyRetrySignal。
+func (rs *retryScheduler) chainHotKeyCR(crTxHash common.Hash, writeSet *api.RWSet) {
+	if writeSet == nil || len(writeSet.WriteState.State) == 0 {
+		return
+	}
+
+	// 1. 从 CR WriteSet 中过滤出 hot key 的写入
+	hotPatch := &api.RWSet{
+		WriteState: &api.StateSet{},
+	}
+	hasHotKey := false
+	for addr, state := range writeSet.WriteState.State {
+		if state == nil {
+			continue
+		}
+		for key, val := range state {
+			lockKey := api.FormKey(addr, key)
+			if rs.isHotKey(lockKey) {
+				if hotPatch.WriteState.State[addr] == nil {
+					hotPatch.WriteState.State[addr] = make(map[common.Hash]common.Hash)
+				}
+				hotPatch.WriteState.State[addr][key] = val
+				hasHotKey = true
+			}
+		}
+	}
+	if !hasHotKey {
+		utils.SSCLogger().Debug().Str("txHash", crTxHash.Hex()).
+			Msg("chainHotKeyCR: no hot keys in writeSet")
+		return
+	}
+
+	hotKeysSummary := make([]string, 0)
+	for addr, state := range hotPatch.WriteState.State {
+		for key := range state {
+			hotKeysSummary = append(hotKeysSummary, string(api.FormKey(addr, key)))
+		}
+	}
+	utils.SSCLogger().Info().Str("txHash", crTxHash.Hex()).
+		Strs("hotKeys", hotKeysSummary).
+		Msg("chainHotKeyCR: CR contains hot keys")
+
+	// 2. 遍历 retryPool 找到需要这些 hot key 的交易
+	// 先构建一个 hotKeyLocks 查表加速匹配
+	hotKeyLocks := make(map[api.LockKey]struct{})
+	for addr, state := range hotPatch.WriteState.State {
+		for key := range state {
+			hotKeyLocks[api.FormKey(addr, key)] = struct{}{}
+		}
+	}
+
+	rs.mu.RLock()
+	defer rs.mu.RUnlock()
+
+	for txHash, retryTx := range rs.retryPool {
+		if bytes.Equal(retryTx.TxHash.Bytes(), crTxHash.Bytes()) {
+			continue // 跳过 CR tx 自身
+		}
+
+		// 检查此 retry tx 是否需要 hotPatch 中的任何 key
+		needsHotKey := false
+		for _, lockKey := range retryTx.ReadSet {
+			if _, exists := hotKeyLocks[lockKey]; exists {
+				needsHotKey = true
+				break
+			}
+		}
+		if !needsHotKey {
+			for _, lockKey := range retryTx.WriteSet {
+				if _, exists := hotKeyLocks[lockKey]; exists {
+					needsHotKey = true
+					break
+				}
+			}
+		}
+		if !needsHotKey {
+			continue
+		}
+
+		// 3. 先用 TempLockView 检查这个 tx 当前是否能拿锁
+		if !rs.tempLockView.CanLock(txHash, retryTx.ReadSet, retryTx.WriteSet) {
+			utils.SSCLogger().Debug().Str("txHash", txHash.Hex()).
+				Msg("chainHotKeyCR: retry tx still blocked by TempLockView, skip")
+			continue
+		}
+
+		// 4. 发送带 HotPatch 的重试信号
+		signal := &api.ReSimulationSignal{
+			TxHash:          retryTx.TxHash,
+			Epoch:           retryTx.Epochs[retryTx.OriginShardID],
+			SimulationNum:   retryTx.SimulationNum,
+			Condition:       retryTx.Condition,
+			Ready:           true,
+			FromShard:       rs.selfShard,
+			CRHotWritePatch: hotPatch,
+		}
+
+		originLeader := rs.sscService.GetLeader(retryTx.Epochs[retryTx.OriginShardID], retryTx.OriginShardID)
+		err := rs.comm.Call(rs.ctx, nil, originLeader, api.Method_HandleHotKeyRetrySignal, signal)
+		if err != nil {
+			utils.SSCLogger().Error().Err(err).Str("txHash", txHash.Hex()).
+				Msg("chainHotKeyCR: failed to send signal")
+		} else {
+			utils.SSCLogger().Info().Str("txHash", txHash.Hex()).
+				Strs("hotKeys", hotKeysSummary).
+				Uint32("originShard", retryTx.OriginShardID).
+				Msg("chainHotKeyCR: sent hot key retry signal")
+		}
+	}
+}
+
+func (rs *retryScheduler) HandleHotKeyRetrySignal(signal *api.ReSimulationSignal) {
+	utils.SSCLogger().Info().Str("txHash", signal.TxHash.Hex()).
+		Bool("hasPatch", signal.CRHotWritePatch != nil).
+		Msg("HandleHotKeyRetrySignal: received")
+
+	if signal.CRHotWritePatch != nil {
+		rs.sscService.stateLock.Lock()
+		state, err := rs.sscService.getState(signal.TxHash)
+		if err == nil && state != nil {
+			state.CRHotWritePatch = signal.CRHotWritePatch
+			utils.SSCLogger().Info().Str("txHash", signal.TxHash.Hex()).
+				Int("patchSize", len(signal.CRHotWritePatch.WriteState.State)).
+				Msg("HandleHotKeyRetrySignal: stored CRHotWritePatch")
+		}
+		rs.sscService.stateLock.Unlock()
+	}
+
+	signals := &api.ReSimulationSignals{
+		OriginShard: rs.selfShard,
+		FromShard:   signal.FromShard,
+		Epoch:       signal.Epoch,
+		Signals:     []*api.ReSimulationSignal{signal},
+	}
+	_ = rs.HandleReSimulationSignal(signals)
 }
 func (rs *retryScheduler) HandleReSimulationSignal(signals *api.ReSimulationSignals) error {
 	if !rs.sscService.IsLeader(signals.Epoch) {
