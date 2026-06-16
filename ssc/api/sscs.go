@@ -29,7 +29,7 @@ const (
 	Method_AddRetryTx                 = "ssc_addRetryTx"
 	Method_RetryCommit                = "ssc_retryCommit"
 	Method_RetryCancel                = "ssc_retryCancel"
-	Method_HandleHotKeyRetrySignal    = "ssc_handleHotKeyRetrySignal"
+	Method_HandleChainSimSignal       = "ssc_handleChainSimSignal"
 	Method_SLTest                     = "ssc_sLTest"
 	Method_HandleNewEpoch             = "ssc_handleNewEpoch"
 )
@@ -263,12 +263,12 @@ type CrossService interface {
 	//
 	SignalReSimulation(signal *ReSimulationSignals)
 
-	// HandleHotKeyRetrySignal
-	//  @Description: handle the hot key retry signal from another shard's leader.
-	//  When a CR transaction unlocks hot keys, the retry scheduler sends this signal
-	//  to the origin shard with a CRHotWritePatch so the retry simulation can read
-	//  the updated state values directly.
-	HandleHotKeyRetrySignal(signal *ReSimulationSignal)
+	// HandleChainSimSignal
+	//  @Description: handle the chain sim signal from another shard's leader.
+	//  When a SimTx is submitted, the retry scheduler sends this signal
+	//  to the origin shard with a ChainPatch so the downstream retry simulation
+	//  can read the upstream's produced state values directly.
+	HandleChainSimSignal(signal *ReSimulationSignal)
 }
 
 type Service interface {

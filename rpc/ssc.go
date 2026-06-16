@@ -106,10 +106,10 @@ func (s *PublicSSCCrossService) SignalReSimulation(
 	return nil
 }
 
-func (s *PublicSSCCrossService) HandleHotKeyRetrySignal(
+func (s *PublicSSCCrossService) HandleChainSimSignal(
 	ctx context.Context,
 	signal *api.ReSimulationSignal) error {
-	s.internalService.HandleHotKeyRetrySignal(signal)
+	s.internalService.HandleChainSimSignal(signal)
 	return nil
 }
 

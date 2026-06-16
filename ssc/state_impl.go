@@ -114,18 +114,18 @@ func (s *sscService) GetBalance(db api.StateDB, txHash common.Hash, address comm
 }
 
 func (s *sscService) GetState(db api.StateDB, txHash common.Hash, address common.Address, key common.Hash) (common.Hash, error) {
-	// Step 0: 检查 CRHotWritePatch — 如果有 patch 且命中，直接返回 patch 值
+	// Step 0: 检查 ChainPatch — 如果有 patch 且命中，直接返回 patch 值
 	s.stateLock.RLock()
 	state, err := s.getState(txHash)
-	if err == nil && state != nil && state.CRHotWritePatch != nil {
-		if addrState, ok := state.CRHotWritePatch.WriteState.State[address]; ok {
+	if err == nil && state != nil && state.ChainPatch != nil {
+		if addrState, ok := state.ChainPatch.WriteState.State[address]; ok {
 			if val, exists := addrState[key]; exists {
 				s.stateLock.RUnlock()
 				utils.SSCLogger().Debug().Str("txHash", txHash.Hex()).
 					Str("address", address.Hex()).
 					Str("key", key.Hex()).
 					Str("value", val.Hex()).
-					Msg("GetState: CRHotWritePatch hit, returning patched value")
+					Msg("GetState: ChainPatch hit, returning patched value")
 				return val, nil
 			}
 		}
@@ -323,35 +323,5 @@ func (s *sscService) SetSimuState(txHash common.Hash, address common.Address, ke
 }
 
 func (s *sscService) GetResult(txHash common.Hash) (result []byte, leftOverGas uint64, err error) {
-	s.verifyCtxLock.Lock()
-	defer s.verifyCtxLock.Unlock()
-
-	verifyContext := s.executionVerifyContexts[txHash]
-	if verifyContext == nil {
-		return nil, 0, api.ErrInvalidExecution
-	}
-	if len(verifyContext.DependentResults) <= verifyContext.CallFrame.PC {
-		utils.SSCLogger().Error().Str("txHash", txHash.Hex()).
-			Interface("verifyContext", verifyContext).
-			Interface("callFrame", verifyContext.CallFrame).
-			Int("dependentResultsLength", len(verifyContext.DependentResults)).
-			Msg("get result failed, index out of range")
-		return nil, 0, api.ErrInvalidExecution
-	}
-	ret := verifyContext.DependentResults[verifyContext.CallFrame.PC]
-	if ret == nil {
-		utils.SSCLogger().Error().Str("txHash", txHash.Hex()).
-			Int("verifyContextIndex", verifyContext.CallFrame.PC).
-			Interface("dependentResults", verifyContext.DependentResults).
-			Msg("get result failed, result is nil")
-		return nil, 0, api.ErrInvalidExecution
-	}
-	result = ret.Result
-	leftOverGas = ret.LeftOverGas
-	utils.SSCLogger().Debug().
-		Str("txHash", txHash.Hex()).
-		Interface("callFrame", verifyContext.CallFrame).
-		Msgf("get result, [%d/%d]: %v", verifyContext.CallFrame.PC+1, len(verifyContext.DependentResults), result)
-	verifyContext.CallFrame.Next()
-	return
+	return s.Verifier.GetResult(txHash)
 }

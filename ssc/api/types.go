@@ -281,7 +281,18 @@ type Member struct {
 type ShardSimulateCommitteeConfig struct {
 	Committees []*ShardSimulateCommittee `json:"committees" yaml:"committees"`
 	Timeout    *TimeoutConfig            `json:"timeout" yaml:"timeout"`
+	Chain      *ChainConfig              `json:"chain" yaml:"chain"`
 	Reputation *ReputationConfig         `json:"reputation" yaml:"reputation"`
+}
+
+// ChainConfig controls the simulation dependency chaining (DAG chaining).
+// When enabled, submitting a SimTx triggers chainNextSim which searches the
+// retry pool for dependent transactions and sends them ChainPatch signals so
+// they can simulate in the same block without waiting for block confirmation.
+type ChainConfig struct {
+	Enabled     bool `json:"enabled" yaml:"enabled"`             // master switch
+	MaxPerBlock int  `json:"max_per_block" yaml:"max_per_block"` // max chained SimTx per block
+	MaxDepth    int  `json:"max_depth" yaml:"max_depth"`         // max chain depth (0 = unlimited)
 }
 
 // ShardSimulateCommittee (SSC) is the committee of the shard simulation
@@ -1282,10 +1293,11 @@ type ReSimulationSignal struct {
 	SimulationNum int
 	Condition     ConflictCondition
 	Ready         bool
-	// CRHotWritePatch carries the CR WriteSet for hot keys that were unlocked.
-	// When set, the origin shard stores this in CXTSimulationState.CRHotWritePatch
-	// so the retry simulation reads the CR's updated values.
-	CRHotWritePatch *RWSet `json:"cr_hot_write_patch,omitempty"`
+	// ChainPatch carries the WriteSet from the upstream SimTx in a simulation
+	// dependency chain. When set, the origin shard stores this in
+	// CXTSimulationState.ChainPatch so downstream retry simulations read the
+	// upstream's produced state values without waiting for block confirmation.
+	ChainPatch *RWSet `json:"chain_patch,omitempty"`
 }
 
 func NewCallStack(txHash common.Hash, simulationNum int) *CallStack {
@@ -1355,26 +1367,26 @@ func (c *CallStack) String() string {
 }
 
 type CXTSimulationState struct {
-	Nonce                      uint64
-	TxSender                   common.Address
-	Epochs                     []Epoch
-	CurrentCallFrame           *CallFrame
-	CallStack                  *CallStack
-	Status                     CXTStatus
-	SimulationRequest          *CXTSimulationRequest // the simulation request, only origin member has this
-	SimulationResult           *CXTSimulationSSCResult
-	SimulationCallStates       map[int]SimulationCallStates
-	SimulationNum              int       // the number of the simulation used to identify the recall
-	OnChainLockedSimulationNum int       // the simulationNum when the tx was first locked on-chain (0 = not yet locked)
-	LockedCallIndex            CallIndex // the locked call index, only the recall after this call index need to be executed
-	OriginShardId              uint32
-	RelatedShards              RelatedShards
-	ReSimulationSignals        map[int]map[uint32]*ReSimulationSignal
-	CallForest                 *CallForest
-	// CRHotWritePatch stores state values from a CR transaction's WriteSet
-	// for hot keys. When set, GetState() checks this patch FIRST before
-	// querying stateDB, allowing retry simulations to read post-CR values.
-	CRHotWritePatch       *RWSet             `json:"cr_hot_write_patch,omitempty"`
+	Nonce                uint64
+	TxSender             common.Address
+	Epochs               []Epoch
+	CurrentCallFrame     *CallFrame
+	CallStack            *CallStack
+	Status               CXTStatus
+	SimulationRequest    *CXTSimulationRequest // the simulation request, only origin member has this
+	SimulationResult     *CXTSimulationSSCResult
+	SimulationCallStates map[int]SimulationCallStates
+	SimulationNum        int       // the number of the simulation used to identify the recall
+	LockedCallIndex      CallIndex // the locked call index, only the recall after this call index need to be executed
+	OriginShardId        uint32
+	RelatedShards        RelatedShards
+	ReSimulationSignals  map[int]map[uint32]*ReSimulationSignal
+	CallForest           *CallForest
+	// ChainPatch stores state values from an upstream SimTx's WriteSet in a
+	// simulation dependency chain. When set, GetState() checks this patch FIRST
+	// before querying stateDB, allowing downstream retry simulations to read
+	// the upstream's produced state values from the same block's chain.
+	ChainPatch            *RWSet             `json:"chain_patch,omitempty"`
 	SimulateCh            chan struct{}      `json:"-"`
 	SimulationReentryLock sync.Mutex         `json:"-"`
 	Ctx                   context.Context    `json:"-"`
