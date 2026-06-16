@@ -190,15 +190,15 @@ func (rs *retryScheduler) OnBlockCommitted(block *types.Block) {
 		signals.Signals = append(signals.Signals, signal)
 	}
 
-	// 提交 promoted 交易到下一轮模拟
+	// 提交 promoted 交易到下一轮模拟 — 暂不启用正常 retry 路径
+	// 由 HotKey chain 接管 retry 信号的触发
 	for _, epoch2Signals := range shard2Epoch2RetrySignals {
 		for _, signals := range epoch2Signals {
 			if len(signals.Signals) > 0 {
-				utils.SSCLogger().Info().
+				utils.SSCLogger().Debug().
 					Int("num", len(signals.Signals)).
 					Uint32("shard", signals.OriginShard).
-					Msg("promoted txs to next round")
-				go rs.sendReSimulationSignals(signals)
+					Msg("normal retry signals blocked (hot key chain only)")
 			}
 		}
 	}
@@ -251,7 +251,7 @@ func (rs *retryScheduler) chainHotKeyCR(crTxHash common.Hash, writeSet *api.RWSe
 
 	// 1. 从 CR WriteSet 中过滤出 hot key 的写入
 	hotPatch := &api.RWSet{
-		WriteState: &api.StateSet{},
+		WriteState: api.NewStateSet(),
 	}
 	hasHotKey := false
 	for addr, state := range writeSet.WriteState.State {
@@ -371,13 +371,18 @@ func (rs *retryScheduler) HandleHotKeyRetrySignal(signal *api.ReSimulationSignal
 		rs.sscService.stateLock.Unlock()
 	}
 
-	signals := &api.ReSimulationSignals{
-		OriginShard: rs.selfShard,
-		FromShard:   signal.FromShard,
-		Epoch:       signal.Epoch,
-		Signals:     []*api.ReSimulationSignal{signal},
+	// 收到一个 HotKeyRetrySignal 就直接 tryToReSimulation
+	// 不需要等所有 shard 的信号——因为 hot key chain 的信号是强信号，
+	// 其他节点不知道要重试，信号收不齐
+	rs.mu.RLock()
+	retryTx, exists := rs.retryPool[signal.TxHash]
+	rs.mu.RUnlock()
+	if exists && retryTx != nil {
+		go rs.tryToReSimulation(retryTx)
+	} else {
+		utils.SSCLogger().Warn().Str("txHash", signal.TxHash.Hex()).
+			Msg("HandleHotKeyRetrySignal: retry tx not found in pool")
 	}
-	_ = rs.HandleReSimulationSignal(signals)
 }
 func (rs *retryScheduler) HandleReSimulationSignal(signals *api.ReSimulationSignals) error {
 	if !rs.sscService.IsLeader(signals.Epoch) {

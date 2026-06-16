@@ -1076,6 +1076,7 @@ func (m *SimulationCommit) Bytes() []byte {
 		RelatedShards RelatedShards
 		Commit        bool
 		Status        SimulationCommitStatus
+		UseCRSigner   bool
 	}
 	msg := SimulationCommitWithoutSignature{
 		SimulationNum: m.SimulationNum,
@@ -1085,6 +1086,7 @@ func (m *SimulationCommit) Bytes() []byte {
 		RelatedShards: m.RelatedShards,
 		Commit:        m.Commit,
 		Status:        m.Status,
+		UseCRSigner:   m.UseCRSigner,
 	}
 	bytes, err := json.Marshal(msg)
 	if err != nil {

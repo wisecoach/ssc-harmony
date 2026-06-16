@@ -2000,15 +2000,25 @@ func (s *sscService) thresholdSignSimulationCommit(commit *api.SimulationCommit)
 	}
 	wg.Wait()
 
+	utils.SSCLogger().Info().Str("txHash", txHash.Hex()).
+		Int("results", len(results)).
+		Bool("ctxDone", ctx.Err() != nil).
+		Msg("thresholdSignSimulationCommit: after wg.Wait")
+
 	aggregatedSig, bitMap, err := s.BLSSignerMgr.GetSSCSigner().Aggregate(results)
 	if err != nil {
-		utils.SSCLogger().Error().Err(err).Msgf("failed to aggregate signatures")
+		utils.SSCLogger().Error().Err(err).Str("txHash", txHash.Hex()).
+			Msg("thresholdSignSimulationCommit: aggregate failed")
 		return
 	}
-	utils.SSCLogger().Debug().Msgf("aggregated signature: %v, bitMap: %v", common.Bytes2Hex(aggregatedSig), common.Bytes2Hex(bitMap))
+	utils.SSCLogger().Info().Str("txHash", txHash.Hex()).
+		Int("bitMapLen", len(bitMap)).
+		Msg("thresholdSignSimulationCommit: aggregated OK")
 	commit.Signatures = aggregatedSig
 	commit.BLSBitMap = bitMap
 	commit.ShardId = s.SelfShard
+	utils.SSCLogger().Info().Str("txHash", txHash.Hex()).
+		Msg("thresholdSignSimulationCommit: done")
 }
 
 func (s *sscService) aggregateSimulationResults(results []api.SSCMessage) (*api.CXTSimulationSSCResult, error) {
@@ -3975,12 +3985,20 @@ func (s *sscService) startReSimulation(txHash common.Hash, simulationNum int) {
 			simulationCommit.Commit, simulationCommit.Status.String(), simulationCommit.SimulationNum, simulationCommit.RelatedShards)
 	}
 
+	utils.SSCLogger().Info().Str("txHash", txHash.Hex()).
+		Bool("useCRSigner", simulationCommit.UseCRSigner).
+		Msg("startReSimulation: calling thresholdSignSimulationCommit")
 	s.thresholdSignSimulationCommit(simulationCommit)
+	utils.SSCLogger().Info().Str("txHash", txHash.Hex()).
+		Msg("startReSimulation: after thresholdSignSimulationCommit")
 	members := make([]*api.Member, 0, len(committee.Members))
 	for _, shardId := range simulationCommit.RelatedShards {
 		members = append(members, s.GetLeader(simulationCommit.Epochs[shardId], shardId))
 	}
 	_ = s.Comm.Multicast(ctx, members, api.Method_CommitSimulation, simulationCommit)
+	utils.SSCLogger().Info().Str("txHash", txHash.Hex()).
+		Int("members", len(members)).
+		Msg("startReSimulation: after Multicast")
 }
 
 func (s *sscService) HandleCXTCommitProof(proof *api.CXTCommitProof) {
