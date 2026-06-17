@@ -1279,14 +1279,14 @@ const (
 	Verify
 )
 
-type ReSimulationSignals struct {
+type RetrySignals struct {
 	OriginShard uint32
 	FromShard   uint32
 	Epoch       Epoch // epoch of originShard
-	Signals     []*ReSimulationSignal
+	Signals     []*RetrySignal
 }
 
-type ReSimulationSignal struct {
+type RetrySignal struct {
 	TxHash        common.Hash
 	FromShard     uint32
 	Epoch         Epoch
@@ -1298,6 +1298,22 @@ type ReSimulationSignal struct {
 	// CXTSimulationState.ChainPatch so downstream retry simulations read the
 	// upstream's produced state values without waiting for block confirmation.
 	ChainPatch *RWSet `json:"chain_patch,omitempty"`
+}
+
+// ChainNode represents a node in the simulation dependency chain.
+// Each node stores its own WriteSet patch and a pointer to its upstream node.
+type ChainNode struct {
+	TxHash         common.Hash
+	SimulationNum  int
+	Patch          *RWSet      // 自己的 WriteSet
+	UpstreamTxHash common.Hash // 上游 txHash（零值=根节点）
+	UpstreamSimNum int         // 上游 simulationNum
+}
+
+// TxSimKey identifies a specific simulation of a transaction.
+type TxSimKey struct {
+	TxHash        common.Hash
+	SimulationNum int
 }
 
 func NewCallStack(txHash common.Hash, simulationNum int) *CallStack {
@@ -1366,6 +1382,39 @@ func (c *CallStack) String() string {
 	return fmt.Sprintf("CallStack_%s_%d: [%s]", c.TxHash.Hex(), c.SimulationNum, strings.Join(framesStr, "->"))
 }
 
+// TxState 交易公共状态，由 sscService 持有。
+// 所有模块（Verifier/Committer/CommitVote/Retry）通过 sscService 的方法访问，
+// 不直接依赖 Simulator。
+type TxState struct {
+	TxHash        common.Hash
+	Nonce         uint64
+	TxSender      common.Address
+	Epochs        []Epoch
+	Status        CXTStatus
+	SimulationNum int
+	OriginShardId uint32
+	RelatedShards RelatedShards
+	// RetrySignals maps simulationNum -> shardId -> signal
+	RetrySignals map[int]map[uint32]*RetrySignal
+	Ctx          context.Context    `json:"-"`
+	CtxCancel    context.CancelFunc `json:"-"`
+}
+
+// SimulationState 模拟专属状态，由 Simulator 持有。
+// 只有 Simulator 读写，其他模块不直接访问。
+type SimulationState struct {
+	CurrentCallFrame      *CallFrame
+	CallStack             *CallStack
+	SimulationRequest     *CXTSimulationRequest
+	SimulationResult      *CXTSimulationSSCResult
+	SimulationCallStates  map[int]SimulationCallStates
+	LockedCallIndex       CallIndex
+	CallForest            *CallForest
+	ChainPatch            *RWSet        `json:"chain_patch,omitempty"`
+	SimulateCh            chan struct{} `json:"-"`
+	SimulationReentryLock sync.Mutex    `json:"-"`
+}
+
 type CXTSimulationState struct {
 	Nonce                uint64
 	TxSender             common.Address
@@ -1380,13 +1429,16 @@ type CXTSimulationState struct {
 	LockedCallIndex      CallIndex // the locked call index, only the recall after this call index need to be executed
 	OriginShardId        uint32
 	RelatedShards        RelatedShards
-	ReSimulationSignals  map[int]map[uint32]*ReSimulationSignal
+	RetrySignals         map[int]map[uint32]*RetrySignal
 	CallForest           *CallForest
 	// ChainPatch stores state values from an upstream SimTx's WriteSet in a
 	// simulation dependency chain. When set, GetState() checks this patch FIRST
 	// before querying stateDB, allowing downstream retry simulations to read
 	// the upstream's produced state values from the same block's chain.
-	ChainPatch            *RWSet             `json:"chain_patch,omitempty"`
+	ChainPatch *RWSet `json:"chain_patch,omitempty"`
+	// ChainPatchRef 引用：当此 tx 是链式 retry 时，指向 RetryScheduler.patches 中的节点
+	// GetState 时递归查 patches 链读取上游 WriteSet
+	ChainPatchRef         *TxSimKey          `json:"chain_patch_ref,omitempty"`
 	SimulateCh            chan struct{}      `json:"-"`
 	SimulationReentryLock sync.Mutex         `json:"-"`
 	Ctx                   context.Context    `json:"-"`

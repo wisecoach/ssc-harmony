@@ -101,15 +101,15 @@ func (s *PublicSSCCrossService) HandleCXTCommitProof(
 
 func (s *PublicSSCCrossService) SignalReSimulation(
 	ctx context.Context,
-	signals *api.ReSimulationSignals) error {
+	signals *api.RetrySignals) error {
 	s.internalService.SignalReSimulation(signals)
 	return nil
 }
 
-func (s *PublicSSCCrossService) HandleChainSimSignal(
+func (s *PublicSSCCrossService) HandleRetrySignal(
 	ctx context.Context,
-	signal *api.ReSimulationSignal) error {
-	s.internalService.HandleChainSimSignal(signal)
+	signal *api.RetrySignal) error {
+	s.internalService.HandleRetrySignal(signal)
 	return nil
 }
 

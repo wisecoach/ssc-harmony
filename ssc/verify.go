@@ -77,7 +77,6 @@ func (vc *VerifyCommunicator) SendCommitVote(shardId uint32, vote *api.CXTCommit
 // 所有操作内部自带锁，调用方不需要关心锁的范围。
 // 锁永远在 sscService 内部，Verifier 拿不到锁对象本身。
 type VerifierStateAccessor struct {
-	GetState            func(txHash common.Hash) (*api.CXTSimulationState, error)
 	SetStatus           func(txHash common.Hash, status api.CXTStatus)
 	IsTxFinished        func(txHash common.Hash) bool
 	SetWaitingForResimu func(txHash common.Hash)

@@ -13,16 +13,40 @@ import (
 	"github.com/pkg/errors"
 )
 
-func NewRetryScheduler(ctx context.Context, sscService *sscService, comm *Comm, selfShard uint32, tempLockView *TempLockView) *retryScheduler {
+// RetrySchedulerStateAccessor 通过回调函数注入共享依赖，
+// 使 retryScheduler 成为独立模块，不直接引用 sscService。
+type RetrySchedulerStateAccessor struct {
+	// 委员会
+	IsLeader  func(epoch api.Epoch) bool
+	GetLeader func(epoch api.Epoch, shardId uint32) *api.Member
+	ShardNum  func() uint32
+
+	// 统计
+	RetryAddCount       func()
+	SampleRetryPool     func(size int)
+	RetryReadySignal    func()
+	RetryNotReadySignal func()
+	RetrySuccessCount   func()
+	RetryFailCount      func()
+
+	// 状态写入
+	SetChainPatch func(txHash common.Hash, patch *api.RWSet)
+
+	// 触发重试模拟
+	TriggerReSimulation func(txHash common.Hash, simulationNum int)
+}
+
+func NewRetryScheduler(ctx context.Context, state *RetrySchedulerStateAccessor, comm *Comm, selfShard uint32, tempLockView *TempLockView) *retryScheduler {
 	rs := &retryScheduler{
 		ctx:          ctx,
 		tempLockView: tempLockView,
-		sscService:   sscService,
+		state:        state,
 		comm:         comm,
 		selfShard:    selfShard,
 		retryPool:    make(map[common.Hash]*api.RetryTx),
 		staleTxs:     make(map[common.Hash]struct{}),
-		signals:      make(map[common.Hash]map[int]map[uint32]*api.ReSimulationSignal),
+		signals:      make(map[common.Hash]map[int]map[uint32]*api.RetrySignal),
+		patches:      make(map[common.Hash]map[int]*api.ChainNode),
 		mu:           sync.RWMutex{},
 	}
 
@@ -40,12 +64,16 @@ type retryScheduler struct {
 	// 待重试交易池：txHash → RetryTx
 	retryPool map[common.Hash]*api.RetryTx
 	staleTxs  map[common.Hash]struct{}
-	signals   map[common.Hash]map[int]map[uint32]*api.ReSimulationSignal // txHash -> simulationNum -> relatedShards -> signal
+	signals   map[common.Hash]map[int]map[uint32]*api.RetrySignal // txHash -> simulationNum -> relatedShards -> signal
+
+	// 链式 Patch 存储
+	// patches[txHash][simulationNum] = ChainNode
+	patches map[common.Hash]map[int]*api.ChainNode
 
 	// 依赖组件（通过接口解耦）
 	ctx          context.Context
 	tempLockView *TempLockView
-	sscService   *sscService
+	state        *RetrySchedulerStateAccessor
 	comm         *Comm
 	selfShard    uint32
 }
@@ -79,7 +107,7 @@ func (rs *retryScheduler) printState() {
 }
 
 func (rs *retryScheduler) CallForRetry(tx *api.RetryTx) {
-	if !rs.sscService.IsLeader(tx.Epochs[rs.selfShard]) {
+	if !rs.state.IsLeader(tx.Epochs[rs.selfShard]) {
 		return
 	}
 	utils.SSCLogger().Info().
@@ -88,7 +116,7 @@ func (rs *retryScheduler) CallForRetry(tx *api.RetryTx) {
 		Interface("relatedShards", tx.RelatedShards).
 		Msg("call for retry")
 	for _, shard := range tx.RelatedShards {
-		leader := rs.sscService.GetLeader(tx.Epochs[shard], shard)
+		leader := rs.state.GetLeader(tx.Epochs[shard], shard)
 		err := rs.comm.Call(rs.ctx, nil, leader, api.Method_AddRetryTx, tx)
 		if err != nil {
 			utils.SSCLogger().Error().Err(err).Msg("call for retry failed")
@@ -101,7 +129,7 @@ func (rs *retryScheduler) AddToRetry(tx *api.RetryTx) {
 	if tx == nil || tx.TxHash == (common.Hash{}) {
 		return
 	}
-	if !rs.sscService.IsLeader(tx.Epochs[rs.selfShard]) {
+	if !rs.state.IsLeader(tx.Epochs[rs.selfShard]) {
 		return
 	}
 	rs.mu.Lock()
@@ -120,8 +148,8 @@ func (rs *retryScheduler) AddToRetry(tx *api.RetryTx) {
 	}
 
 	rs.retryPool[tx.TxHash] = tx
-	rs.sscService.stats.RetryAddCount.Add(1)
-	rs.sscService.stats.sampleRetryPool(len(rs.retryPool))
+	rs.state.RetryAddCount()
+	rs.state.SampleRetryPool(len(rs.retryPool))
 	utils.SSCLogger().Info().
 		Str("txHash", tx.TxHash.Hex()).
 		Interface("relatedShards", tx.RelatedShards).
@@ -150,18 +178,18 @@ func (rs *retryScheduler) OnBlockCommitted(block *types.Block) {
 	}
 	rs.staleTxs = make(map[common.Hash]struct{})
 
-	rs.sscService.stats.sampleRetryPool(len(rs.retryPool))
+	rs.state.SampleRetryPool(len(rs.retryPool))
 
 	shard2SignalReadyNum := make(map[uint32]int)
-	shard2Epoch2RetrySignals := make(map[uint32]map[api.Epoch]*api.ReSimulationSignals)
-	for i := uint32(0); i < rs.sscService.ShardNum(); i++ {
+	shard2Epoch2RetrySignals := make(map[uint32]map[api.Epoch]*api.RetrySignals)
+	for i := uint32(0); i < rs.state.ShardNum(); i++ {
 		shard2SignalReadyNum[i] = 0
-		shard2Epoch2RetrySignals[i] = make(map[api.Epoch]*api.ReSimulationSignals)
+		shard2Epoch2RetrySignals[i] = make(map[api.Epoch]*api.RetrySignals)
 	}
 
 	// 判断交易是否可以重新模拟，并加入到signals中
 	for txHash, tx := range rs.retryPool {
-		signal := &api.ReSimulationSignal{
+		signal := &api.RetrySignal{
 			TxHash:        tx.TxHash,
 			Epoch:         tx.Epochs[tx.OriginShardID],
 			SimulationNum: tx.SimulationNum,
@@ -169,19 +197,19 @@ func (rs *retryScheduler) OnBlockCommitted(block *types.Block) {
 		}
 		if rs.tempLockView.CanLock(txHash, tx.ReadSet, tx.WriteSet) {
 			signal.Ready = true
-			rs.sscService.stats.RetryReadySignal.Add(1)
+			rs.state.RetryReadySignal()
 			shard2SignalReadyNum[tx.OriginShardID]++
 		} else {
 			signal.Ready = false
-			rs.sscService.stats.RetryNotReadySignal.Add(1)
+			rs.state.RetryNotReadySignal()
 		}
 		signals := shard2Epoch2RetrySignals[tx.OriginShardID][signal.Epoch]
 		if signals == nil {
-			signals = &api.ReSimulationSignals{
+			signals = &api.RetrySignals{
 				OriginShard: tx.OriginShardID,
 				FromShard:   rs.selfShard,
 				Epoch:       signal.Epoch,
-				Signals:     make([]*api.ReSimulationSignal, 0),
+				Signals:     make([]*api.RetrySignal, 0),
 			}
 			shard2Epoch2RetrySignals[tx.OriginShardID][signal.Epoch] = signals
 		}
@@ -209,8 +237,8 @@ func (rs *retryScheduler) OnBlockCommitted(block *types.Block) {
 		Msg("retryScheduler onBlockCommitted")
 }
 
-func (rs *retryScheduler) sendReSimulationSignals(signals *api.ReSimulationSignals) {
-	leader := rs.sscService.GetLeader(signals.Epoch, signals.OriginShard)
+func (rs *retryScheduler) sendReSimulationSignals(signals *api.RetrySignals) {
+	leader := rs.state.GetLeader(signals.Epoch, signals.OriginShard)
 
 	err := rs.comm.Call(rs.ctx, nil, leader, api.Method_SignalReSimulation, signals)
 	if err != nil {
@@ -296,49 +324,15 @@ func dependsOn(retryTx *api.RetryTx, keySet map[api.LockKey]struct{}) bool {
 	return false
 }
 
-// sendChainSignal 发送带 ChainPatch 的 chain signal 到 retry tx 的 origin shard。
-func (rs *retryScheduler) sendChainSignal(txHash common.Hash, retryTx *api.RetryTx, writeSet *api.RWSet) {
-	signal := &api.ReSimulationSignal{
-		TxHash:        retryTx.TxHash,
-		Epoch:         retryTx.Epochs[retryTx.OriginShardID],
-		SimulationNum: retryTx.SimulationNum,
-		Condition:     retryTx.Condition,
-		Ready:         true,
-		FromShard:     rs.selfShard,
-		ChainPatch:    writeSet,
-	}
-
-	originLeader := rs.sscService.GetLeader(retryTx.Epochs[retryTx.OriginShardID], retryTx.OriginShardID)
-	err := rs.comm.Call(rs.ctx, nil, originLeader, api.Method_HandleChainSimSignal, signal)
-	if err != nil {
-		utils.SSCLogger().Error().Err(err).Str("txHash", txHash.Hex()).
-			Uint32("originShard", retryTx.OriginShardID).
-			Msg("sendChainSignal: failed to send signal")
-	} else {
-		utils.SSCLogger().Info().Str("txHash", txHash.Hex()).
-			Uint32("originShard", retryTx.OriginShardID).
-			Int("patchAddrCount", len(writeSet.WriteState.State)).
-			Msg("sendChainSignal: sent chain signal")
-	}
-}
-
-// HandleChainSimSignal 接收来自 SimTx 提交 shard 的 chain signal，
+// HandleRetrySignal 接收来自 SimTx 提交 shard 的 chain signal，
 // 在 origin shard 存储 ChainPatch 后通过 signal aggregation 触发 tryToReSimulation。
-func (rs *retryScheduler) HandleChainSimSignal(signal *api.ReSimulationSignal) {
+func (rs *retryScheduler) HandleRetrySignal(signal *api.RetrySignal) {
 	utils.SSCLogger().Info().Str("txHash", signal.TxHash.Hex()).
 		Bool("hasPatch", signal.ChainPatch != nil).
-		Msg("HandleChainSimSignal: received")
+		Msg("HandleRetrySignal: received")
 
 	if signal.ChainPatch != nil {
-		rs.sscService.stateLock.Lock()
-		state, err := rs.sscService.getState(signal.TxHash)
-		if err == nil && state != nil {
-			state.ChainPatch = signal.ChainPatch
-			utils.SSCLogger().Info().Str("txHash", signal.TxHash.Hex()).
-				Int("patchSize", len(signal.ChainPatch.WriteState.State)).
-				Msg("HandleChainSimSignal: stored ChainPatch")
-		}
-		rs.sscService.stateLock.Unlock()
+		rs.state.SetChainPatch(signal.TxHash, signal.ChainPatch)
 	}
 
 	// 收到一个 chain signal 就直接 tryToReSimulation
@@ -350,7 +344,7 @@ func (rs *retryScheduler) HandleChainSimSignal(signal *api.ReSimulationSignal) {
 		go rs.tryToReSimulation(retryTx)
 	} else {
 		utils.SSCLogger().Warn().Str("txHash", signal.TxHash.Hex()).
-			Msg("HandleChainSimSignal: retry tx not found in pool")
+			Msg("HandleRetrySignal: retry tx not found in pool")
 	}
 }
 
@@ -361,12 +355,12 @@ func (rs *retryScheduler) chainHotKeyCR(crTxHash common.Hash, writeSet *api.RWSe
 	...
 }
 
-func (rs *retryScheduler) HandleHotKeyRetrySignal(signal *api.ReSimulationSignal) {
+func (rs *retryScheduler) HandleHotKeyRetrySignal(signal *api.RetrySignal) {
 	...
 }
 */
-func (rs *retryScheduler) HandleReSimulationSignal(signals *api.ReSimulationSignals) error {
-	if !rs.sscService.IsLeader(signals.Epoch) {
+func (rs *retryScheduler) HandleReSimulationSignal(signals *api.RetrySignals) error {
+	if !rs.state.IsLeader(signals.Epoch) {
 		return nil
 	}
 	if rs.selfShard != signals.OriginShard {
@@ -423,7 +417,7 @@ func (rs *retryScheduler) tryToReSimulation(retryTx *api.RetryTx) {
 		go func(shard uint32) {
 			defer wg.Done()
 			resp := new(api.RetryCommitResp)
-			err := rs.comm.Call(rs.ctx, resp, rs.sscService.GetLeader(retryTx.Epochs[shard], shard), api.Method_RetryCommit, txHash)
+			err := rs.comm.Call(rs.ctx, resp, rs.state.GetLeader(retryTx.Epochs[shard], shard), api.Method_RetryCommit, txHash)
 			if err != nil {
 				utils.SSCLogger().Error().Err(err).Msg("retry commit failed")
 				return
@@ -446,21 +440,21 @@ func (rs *retryScheduler) tryToReSimulation(retryTx *api.RetryTx) {
 		}
 	}
 	if success {
-		rs.sscService.stats.RetrySuccessCount.Add(1)
+		rs.state.RetrySuccessCount()
 		utils.SSCLogger().Info().Str("txHash", txHash.Hex()).Msg("retry commit success")
-		go rs.sscService.startReSimulation(retryTx.TxHash, retryTx.SimulationNum)
+		go rs.state.TriggerReSimulation(retryTx.TxHash, retryTx.SimulationNum)
 		rs.mu.Lock()
 		delete(rs.signals, txHash)
 		delete(rs.retryPool, txHash)
 		rs.mu.Unlock()
 	} else {
-		rs.sscService.stats.RetryFailCount.Add(1)
+		rs.state.RetryFailCount()
 		utils.SSCLogger().Info().Str("txHash", txHash.Hex()).Msg("retry commit failed")
 		for shardId, resp := range resps {
 			// 如果失败，则将临时上锁的交易解锁
 			if resp.Locked {
 				go func(shardId uint32) {
-					err := rs.comm.Call(rs.ctx, nil, rs.sscService.GetLeader(retryTx.Epochs[shardId], shardId), api.Method_RetryCancel, resp.TxHash)
+					err := rs.comm.Call(rs.ctx, nil, rs.state.GetLeader(retryTx.Epochs[shardId], shardId), api.Method_RetryCancel, resp.TxHash)
 					if err != nil {
 						utils.SSCLogger().Error().Err(err).Msg("retry cancel failed")
 						return
@@ -479,15 +473,15 @@ func (rs *retryScheduler) tryToReSimulation(retryTx *api.RetryTx) {
 	}
 }
 
-func (rs *retryScheduler) setSignal(fromShard uint32, signal *api.ReSimulationSignal) {
+func (rs *retryScheduler) setSignal(fromShard uint32, signal *api.RetrySignal) {
 	m := rs.signals[signal.TxHash]
 	if m == nil {
-		m = make(map[int]map[uint32]*api.ReSimulationSignal)
+		m = make(map[int]map[uint32]*api.RetrySignal)
 		rs.signals[signal.TxHash] = m
 	}
 	m2 := m[signal.SimulationNum]
 	if m2 == nil {
-		m2 = make(map[uint32]*api.ReSimulationSignal)
+		m2 = make(map[uint32]*api.RetrySignal)
 		m[signal.SimulationNum] = m2
 	}
 	m2[fromShard] = signal
@@ -521,7 +515,7 @@ func (rs *retryScheduler) RetryCommit(txHash common.Hash) bool {
 		return false
 	}
 	rs.mu.RUnlock()
-	if !rs.sscService.IsLeader(retryTx.Epochs[rs.selfShard]) {
+	if !rs.state.IsLeader(retryTx.Epochs[rs.selfShard]) {
 		return false
 	}
 	locked := rs.tempLockView.TryLock(txHash, retryTx.ReadSet, retryTx.WriteSet)
@@ -535,4 +529,132 @@ func (rs *retryScheduler) RetryCommit(txHash common.Hash) bool {
 
 func (rs *retryScheduler) RetryCancel(txHash common.Hash) {
 	rs.tempLockView.GarbageCollect(txHash)
+}
+
+// chainNextSim 在 SimTx 提交到 mempool 后触发，扫描 retryPool 找到依赖该 SimTx 的下游交易。
+// 线性链：只取第一个匹配的 retry tx。
+func (rs *retryScheduler) chainNextSim(upstreamTxHash common.Hash, writeSet *api.RWSet) {
+	if writeSet == nil || len(writeSet.WriteState.State) == 0 {
+		return
+	}
+
+	// 构建 key 查找表
+	keySet := make(map[api.LockKey]struct{})
+	for addr, state := range writeSet.WriteState.State {
+		for key := range state {
+			keySet[api.FormKey(addr, key)] = struct{}{}
+		}
+	}
+
+	// RLock 下收集匹配的 retry tx（只取第一个，线性链）
+	rs.mu.RLock()
+	var matched *api.RetryTx
+	for _, retryTx := range rs.retryPool {
+		if bytes.Equal(retryTx.TxHash.Bytes(), upstreamTxHash.Bytes()) {
+			continue
+		}
+		if rs.dependsOn(retryTx, keySet) {
+			matched = retryTx
+			break // 线性链：只取第一个匹配
+		}
+	}
+	rs.mu.RUnlock()
+
+	if matched == nil {
+		return
+	}
+
+	// 发送 chain signal
+	rs.sendChainSignal(matched.TxHash, matched, writeSet)
+}
+
+// dependsOn 判断 retryTx 是否依赖 keySet 中的任何 key。
+func (rs *retryScheduler) dependsOn(retryTx *api.RetryTx, keySet map[api.LockKey]struct{}) bool {
+	for _, key := range retryTx.ReadSet {
+		if _, exists := keySet[key]; exists {
+			return true
+		}
+	}
+	for _, key := range retryTx.WriteSet {
+		if _, exists := keySet[key]; exists {
+			return true
+		}
+	}
+	return false
+}
+
+// sendChainSignal 发送链式重试信号到 origin shard。
+func (rs *retryScheduler) sendChainSignal(txHash common.Hash, retryTx *api.RetryTx, writeSet *api.RWSet) {
+	// 构建 ChainNode
+	chainNode := &api.ChainNode{
+		TxHash:        txHash,
+		SimulationNum: retryTx.SimulationNum,
+		Patch:         writeSet,
+		// UpstreamTxHash 和 UpstreamSimNum 将在 HandleRetrySignal 中设置
+	}
+
+	// 存储到 patches
+	rs.mu.Lock()
+	if rs.patches[txHash] == nil {
+		rs.patches[txHash] = make(map[int]*api.ChainNode)
+	}
+	rs.patches[txHash][retryTx.SimulationNum] = chainNode
+	rs.mu.Unlock()
+
+	// 构建 RetrySignal
+	signal := &api.RetrySignal{
+		TxHash:        txHash,
+		FromShard:     rs.selfShard,
+		Epoch:         retryTx.Epochs[rs.selfShard],
+		SimulationNum: retryTx.SimulationNum,
+		Condition:     api.Simulate,
+		Ready:         true,
+		ChainPatch:    writeSet,
+	}
+
+	// 发送到 origin shard
+	originShard := retryTx.OriginShardID
+	if originShard == rs.selfShard {
+		// 本地处理
+		rs.HandleRetrySignal(signal)
+	} else {
+		// RPC 发送
+		go func() {
+			err := rs.comm.SendRetrySignal(originShard, signal)
+			if err != nil {
+				utils.SSCLogger().Warn().Err(err).
+					Str("txHash", txHash.Hex()).
+					Msg("sendChainSignal: failed to send retry signal")
+			}
+		}()
+	}
+}
+
+// readPatchChain 递归查 patches 链，读到就停。
+func (rs *retryScheduler) readPatchChain(txHash common.Hash, simNum int,
+	address common.Address, key common.Hash) (common.Hash, bool) {
+
+	rs.mu.RLock()
+	node, ok := rs.patches[txHash][simNum]
+	rs.mu.RUnlock()
+
+	if !ok {
+		return common.Hash{}, false
+	}
+
+	// 先查自己的 patch
+	if node.Patch != nil {
+		if addrState, ok := node.Patch.WriteState.State[address]; ok {
+			if val, exists := addrState[key]; exists {
+				return val, true
+			}
+		}
+	}
+
+	// 自己没有，递归查上游
+	if node.UpstreamTxHash != (common.Hash{}) {
+		return rs.readPatchChain(node.UpstreamTxHash, node.UpstreamSimNum, address, key)
+	}
+
+	return common.Hash{}, false
 }

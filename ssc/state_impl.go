@@ -10,28 +10,32 @@ import (
 )
 
 func (s *sscService) GetCallState(txHash common.Hash) *api.SimulationCallState {
-	s.stateLock.RLock()
-	defer s.stateLock.RUnlock()
-
-	state := s.simulationState[txHash]
-	if state == nil {
+	// 读 TxState（公共字段）
+	tx, err := s.getTxState(txHash)
+	if err != nil || tx == nil {
+		utils.SSCLogger().Error().Str("txHash", txHash.Hex()).Msgf("get nil tx state")
+		return nil
+	}
+	// 读 SimulationState（模拟字段）
+	sim, ok := s.Simulator.GetSimState(txHash)
+	if !ok || sim == nil {
 		utils.SSCLogger().Error().Str("txHash", txHash.Hex()).Msgf("get nil simulation state")
 		return nil
 	}
-	if state.SimulationCallStates == nil {
+	if sim.SimulationCallStates == nil {
 		utils.SSCLogger().Error().Str("txHash", txHash.Hex()).Msgf("get nil simulation callstates")
 		return nil
 	}
-	simulationCallState := state.SimulationCallStates[state.SimulationNum]
+	simulationCallState := sim.SimulationCallStates[tx.SimulationNum]
 	if simulationCallState == nil {
 		utils.SSCLogger().Error().Str("txHash", txHash.Hex()).Msgf("get nil simulationCallState")
 		return nil
 	}
-	callState := state.SimulationCallStates[state.SimulationNum].Get(state.CurrentCallFrame.CallIndex)
+	callState := sim.SimulationCallStates[tx.SimulationNum].Get(sim.CurrentCallFrame.CallIndex)
 	if callState == nil {
 		utils.SSCLogger().Error().Str("txHash", txHash.Hex()).
-			Interface("callStates", state.SimulationCallStates[state.SimulationNum]).
-			Interface("currentFrame", state.CurrentCallFrame).
+			Interface("callStates", sim.SimulationCallStates[tx.SimulationNum]).
+			Interface("currentFrame", sim.CurrentCallFrame).
 			Msgf("get nil callState")
 		return nil
 	}
@@ -39,26 +43,23 @@ func (s *sscService) GetCallState(txHash common.Hash) *api.SimulationCallState {
 }
 
 func (s *sscService) GetRWSet(txHash common.Hash) *api.RWSet {
-	s.stateLock.RLock()
-	defer s.stateLock.RUnlock()
-
-	state := s.simulationState[txHash]
-	if state == nil {
+	tx, err := s.getTxState(txHash)
+	if err != nil || tx == nil {
 		return nil
 	}
-
-	callState := state.SimulationCallStates[state.SimulationNum].Get(state.CurrentCallFrame.CallIndex)
+	sim, ok := s.Simulator.GetSimState(txHash)
+	if !ok || sim == nil {
+		return nil
+	}
+	callState := sim.SimulationCallStates[tx.SimulationNum].Get(sim.CurrentCallFrame.CallIndex)
 	if callState == nil {
 		return nil
 	}
-
 	return callState.RWSet
 }
 
 func (s *sscService) EndCTX(txHash common.Hash) {
-	s.stateLock.Lock()
-	delete(s.simulationState, txHash)
-	s.stateLock.Unlock()
+	s.Simulator.DeleteSimState(txHash)
 }
 
 func (s *sscService) CreateAccount(txHash common.Hash, address common.Address) {
@@ -115,12 +116,10 @@ func (s *sscService) GetBalance(db api.StateDB, txHash common.Hash, address comm
 
 func (s *sscService) GetState(db api.StateDB, txHash common.Hash, address common.Address, key common.Hash) (common.Hash, error) {
 	// Step 0: 检查 ChainPatch — 如果有 patch 且命中，直接返回 patch 值
-	s.stateLock.RLock()
-	state, err := s.getState(txHash)
-	if err == nil && state != nil && state.ChainPatch != nil {
-		if addrState, ok := state.ChainPatch.WriteState.State[address]; ok {
+	sim, _ := s.Simulator.GetSimState(txHash)
+	if sim != nil && sim.ChainPatch != nil {
+		if addrState, ok := sim.ChainPatch.WriteState.State[address]; ok {
 			if val, exists := addrState[key]; exists {
-				s.stateLock.RUnlock()
 				utils.SSCLogger().Debug().Str("txHash", txHash.Hex()).
 					Str("address", address.Hex()).
 					Str("key", key.Hex()).
@@ -130,7 +129,6 @@ func (s *sscService) GetState(db api.StateDB, txHash common.Hash, address common
 			}
 		}
 	}
-	s.stateLock.RUnlock()
 
 	callState := s.GetCallState(txHash)
 	if callState == nil {

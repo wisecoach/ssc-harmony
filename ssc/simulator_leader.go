@@ -1,0 +1,1139 @@
+package ssc
+
+import (
+	"bytes"
+	"context"
+	"errors"
+	"fmt"
+	"sync"
+	"time"
+
+	"github.com/ethereum/go-ethereum/common"
+	"github.com/harmony-one/harmony/core/vm"
+	"github.com/harmony-one/harmony/internal/utils"
+	"github.com/harmony-one/harmony/ssc/api"
+)
+
+// =============================================================================
+// Leader Functions — migrated from sscService (impl.go) to Simulator
+// These functions handle the leader's role in cross-shard simulation:
+//   - coordinating simulation across committee members
+//   - aggregating results
+//   - threshold signing
+//   - submitting simulation commits
+// =============================================================================
+
+// StartSimulateCXTransaction 接收跨分片模拟请求（Leader 节点）。
+// Leader 节点收到所有成员的 simulation request 后，协调全部分片执行。
+//
+// Original: sscService.StartSimulateCXTransaction (4b6d266c7)
+// s. → sim.
+// s.CommitteeMechanism → sim.committee
+// s.ctx → sim.ctx
+// s.Config → sim.config
+// s.bc → sim.bc
+// s.Comm → sim.communicator.comm
+// s.signerMgr → sim.communicator.signerMgr
+// s.SelfShard → sim.committee.SelfShard
+// s.SelfAddr → sim.communicator.signerMgr.GetSSCSigner().Address()
+// s.BLSSignerMgr.GetSSCSigner() → sim.communicator.signerMgr.GetSSCSigner()
+// s.recordTraceBlock → omitted
+// s.startSimulation → sim.state.StartSimulation
+// s.stateLock → sim.state.* accessor
+// s.getState(txHash) → sim.state.GetTxState(txHash) / sim.GetSimState(txHash)
+// s.retryScheduler.CallForRetry → sim.state.CallForRetry
+// s.retryScheduler.tempLockView.TryLock → sim.state.TempLockTryLock
+// s.IsLeader → sim.committee.IsLeader
+// s.GetLeader → sim.committee.GetLeader
+// s.simuLock → sim.simuLock
+// s.simuWaitingChs → sim.simuWaitingChs
+// s.simuResultCh → sim.simuResultCh
+func (sim *Simulator) StartSimulateCXTransaction(req *api.CXTSimulationRequest) *api.CXTSimulationSSCResult {
+	var waitingCh chan *api.CXTSimulationSSCResult
+	txHash := req.Tx.Hash()
+
+	startTime := time.Now()
+	utils.SSCLogger().Info().Int("simulationNum", req.SimulationNum).Str("txHash", txHash.String()).Msg("start simulate cx transaction, start")
+	defer func() {
+		utils.SSCLogger().Info().Int("simulationNum", req.SimulationNum).Str("txHash", txHash.String()).Dur("cost", time.Since(startTime)).Msg("start simulate cx transaction, end")
+	}()
+
+	func() {
+		sim.simuLock.Lock()
+		defer sim.simuLock.Unlock()
+		if sim.simuWaitingChs[txHash] == nil {
+			sim.simuWaitingChs[txHash] = make([]chan *api.CXTSimulationSSCResult, 0)
+		} else {
+			waitingCh = make(chan *api.CXTSimulationSSCResult)
+			sim.simuWaitingChs[txHash] = append(sim.simuWaitingChs[txHash], waitingCh)
+		}
+		if sim.simuResultCh[txHash] == nil {
+			sim.simuResultCh[txHash] = make(chan *api.CXTSimulationSSCResult, 1)
+		}
+	}()
+
+	if waitingCh != nil {
+		return <-waitingCh
+	}
+
+	defer func() {
+		sim.simuLock.Lock()
+		delete(sim.simuWaitingChs, txHash)
+		sim.simuLock.Unlock()
+	}()
+
+	header := sim.bc.CurrentHeader()
+	req.BlockHash = header.Hash()
+	req.BlockNum = header.NumberU64()
+	// sim.recordTraceBlock(txHash, StageSimulateCX, header.NumberU64()) — omitted
+	committee := sim.committee.GetCommittee(req.Epochs[sim.committee.SelfShard], sim.committee.SelfShard)
+	n := committee.Number
+	t := committee.Threshold
+
+	state, _, _ := sim.startSimulation(req)
+
+	ctx, cancel := context.WithTimeout(sim.ctx, sim.config.CallTimeout)
+	defer cancel()
+
+	wg := sync.WaitGroup{}
+	wg.Add(n)
+	var (
+		results []api.SSCMessage
+		hasSelf bool
+		lock    sync.Mutex
+	)
+	// 预分配容量，但长度动态控制
+	results = make([]api.SSCMessage, 0, t)
+	addrMap := make(map[int]bool)
+
+	utils.SSCLogger().Info().Int("simulationNum", req.SimulationNum).Str("txHash", txHash.String()).Msg("start simulate cx transaction, call to handle simulation request")
+
+	for i := 0; i < n; i++ {
+		member := committee.Members[i]
+		go func(m *api.Member, c *api.ShardSimulateCommittee) {
+			defer wg.Done()
+			ret := new(api.CXTSimulationResult)
+			callErr := sim.communicator.comm.Call(ctx, ret, m, api.Method_HandleSimulateRequest, req)
+			if callErr != nil {
+				if !errors.Is(callErr, context.Canceled) {
+					utils.SSCLogger().Error().Str("txHash", txHash.Hex()).Err(callErr).Msg("failed to call cxt ssc call")
+				}
+				return
+			}
+
+			lock.Lock()
+			defer lock.Unlock()
+
+			// 如果上下文已取消，直接退出
+			if ctx.Err() != nil {
+				utils.SSCLogger().Error().Str("txHash", txHash.String()).Err(ctx.Err()).Msg("context cancelled")
+				return
+			}
+
+			selfAddr := sim.communicator.signerMgr.GetSSCSigner().Address()
+			if bytes.Compare(m.Address.Bytes(), selfAddr.Bytes()) == 0 {
+				hasSelf = true
+				if len(results) < t {
+					addrMap[committee.ValidatorIndex[m.Address]] = true
+					results = append([]api.SSCMessage{ret}, results...)
+				} else {
+					delete(addrMap, committee.ValidatorIndex[results[0].GetSenderAddr()])
+					addrMap[committee.ValidatorIndex[m.Address]] = true
+					results[0] = ret // 替换最后一个
+				}
+			} else {
+				if len(results) < t {
+					addrMap[committee.ValidatorIndex[m.Address]] = true
+					results = append(results, ret)
+				}
+			}
+
+			// 检查是否满足终止条件
+			if hasSelf && len(results) == t {
+				utils.SSCLogger().Info().Interface("addrMap", addrMap).Str("txHash", txHash.String()).Msg("simulation result received, including self")
+				cancel()
+			}
+		}(member, committee)
+	}
+	wg.Wait()
+
+	var (
+		sscResult *api.CXTSimulationSSCResult
+		err       error
+	)
+	if len(results) == t {
+		leaderRet := results[0].(*api.CXTSimulationResult)
+		if leaderRet.Err != "" {
+			sscResult = &api.CXTSimulationSSCResult{
+				Err:           leaderRet.Err,
+				RelatedShards: []uint32{sim.committee.SelfShard},
+				BaseBLSSignedMessage: api.BaseBLSSignedMessage{
+					Epochs: leaderRet.Epochs,
+				},
+			}
+			utils.SSCLogger().Error().Str("txHash", txHash.String()).Err(errors.New(leaderRet.Err)).Msg("failed to simulate transaction")
+		} else {
+			sscResult, err = sim.aggregateSimulationResults(results)
+			if err != nil {
+				sscResult = &api.CXTSimulationSSCResult{Err: err.Error(), RelatedShards: []uint32{sim.committee.SelfShard},
+					BaseBLSSignedMessage: api.BaseBLSSignedMessage{
+						Epochs: leaderRet.Epochs,
+					}}
+				utils.SSCLogger().Error().Str("txHash", txHash.String()).Err(err).Msg("failed to aggregate simulation results")
+				return sscResult
+			}
+		}
+	} else {
+		if len(results) == 0 {
+			sscResult = &api.CXTSimulationSSCResult{Err: "no response from other shards", RelatedShards: []uint32{sim.committee.SelfShard},
+				BaseBLSSignedMessage: api.BaseBLSSignedMessage{
+					Epochs: req.Epochs,
+				}}
+		} else {
+			errRet := results[len(results)-1].(*api.CXTSimulationResult)
+			sscResult = &api.CXTSimulationSSCResult{Err: errRet.Err, RelatedShards: []uint32{sim.committee.SelfShard},
+				BaseBLSSignedMessage: api.BaseBLSSignedMessage{
+					Epochs: req.Epochs,
+				}}
+		}
+	}
+
+	simulationCommit := &api.SimulationCommit{
+		SimulationNum: req.SimulationNum,
+		TxHash:        req.Tx.Hash(),
+		Nonce:         req.Tx.Nonce(),
+		Sender:        req.From,
+		RelatedShards: sscResult.RelatedShards,
+		BaseBLSSignedMessage: api.BaseBLSSignedMessage{
+			Epochs:  req.Epochs,
+			ShardId: sim.committee.SelfShard,
+		},
+	}
+
+	if len(sscResult.Err) == 0 {
+		simulationCommit.Commit = true
+		simulationCommit.Status = api.OK
+		simulationCommit.Reason = api.OK.String()
+		utils.SSCLogger().Debug().Str("txHash", simulationCommit.TxHash.Hex()).
+			Msgf("simulation accomplished, send simulation commit, commit type: %v, simulationNum: %d, relatedShards: %v",
+				simulationCommit.Commit, simulationCommit.SimulationNum, simulationCommit.RelatedShards)
+	} else {
+		if vm.IsLockedByOtherTxErr(sscResult.Err) {
+			utils.SSCLogger().Debug().Str("txHash", simulationCommit.TxHash.Hex()).
+				Msgf("simulation's state is locked by other tx, try to retry if self is leader: %v", sim.committee.IsLeader(req.Epochs[sim.committee.SelfShard]))
+			simulationCommit.Commit = false
+			simulationCommit.Status = api.LockConflict
+			simulationCommit.Reason = sscResult.Err
+			// don't send commit simulation if state is locked by other tx
+			if sim.committee.IsLeader(req.Epochs[sim.committee.SelfShard]) {
+				sim.state.CallForRetry(&api.RetryTx{
+					TxHash:        txHash,
+					Epochs:        req.Epochs,
+					RelatedShards: sscResult.RelatedShards,
+					SimulationNum: req.SimulationNum + 1,
+					Condition:     api.Simulate,
+					OriginShardID: state.OriginShardId,
+				})
+			}
+			sim.state.SetTxStatus(txHash, api.WAITING_FOR_RESIMULATION_OFF_CHAIN)
+			return sscResult
+		} else {
+			simulationCommit.Commit = false
+			simulationCommit.Status = api.ExecutionFailed
+			simulationCommit.Reason = sscResult.Err
+		}
+		utils.SSCLogger().Error().Str("txHash", simulationCommit.TxHash.Hex()).
+			Err(errors.New(sscResult.Err)).Msgf("simulation accomplished, send simulation commit, commit type: %v, status: %v, simulationNum: %d, relatedShards: %v",
+			simulationCommit.Commit, simulationCommit.Status.String(), simulationCommit.SimulationNum, simulationCommit.RelatedShards)
+	}
+
+	var chs []chan *api.CXTSimulationSSCResult
+
+	func() {
+		sim.simuLock.Lock()
+		defer sim.simuLock.Unlock()
+		simState, _ := sim.GetSimState(txHash)
+		if simState != nil {
+			simState.SimulationCallStates[state.SimulationNum][0].TopSSCResult = sscResult
+			simState.SimulationResult = sscResult
+		}
+		chs = sim.simuWaitingChs[txHash]
+	}()
+
+	for _, ch := range chs {
+		ch <- sscResult
+	}
+
+	// TempLockView pre-check: 在 SubmitSimulationTx 前检查锁冲突
+	// 仿真结束知道 RWSet 了，用 TempLockView 预判 on-chain 是否会锁冲突
+	// 如果冲突，不进 on-chain 直接进 retryPool，避免浪费区块资源
+	if simulationCommit.Commit && sim.committee.IsLeader(req.Epochs[sim.committee.SelfShard]) {
+		simState, _ := sim.GetSimState(txHash)
+		if simState != nil {
+			if callStates, ok := simState.SimulationCallStates[state.SimulationNum]; ok && len(callStates) > 0 {
+				callState := callStates[0]
+				if callState != nil && callState.RWSet != nil {
+					reads := make([]api.LockKey, 0)
+					writes := make([]api.LockKey, 0)
+					for addr, account := range callState.RWSet.ReadState.State {
+						for key := range account {
+							reads = append(reads, api.FormKey(addr, key))
+						}
+					}
+					for addr, account := range callState.RWSet.WriteState.State {
+						for key := range account {
+							writes = append(writes, api.FormKey(addr, key))
+						}
+					}
+					if !sim.state.TempLockTryLock(txHash, reads, writes) {
+						utils.SSCLogger().Warn().Str("txHash", txHash.Hex()).
+							Int("reads", len(reads)).Int("writes", len(writes)).
+							Msg("TempLockView pre-check failed, deferring to retry pool")
+						simulationCommit.Commit = false
+						simulationCommit.Status = api.LockConflict
+						simulationCommit.Reason = "temp lock conflict"
+						sim.state.SetTxStatus(txHash, api.WAITING_FOR_RESIMULATION_OFF_CHAIN)
+						sim.state.CallForRetry(&api.RetryTx{
+							TxHash:        txHash,
+							Epochs:        req.Epochs,
+							RelatedShards: sscResult.RelatedShards,
+							SimulationNum: req.SimulationNum + 1,
+							Condition:     api.Simulate,
+							OriginShardID: state.OriginShardId,
+						})
+						return sscResult
+					}
+				}
+			}
+		}
+	}
+
+	sim.thresholdSignSimulationCommit(simulationCommit)
+
+	leaders := make([]*api.Member, 0)
+	for _, shardId := range simulationCommit.RelatedShards {
+		leaders = append(leaders, sim.committee.GetLeader(req.Epochs[shardId], shardId))
+	}
+	ctxCS, cancelCS := context.WithTimeout(sim.ctx, sim.config.CallTimeout)
+	defer cancelCS()
+
+	sim.communicator.comm.Multicast(ctxCS, leaders, api.Method_CommitSimulation, simulationCommit)
+
+	var resultCh chan *api.CXTSimulationSSCResult
+	func() {
+		sim.simuLock.Lock()
+		defer sim.simuLock.Unlock()
+		if sim.simuResultCh[txHash] != nil {
+			resultCh = sim.simuResultCh[txHash]
+			close(sim.simuResultCh[txHash])
+			delete(sim.simuResultCh, txHash)
+		}
+	}()
+	if resultCh != nil {
+		<-resultCh
+	}
+
+	sim.stats.setCxtStage(txHash, 1)
+	return sscResult
+}
+
+// aggregateSimulationResults 聚合所有成员的模拟结果。
+//
+// Original: sscService.aggregateSimulationResults (4b6d266c7)
+// s.BLSSignerMgr.GetSSCSigner() → sim.communicator.signerMgr.GetSSCSigner()
+// s.SelfShard → sim.committee.SelfShard
+func (sim *Simulator) aggregateSimulationResults(results []api.SSCMessage) (*api.CXTSimulationSSCResult, error) {
+	if len(results) == 0 {
+		return nil, errors.New("no simulation results to aggregate")
+	}
+
+	result := results[0].(*api.CXTSimulationResult)
+	aggregatedSig, bitMap, err := sim.communicator.signerMgr.GetSSCSigner().Aggregate(results)
+	if err != nil {
+		return nil, err
+	}
+	sscResult := &api.CXTSimulationSSCResult{
+		RelatedShards: result.RelatedShards,
+		Result:        result.Result,
+		Receipt:       result.Receipt,
+		UsedGas:       result.UsedGas,
+		Err:           result.Err,
+		TreeNode:      result.TreeNode,
+		BaseBLSSignedMessage: api.BaseBLSSignedMessage{
+			ShardId:    sim.committee.SelfShard,
+			Signatures: aggregatedSig,
+			BLSBitMap:  bitMap,
+			Epochs:     result.Epochs,
+		},
+	}
+	return sscResult, nil
+}
+
+// thresholdSignSimulationCommit 门限签名 SimulationCommit。
+//
+// Original: sscService.thresholdSignSimulationCommit (4b6d266c7)
+// s. → sim.
+// s.CommitteeMechanism → sim.committee
+// s.ctx → sim.ctx
+// s.Config → sim.config
+// s.Comm → sim.communicator.comm
+// s.BLSSignerMgr.GetSSCSigner() → sim.communicator.signerMgr.GetSSCSigner()
+// s.SelfShard → sim.committee.SelfShard
+// s.SelfAddr → sim.communicator.signerMgr.GetSSCSigner().Address()
+// s.stateLock → sim.state.*
+// s.getState(txHash) → sim.state.GetTxState(txHash)
+func (sim *Simulator) thresholdSignSimulationCommit(commit *api.SimulationCommit) {
+	committee := sim.committee.GetCommittee(commit.Epochs[sim.committee.SelfShard], sim.committee.SelfShard)
+	n := committee.Number
+	t := committee.Threshold
+	txHash := commit.TxHash
+	state, err := sim.state.GetTxState(txHash)
+	if err != nil {
+		utils.SSCLogger().Error().Str("txHash", txHash.String()).Err(err).Msg("failed to get state")
+		return
+	}
+
+	ctx, cancel := context.WithTimeout(state.Ctx, sim.config.CallTimeout)
+	defer cancel()
+
+	wg := sync.WaitGroup{}
+	wg.Add(n)
+	var (
+		results []api.SSCMessage
+		hasSelf bool
+		lock    sync.Mutex
+	)
+	// 预分配容量，但长度动态控制
+	results = make([]api.SSCMessage, 0, t)
+	addrMap := make(map[common.Address]bool)
+
+	for i := 0; i < n; i++ {
+		member := committee.Members[i]
+		go func(m *api.Member) {
+			defer wg.Done()
+			signature := make([]byte, 0)
+			signErr := sim.communicator.comm.Call(ctx, &signature, member, api.Method_SignSimulationCommit, commit)
+			if signErr != nil {
+				if !errors.Is(signErr, context.Canceled) {
+					utils.SSCLogger().Error().Str("txHash", txHash.Hex()).Err(signErr).Msg("thresholdSignSimulationCommit")
+				}
+				return
+			}
+			ret := api.BaseSSCMessage{
+				Epochs:     commit.Epochs,
+				Signature:  signature,
+				SenderAddr: member.Address,
+			}
+
+			utils.SSCLogger().Debug().
+				Str("txHash", txHash.String()).
+				Str("from", m.Address.String()).
+				Msg("received simulation result")
+
+			lock.Lock()
+			defer lock.Unlock()
+
+			// 如果上下文已取消，直接退出
+			if ctx.Err() != nil {
+				return
+			}
+
+			selfAddr := sim.communicator.signerMgr.GetSSCSigner().Address()
+			if bytes.Compare(m.Address.Bytes(), selfAddr.Bytes()) == 0 {
+				hasSelf = true
+				if len(results) < t {
+					addrMap[m.Address] = true
+					results = append([]api.SSCMessage{ret}, results...)
+				} else {
+					delete(addrMap, results[0].GetSenderAddr())
+					addrMap[m.Address] = true
+					results[0] = ret // 替换最后一个
+				}
+			} else {
+				if len(results) < t {
+					addrMap[m.Address] = true
+					results = append(results, ret)
+				}
+			}
+
+			// 检查是否满足终止条件
+			if hasSelf && len(results) == t {
+				cancel()
+			}
+		}(member)
+	}
+	wg.Wait()
+
+	utils.SSCLogger().Info().Str("txHash", txHash.Hex()).
+		Int("results", len(results)).
+		Bool("ctxDone", ctx.Err() != nil).
+		Msg("thresholdSignSimulationCommit: after wg.Wait")
+
+	aggregatedSig, bitMap, err := sim.communicator.signerMgr.GetSSCSigner().Aggregate(results)
+	if err != nil {
+		utils.SSCLogger().Error().Err(err).Str("txHash", txHash.Hex()).
+			Msg("thresholdSignSimulationCommit: aggregate failed")
+		return
+	}
+	utils.SSCLogger().Info().Str("txHash", txHash.Hex()).
+		Int("bitMapLen", len(bitMap)).
+		Msg("thresholdSignSimulationCommit: aggregated OK")
+	commit.Signatures = aggregatedSig
+	commit.BLSBitMap = bitMap
+	commit.ShardId = sim.committee.SelfShard
+	utils.SSCLogger().Info().Str("txHash", txHash.Hex()).
+		Msg("thresholdSignSimulationCommit: done")
+}
+
+// aggregateSSCCommitVote 聚合 SSC Commit Vote 的签名。
+//
+// Original: sscService.aggregateSSCCommitVote (4b6d266c7)
+// s.BLSSignerMgr.GetSSCSigner() → sim.communicator.signerMgr.GetSSCSigner()
+// s.BLSSignerMgr.GetValidatorSigner() → sim.communicator.signerMgr.GetValidatorSigner()
+// s.SelfShard → sim.committee.SelfShard
+func (sim *Simulator) aggregateSSCCommitVote(votes []*api.CXTCommitVote, sscOrValidator bool) *api.CXTCommitSSCVote {
+	if len(votes) == 0 {
+		utils.SSCLogger().Error().Msg("no ssc commit votes to aggregate")
+		return nil
+	}
+	msgs := make([]api.SSCMessage, 0, len(votes))
+	for _, vote := range votes {
+		msgs = append(msgs, vote)
+	}
+	result := votes[0]
+	var (
+		aggregatedSig []byte
+		bitMap        []byte
+		err           error
+	)
+	if sscOrValidator {
+		aggregatedSig, bitMap, err = sim.communicator.signerMgr.GetSSCSigner().Aggregate(msgs)
+	} else {
+		aggregatedSig, bitMap, err = sim.communicator.signerMgr.GetValidatorSigner().Aggregate(msgs)
+	}
+	if err != nil {
+		utils.SSCLogger().Error().Err(err).Msg("failed to aggregate ssc commit vote signatures")
+		return nil
+	}
+	sscResult := &api.CXTCommitSSCVote{
+		TxHash:        result.TxHash,
+		SimulationNum: result.SimulationNum,
+		ShardId:       result.ShardId,
+		OriginShardId: result.OriginShardId,
+		Type:          result.Type,
+		Reason:        result.Reason,
+		Payload:       result.Payload,
+		BaseBLSSignedMessage: api.BaseBLSSignedMessage{
+			ShardId:    sim.committee.SelfShard,
+			Signatures: aggregatedSig,
+			BLSBitMap:  bitMap,
+			Epochs:     result.Epochs,
+		},
+	}
+	return sscResult
+}
+
+// buildSignaturesForSimulation 为 Simulation 构建门限签名。
+//
+// Original: sscService.buildSignaturesForSimulation (4b6d266c7)
+// s. → sim.
+// s.CommitteeMechanism → sim.committee
+// s.ctx → sim.ctx
+// s.Config → sim.config
+// s.Comm → sim.communicator.comm
+// s.BLSSignerMgr.GetSSCSigner() → sim.communicator.signerMgr.GetSSCSigner()
+// s.SelfShard → sim.committee.SelfShard
+// s.SelfAddr → sim.communicator.signerMgr.GetSSCSigner().Address()
+func (sim *Simulator) buildSignaturesForSimulation(state *api.CXTSimulationState, simulation *api.CXTSimulation) {
+	txHash := simulation.TxHash
+	utils.SSCLogger().Debug().Str("txHash", txHash.Hex()).Msgf("begin to build signatures for simulation")
+	committee := sim.committee.GetCommittee(simulation.Epochs[sim.committee.SelfShard], sim.committee.SelfShard)
+	n := committee.Number
+	t := committee.Threshold
+
+	ctx, cancel := context.WithTimeout(state.Ctx, sim.config.CallTimeout)
+	defer cancel()
+
+	wg := sync.WaitGroup{}
+	wg.Add(n)
+	var (
+		results []api.SSCMessage
+		hasSelf bool
+		lock    sync.Mutex
+	)
+	// 预分配容量，但长度动态控制
+	results = make([]api.SSCMessage, 0, t)
+	addrMap := make(map[common.Address]bool)
+	epochs := simulation.Epochs
+
+	for i := 0; i < n; i++ {
+		member := committee.Members[i]
+		go func(m *api.Member) {
+			defer wg.Done()
+			signature := make([]byte, 0)
+			err := sim.communicator.comm.Call(ctx, &signature, m, api.Method_SignCXTSimulation, simulation)
+			if err != nil {
+				if !errors.Is(err, context.Canceled) {
+					utils.SSCLogger().Error().Str("txHash", txHash.Hex()).Err(err).Msgf("failed to call %s", m.Address.Hex())
+				}
+				return
+			}
+			ret := api.BaseSSCMessage{
+				Signature:  signature,
+				SenderAddr: m.Address,
+				Epochs:     epochs,
+			}
+
+			lock.Lock()
+			defer lock.Unlock()
+
+			// 如果上下文已取消，直接退出
+			if ctx.Err() != nil {
+				return
+			}
+
+			selfAddr := sim.communicator.signerMgr.GetSSCSigner().Address()
+			if bytes.Compare(m.Address.Bytes(), selfAddr.Bytes()) == 0 {
+				hasSelf = true
+				if len(results) < t {
+					addrMap[m.Address] = true
+					results = append([]api.SSCMessage{ret}, results...)
+				} else {
+					delete(addrMap, results[0].GetSenderAddr())
+					addrMap[m.Address] = true
+					results[0] = ret // 替换最后一个
+				}
+			} else {
+				if len(results) < t {
+					addrMap[m.Address] = true
+					results = append(results, ret)
+				}
+			}
+
+			// 检查是否满足终止条件
+			if hasSelf && len(results) == t {
+				cancel()
+			}
+		}(member)
+	}
+	wg.Wait()
+
+	aggregatedSig, bitMap, err := sim.communicator.signerMgr.GetSSCSigner().Aggregate(results)
+	if err != nil {
+		utils.SSCLogger().Error().Str("txHash", txHash.Hex()).Err(err).Msg("aggregate signatures failed")
+		return
+	}
+	simulation.Signatures = aggregatedSig
+	simulation.BLSBitMap = bitMap
+}
+
+// StartReSimulation 重新模拟跨分片交易（Leader 节点）。
+//
+// Original: sscService.startReSimulation (impl.go:1980)
+// s. → sim.
+// s.stateLock.Lock/Unlock → removed (use accessors)
+// s.getState(txHash) → sim.state.GetTxState(txHash) / sim.GetSimState(txHash)
+// state → txState (for TxState fields) / simState (for SimulationState fields)
+// s.SelfAddr → sim.communicator.signerMgr.GetSSCSigner().Address()
+// s.SelfShard → sim.committee.SelfShard
+// s.bc → sim.bc
+// s.Config → sim.config
+// s.ctx → sim.ctx
+// s.GetCommittee → sim.committee.GetCommittee
+// s.GetLeader → sim.committee.GetLeader
+// s.IsLeader → sim.committee.IsLeader
+// s.Comm.Call → sim.communicator.comm.Call
+// s.Comm.Multicast → sim.communicator.comm.Multicast
+// s.aggregateSimulationResults → sim.aggregateSimulationResults
+// s.thresholdSignSimulationCommit → sim.thresholdSignSimulationCommit
+// s.retryScheduler.CallForRetry → sim.state.CallForRetry
+func (sim *Simulator) StartReSimulation(txHash common.Hash, simulationNum int) {
+	txState, err := sim.state.GetTxState(txHash)
+	if err != nil {
+		utils.SSCLogger().Error().Err(err).Str("txHash", txHash.Hex()).Msg("resimulation failed")
+		return
+	}
+
+	ctx, cancel := context.WithTimeout(txState.Ctx, sim.config.CallTimeout)
+	defer func() {
+		cancel()
+	}()
+
+	simState, _ := sim.GetSimState(txHash)
+
+	header := sim.bc.CurrentHeader()
+	// request recall origin contract
+	lastReq := simState.SimulationRequest
+	if lastReq == nil {
+		utils.SSCLogger().Error().Str("txHash", txHash.Hex()).Msg("failed to get last simulation request")
+		return
+	}
+	req := &api.CXTSimulationRequest{
+		TxHash:        txHash,
+		Epochs:        lastReq.Epochs,
+		SimulationNum: simulationNum,
+		Author:        lastReq.Author,
+		BlockHash:     header.Hash(),
+		BlockNum:      header.Number().Uint64(),
+		Tx:            lastReq.Tx,
+		From:          lastReq.From,
+		GasPool:       0,
+	}
+
+	startTime := time.Now()
+	utils.SSCLogger().Info().Str("txHash", txHash.Hex()).Msgf("recall simulation, simulationNum: %d, start", simulationNum)
+	defer func() {
+		utils.SSCLogger().Info().Str("txHash", txHash.Hex()).Msgf("recall simulation finished, simulationNum: %d, duration: %v, end", simulationNum, time.Since(startTime))
+	}()
+
+	committee := sim.committee.GetCommittee(req.Epochs[sim.committee.SelfShard], sim.committee.SelfShard)
+	n := committee.Number
+	t := committee.Threshold
+
+	wg := sync.WaitGroup{}
+	wg.Add(n)
+	var (
+		results []api.SSCMessage
+		hasSelf bool
+		lock    sync.Mutex
+	)
+	// 预分配容量，但长度动态控制
+	results = make([]api.SSCMessage, 0, t)
+	addrMap := make(map[common.Address]bool)
+
+	for i := 0; i < n; i++ {
+		member := committee.Members[i]
+		go func(m *api.Member) {
+			defer wg.Done()
+			ret := new(api.CXTSimulationResult)
+			callErr := sim.communicator.comm.Call(ctx, ret, member, api.Method_HandleSimulateRequest, req)
+			if callErr != nil {
+				if !errors.Is(callErr, context.Canceled) {
+					utils.SSCLogger().Error().Str("txHash", txHash.Hex()).Err(callErr).Msg("failed to call cxt ssc call")
+				}
+				return
+			}
+
+			lock.Lock()
+			defer lock.Unlock()
+
+			// 如果上下文已取消，直接退出
+			if ctx.Err() != nil {
+				return
+			}
+
+			selfAddr := sim.communicator.signerMgr.GetSSCSigner().Address()
+			if bytes.Compare(m.Address.Bytes(), selfAddr.Bytes()) == 0 {
+				hasSelf = true
+				if len(results) < t {
+					addrMap[m.Address] = true
+					results = append([]api.SSCMessage{ret}, results...)
+				} else {
+					delete(addrMap, results[0].GetSenderAddr())
+					addrMap[m.Address] = true
+					results[0] = ret // 替换最后一个
+				}
+			} else {
+				if len(results) < t {
+					addrMap[m.Address] = true
+					results = append(results, ret)
+				}
+			}
+
+			// 检查是否满足终止条件
+			if hasSelf && len(results) == t {
+				cancel()
+			}
+		}(member)
+	}
+	wg.Wait()
+
+	var (
+		sscResult *api.CXTSimulationSSCResult
+	)
+
+	if len(results) == t {
+		leaderRet := results[0].(*api.CXTSimulationResult)
+		if leaderRet.Err != "" {
+			sscResult = &api.CXTSimulationSSCResult{Err: leaderRet.Err, RelatedShards: []uint32{sim.committee.SelfShard},
+				BaseBLSSignedMessage: api.BaseBLSSignedMessage{
+					Epochs: leaderRet.Epochs,
+				},
+			}
+			utils.SSCLogger().Error().Str("txHash", txHash.String()).Err(errors.New(leaderRet.Err)).Msg("failed to simulate transaction")
+		} else {
+			sscResult, err = sim.aggregateSimulationResults(results)
+			if err != nil {
+				sscResult = &api.CXTSimulationSSCResult{Err: err.Error(), RelatedShards: []uint32{sim.committee.SelfShard},
+					BaseBLSSignedMessage: api.BaseBLSSignedMessage{
+						Epochs: leaderRet.Epochs,
+					},
+				}
+				utils.SSCLogger().Error().Str("txHash", txHash.String()).Err(err).Msg("failed to aggregate simulation results")
+			} else {
+				simState, _ := sim.GetSimState(txHash)
+				if simState != nil {
+					simState.SimulationResult = sscResult
+					if len(simState.SimulationCallStates[simulationNum]) == 0 {
+						sscResult = &api.CXTSimulationSSCResult{Err: "callStates size is 0", RelatedShards: []uint32{sim.committee.SelfShard},
+							BaseBLSSignedMessage: api.BaseBLSSignedMessage{
+								Epochs: leaderRet.Epochs,
+							},
+						}
+					} else {
+						simState.SimulationCallStates[simulationNum][0].TopSSCResult = sscResult
+					}
+				}
+			}
+		}
+	} else {
+		if len(results) == 0 {
+			sscResult = &api.CXTSimulationSSCResult{Err: "no response from other shards", RelatedShards: []uint32{sim.committee.SelfShard},
+				BaseBLSSignedMessage: api.BaseBLSSignedMessage{
+					Epochs: req.Epochs,
+				},
+			}
+		} else {
+			errRet := results[len(results)-1].(*api.CXTSimulationResult)
+			sscResult = &api.CXTSimulationSSCResult{Err: errRet.Err, RelatedShards: []uint32{sim.committee.SelfShard},
+				BaseBLSSignedMessage: api.BaseBLSSignedMessage{
+					Epochs: req.Epochs,
+				},
+			}
+		}
+	}
+
+	// build and send simulation commit
+	simulationCommit := &api.SimulationCommit{
+		SimulationNum: req.SimulationNum,
+		TxHash:        txHash,
+		Nonce:         req.Tx.Nonce(),
+		Sender:        req.From,
+		RelatedShards: sscResult.RelatedShards,
+		BaseBLSSignedMessage: api.BaseBLSSignedMessage{
+			Epochs: req.Epochs,
+		},
+	}
+
+	// 检查是否有 ChainPatch — 如果有则应该用 CR signer 提交
+	// 确保 SimTx 按正确的 nonce 顺序执行
+	simState, _ = sim.GetSimState(txHash)
+	if simState != nil && simState.ChainPatch != nil {
+		simulationCommit.UseCRSigner = true
+		utils.SSCLogger().Info().Str("txHash", txHash.Hex()).
+			Int("patchSize", len(simState.ChainPatch.WriteState.State)).
+			Msg("startReSimulation: ChainPatch detected, UseCRSigner=true")
+	}
+
+	if len(sscResult.Err) == 0 {
+		simulationCommit.Commit = true
+		simulationCommit.Status = api.OK
+		simulationCommit.Reason = api.OK.String()
+		utils.SSCLogger().Debug().Str("txHash", simulationCommit.TxHash.Hex()).
+			Msgf("resimulation accomplished, send simulation commit, commit type: %v, simulationNum: %d, relatedShards: %v",
+				simulationCommit.Commit, simulationCommit.SimulationNum, simulationCommit.RelatedShards)
+	} else {
+		if vm.IsLockedByOtherTxErr(sscResult.Err) {
+			utils.SSCLogger().Debug().Str("txHash", txHash.Hex()).Msgf("resimulation failed err=%s, it has subscribe to resimulate again, nextSimulationNum=%d", sscResult.Err, req.SimulationNum+1)
+			simulationCommit.Commit = false
+			simulationCommit.Status = api.LockConflict
+			simulationCommit.Reason = sscResult.Err
+			var originShardId uint32
+			if state, es := sim.state.GetTxState(txHash); es == nil {
+				originShardId = state.OriginShardId
+			}
+			if sim.committee.IsLeader(req.Epochs[sim.committee.SelfShard]) {
+				sim.state.CallForRetry(&api.RetryTx{
+					TxHash:        txHash,
+					Epochs:        req.Epochs,
+					RelatedShards: sscResult.RelatedShards,
+					SimulationNum: req.SimulationNum + 1,
+					Condition:     api.Simulate,
+					OriginShardID: originShardId,
+				})
+			}
+			return
+		}
+
+		simulationCommit.Commit = false
+		simulationCommit.Status = api.ExecutionFailed
+		simulationCommit.Reason = sscResult.Err
+		utils.SSCLogger().Error().Str("txHash", simulationCommit.TxHash.Hex()).
+			Err(errors.New(sscResult.Err)).Msgf("resimulation accomplished, send simulation commit, commit type: %v, status: %v, simulationNum: %d, relatedShards: %v",
+			simulationCommit.Commit, simulationCommit.Status.String(), simulationCommit.SimulationNum, simulationCommit.RelatedShards)
+	}
+
+	utils.SSCLogger().Info().Str("txHash", txHash.Hex()).
+		Bool("useCRSigner", simulationCommit.UseCRSigner).
+		Msg("startReSimulation: calling thresholdSignSimulationCommit")
+	sim.thresholdSignSimulationCommit(simulationCommit)
+	utils.SSCLogger().Info().Str("txHash", txHash.Hex()).
+		Msg("startReSimulation: after thresholdSignSimulationCommit")
+	members := make([]*api.Member, 0, len(committee.Members))
+	for _, shardId := range simulationCommit.RelatedShards {
+		members = append(members, sim.committee.GetLeader(simulationCommit.Epochs[shardId], shardId))
+	}
+	_ = sim.communicator.comm.Multicast(ctx, members, api.Method_CommitSimulation, simulationCommit)
+	utils.SSCLogger().Info().Str("txHash", txHash.Hex()).
+		Int("members", len(members)).
+		Msg("startReSimulation: after Multicast")
+}
+
+// =============================================================================
+// Leader 函数（迁移自 simulator_member.go）
+// =============================================================================
+
+// HandleCXTSSCCall 处理来自分片内部的 SSC 跨分片调用请求。
+// Leader 调用此方法，协调全部分片的 member 执行合约。
+func (sim *Simulator) HandleCXTSSCCall(req *api.CXTCallSSCRequest) *api.CXTCallSSCResult {
+	if req == nil {
+		utils.SSCLogger().Error().Msg("nil request")
+		return &api.CXTCallSSCResult{
+			BaseBLSSignedMessage: api.BaseBLSSignedMessage{}, Err: "nil request"}
+	}
+	signer := sim.communicator.signerMgr.GetSSCSigner()
+	err := signer.Verify(req)
+	if err != nil {
+		utils.SSCLogger().Error().Str("txHash", req.TxHash.String()).Err(err).Interface("req", req).Msg("invalid cxt ssc call signature")
+		return &api.CXTCallSSCResult{Err: err.Error(), BaseBLSSignedMessage: api.BaseBLSSignedMessage{Epochs: req.Epochs}}
+	}
+
+	startTime := time.Now()
+	header := sim.bc.CurrentHeader()
+	req.BlockHash = header.Hash()
+	req.BlockNum = header.NumberU64()
+	utils.SSCLogger().Info().Str("txHash", req.TxHash.String()).Str("callIndex", req.CallIndex.ToString()).Msg("handle cxt ssc call, start")
+	committee := sim.committee.GetCommittee(req.Epochs[sim.committee.SelfShard], sim.committee.SelfShard)
+	t := committee.Threshold
+	n := committee.Number
+	txHash := req.TxHash
+
+	// 通过 startCXT 初始化跨分片调用状态
+	_, err = sim.startCXT(txHash, req.SimulationNum, req.OriginShardId, req.RelatedShards, nil, req)
+	if err != nil {
+		return &api.CXTCallSSCResult{
+			BaseBLSSignedMessage: api.BaseBLSSignedMessage{
+				Epochs: req.Epochs,
+			}, Err: fmt.Sprintf("error from targetShard %d, err=%s", req.TargetShardId, err.Error())}
+	}
+
+	ctx, cancel := context.WithTimeout(sim.ctx, sim.config.CallTimeout)
+	defer cancel()
+
+	wg := sync.WaitGroup{}
+	wg.Add(n)
+	var (
+		results []api.SSCMessage
+		hasSelf bool
+		lock    sync.Mutex
+	)
+	results = make([]api.SSCMessage, 0, t)
+	addrMap := make(map[common.Address]bool)
+
+	for i := 0; i < n; i++ {
+		member := committee.Members[i]
+		go func(index int, m *api.Member) {
+			defer wg.Done()
+			ret := new(api.CXTCallResult)
+			callErr := sim.communicator.comm.Call(ctx, ret, member, api.Method_HandleCXTCall, req)
+			if callErr != nil {
+				if !errIsContextCanceled(callErr) {
+					utils.SSCLogger().Error().Str("txHash", txHash.Hex()).Err(callErr).Msg("failed to call cxt ssc call")
+				}
+				return
+			}
+
+			lock.Lock()
+			defer lock.Unlock()
+
+			if ctx.Err() != nil {
+				return
+			}
+
+			if bytes.Compare(m.Address.Bytes(), signer.Address().Bytes()) == 0 {
+				hasSelf = true
+				if len(results) < t {
+					addrMap[m.Address] = true
+					results = append([]api.SSCMessage{ret}, results...)
+				} else {
+					delete(addrMap, results[0].GetSenderAddr())
+					addrMap[m.Address] = true
+					results[0] = ret
+				}
+			} else {
+				if len(results) < t {
+					results = append(results, ret)
+					addrMap[m.Address] = true
+				}
+			}
+
+			if hasSelf && len(results) == t {
+				cancel()
+			}
+		}(i, member)
+	}
+	wg.Wait()
+
+	txState, _ := sim.state.GetTxState(txHash)
+
+	utils.SSCLogger().Info().Str("txHash", txHash.Hex()).Int("n", n).Int("t", t).Int("results", len(results)).Int("addrs", len(addrMap)).Interface("addrMap", addrMap).Msg("receive sigs")
+
+	if len(results) < t {
+		if len(results) == 0 {
+			utils.SSCLogger().Error().Str("txHash", txHash.Hex()).Err(err).Msgf("handle cxt ssc call failed, error from targetShard %d", req.TargetShardId)
+			return &api.CXTCallSSCResult{
+				TxHash:               txHash,
+				RelatedShards:        txState.RelatedShards.Merge(req.RelatedShards),
+				Err:                  fmt.Sprintf("handle ssc call failed, error from targetShard %d", req.TargetShardId),
+				BaseBLSSignedMessage: api.BaseBLSSignedMessage{Epochs: req.Epochs, ShardId: req.ShardId},
+			}
+		}
+		utils.SSCLogger().Error().Str("txHash", txHash.Hex()).Err(err).Msgf("handle cxt ssc call failed, no enough ret: [%d, %d]", len(results), t)
+		return &api.CXTCallSSCResult{
+			TxHash:               txHash,
+			RelatedShards:        txState.RelatedShards.Merge(req.RelatedShards),
+			Err:                  "no enough ret",
+			BaseBLSSignedMessage: api.BaseBLSSignedMessage{Epochs: req.Epochs, ShardId: req.ShardId},
+		}
+	}
+
+	var sscResult *api.CXTCallSSCResult
+	leaderRet := results[0].(*api.CXTCallResult)
+	if leaderRet.Err != "" {
+		sscResult = &api.CXTCallSSCResult{
+			TxHash:               txHash,
+			Err:                  leaderRet.Err,
+			RelatedShards:        leaderRet.RelatedShards.Merge(req.RelatedShards),
+			BaseBLSSignedMessage: api.BaseBLSSignedMessage{Epochs: req.Epochs, ShardId: req.ShardId}}
+		utils.SSCLogger().Error().Str("txHash", txHash.String()).Msgf("failed to simulate transaction: %s", leaderRet.Err)
+	} else {
+		sscResult, err = sim.aggregateCXSSCCallResult(results)
+		if err != nil {
+			utils.SSCLogger().Error().
+				Str("txHash", txHash.String()).Err(err).Msg("failed to aggregate cxt call results")
+			return &api.CXTCallSSCResult{
+				TxHash:               txHash,
+				RelatedShards:        leaderRet.RelatedShards,
+				Err:                  fmt.Sprintf("error from targetShard %d, err=%s", req.TargetShardId, err.Error()),
+				BaseBLSSignedMessage: api.BaseBLSSignedMessage{Epochs: req.Epochs, ShardId: req.ShardId},
+			}
+		}
+	}
+
+	// 更新 SimulationState 中的 call state
+	simState, _ := sim.GetSimState(txHash)
+	if simState != nil {
+		if simState.SimulationCallStates[req.SimulationNum] != nil {
+			callState := simState.SimulationCallStates[req.SimulationNum].Get(req.CallIndex)
+			if callState != nil {
+				callState.CallSSCResult = sscResult
+			}
+		}
+	}
+
+	utils.SSCLogger().Info().Str("txHash", req.TxHash.String()).Dur("cost", time.Since(startTime)).Msg("handle cxt ssc call, end")
+	return sscResult
+}
+
+// aggregateCXSSCCallResult 聚合跨分片调用结果。
+func (sim *Simulator) aggregateCXSSCCallResult(results []api.SSCMessage) (*api.CXTCallSSCResult, error) {
+	if len(results) == 0 {
+		utils.SSCLogger().Error().Msg("no cxt call results to aggregate")
+		return nil, fmt.Errorf("no cxt call results to aggregate")
+	}
+	// 简单聚合：取第一个结果
+	result := results[0].(*api.CXTCallResult)
+	sscResult := &api.CXTCallSSCResult{
+		TxHash:               result.TxHash,
+		CallIndex:            result.CallIndex,
+		RelatedShards:        result.RelatedShards,
+		Result:               result.Result,
+		LeftOverGas:          result.LeftOverGas,
+		BlockHash:            result.BlockHash,
+		Err:                  result.Err,
+		TreeNode:             result.TreeNode,
+		BaseBLSSignedMessage: api.BaseBLSSignedMessage{Epochs: result.Epochs},
+		// TODO: 需要 BLSSignerMgr.Aggregate 聚合签名
+	}
+	return sscResult, nil
+}
+
+// aggregateSSCCallRequest 聚合 SSC 调用请求
+func (sim *Simulator) aggregateSSCCallRequest(requests []*api.CXTCallRequest) *api.CXTCallSSCRequest {
+	if len(requests) == 0 {
+		utils.SSCLogger().Error().Msg("no cxt call requests to aggregate")
+		return nil
+	}
+	request := requests[0]
+	committee := sim.committee.GetCommittee(request.Epochs[sim.committee.SelfShard], sim.committee.SelfShard)
+	msgs := make([]api.SSCMessage, 0, len(requests))
+	for _, msg := range requests {
+		sender := msg.GetSenderAddr()
+		_, inCommittee := committee.MemberIndex[sender]
+		validatorIndex, inValidators := committee.ValidatorIndex[sender]
+		if !inCommittee {
+			memberIndexes := make([]int, 0, len(committee.Members))
+			for _, memberIndex := range committee.MemberIndex {
+				memberIndexes = append(memberIndexes, memberIndex)
+			}
+			utils.SSCLogger().Error().
+				Interface("epochs", request.Epochs).
+				Str("txHash", msg.TxHash.Hex()).
+				Str("callIndex", msg.CallIndex.ToString()).
+				Int("validatorIndex", validatorIndex).
+				Interface("memberIndexes", memberIndexes).
+				Str("addr", msg.GetSenderAddr().Hex()).
+				Msg("cxt call request sender not in committee")
+		}
+		if !inValidators {
+			validatorAddrs := make([]string, 0, len(committee.Validators))
+			for _, validator := range committee.Validators {
+				validatorAddrs = append(validatorAddrs, validator.Address.Hex())
+			}
+			utils.SSCLogger().Error().Str("txHash", msg.TxHash.Hex()).Str("callIndex", msg.CallIndex.ToString()).Interface("validatorIndexes", committee.ValidatorIndex).Str("addr", msg.GetSenderAddr().Hex()).Msgf("cxt call request sender not in validators, %v", validatorAddrs)
+		} else {
+			utils.SSCLogger().Info().Str("txHash", msg.TxHash.Hex()).Str("callIndex", msg.CallIndex.ToString()).Str("addr", msg.GetSenderAddr().Hex()).Msgf("cxt call request sender in committee, validatorIndex=%d", validatorIndex)
+		}
+		msgs = append(msgs, msg)
+	}
+	aggregatedSig, bitMap, err := sim.communicator.signerMgr.GetSSCSigner().Aggregate(msgs)
+	if err != nil {
+		utils.SSCLogger().Error().Err(err).Interface("requests", requests).Msg("failed to aggregate cxt call request signatures")
+		return nil
+	}
+	utils.SSCLogger().Debug().Str("bitMap", common.Bytes2Hex(bitMap)).Msgf("aggregated cxt call request signatures, msgs=%d", len(msgs))
+	sscRequest := &api.CXTCallSSCRequest{
+		OriginShardId: request.OriginShardId,
+		FromShardId:   request.FromShardId,
+		TargetShardId: request.TargetShardId,
+		SimulationNum: request.SimulationNum,
+		RelatedShards: request.RelatedShards,
+		TxHash:        request.TxHash,
+		Nonce:         request.Nonce,
+		TxSender:      request.TxSender,
+		CallIndex:     request.CallIndex,
+		Caller:        request.Caller,
+		Addr:          request.Addr,
+		Input:         request.Input,
+		Gas:           request.Gas,
+		GasPrice:      request.GasPrice,
+		Value:         request.Value,
+		BaseBLSSignedMessage: api.BaseBLSSignedMessage{
+			ShardId:    sim.committee.SelfShard,
+			Signatures: aggregatedSig,
+			BLSBitMap:  bitMap,
+			Epochs:     request.Epochs,
+		},
+		BlockHash: common.Hash{},
+		BlockNum:  0,
+	}
+	return sscRequest
+}
+
+// errIsContextCanceled 检查错误是否为 context.Canceled
+func errIsContextCanceled(err error) bool {
+	if err == nil {
+		return false
+	}
+	return err.Error() == context.Canceled.Error()
+}
