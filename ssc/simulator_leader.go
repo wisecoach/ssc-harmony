@@ -1035,25 +1035,34 @@ func (sim *Simulator) HandleCXTSSCCall(req *api.CXTCallSSCRequest) *api.CXTCallS
 	return sscResult
 }
 
-// aggregateCXSSCCallResult 聚合跨分片调用结果。
+// aggregateCXSSCCallResult 聚合跨分片调用结果并添加 BLS 聚合签名。
 func (sim *Simulator) aggregateCXSSCCallResult(results []api.SSCMessage) (*api.CXTCallSSCResult, error) {
 	if len(results) == 0 {
 		utils.SSCLogger().Error().Msg("no cxt call results to aggregate")
 		return nil, fmt.Errorf("no cxt call results to aggregate")
 	}
-	// 简单聚合：取第一个结果
 	result := results[0].(*api.CXTCallResult)
+
+	// BLS 聚合签名
+	aggregatedSig, bitMap, err := sim.communicator.signerMgr.GetSSCSigner().Aggregate(results)
+	if err != nil {
+		return nil, err
+	}
+
 	sscResult := &api.CXTCallSSCResult{
-		TxHash:               result.TxHash,
-		CallIndex:            result.CallIndex,
-		RelatedShards:        result.RelatedShards,
-		Result:               result.Result,
-		LeftOverGas:          result.LeftOverGas,
-		BlockHash:            result.BlockHash,
-		Err:                  result.Err,
-		TreeNode:             result.TreeNode,
-		BaseBLSSignedMessage: api.BaseBLSSignedMessage{Epochs: result.Epochs},
-		// TODO: 需要 BLSSignerMgr.Aggregate 聚合签名
+		TxHash:        result.TxHash,
+		CallIndex:     result.CallIndex,
+		RelatedShards: result.RelatedShards,
+		Result:        result.Result,
+		LeftOverGas:   result.LeftOverGas,
+		BlockHash:     result.BlockHash,
+		Err:           result.Err,
+		TreeNode:      result.TreeNode,
+		BaseBLSSignedMessage: api.BaseBLSSignedMessage{
+			Epochs:     result.Epochs,
+			Signatures: aggregatedSig,
+			BLSBitMap:  bitMap,
+		},
 	}
 	return sscResult, nil
 }

@@ -2,7 +2,11 @@ package ssc
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
+	"fmt"
+	"math/big"
+	"sort"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -183,7 +187,83 @@ func (sim *Simulator) Cleanup(txHash common.Hash) {
 	sim.syncLock.Unlock()
 }
 
+// HandleCXTRecallProof 处理来自其他分片 SSC 成员的 recall proof。
+//
+//	@Description: handle the recall proof from other shard's ssc member
+//	1. start new simulation number
+//	2. get the smallest callIndex as lockedCallIndex
+func (sim *Simulator) HandleCXTRecallProof(proof *api.CXTCommitProof) {
+	txHash := proof.TxHash
+
+	// 获取 SimulationState
+	simState, ok := sim.GetSimState(txHash)
+	if !ok || simState == nil {
+		utils.SSCLogger().Error().Str("txHash", proof.TxHash.Hex()).Msg("handle cxt recall proof failed: no sim state")
+		return
+	}
+
+	// 1. start new simulation number
+	sim.state.SetSimulationNum(txHash, proof.SimulationNum+1)
+	if simState.SimulationCallStates[proof.SimulationNum+1] == nil {
+		simState.SimulationCallStates[proof.SimulationNum+1] = make(api.SimulationCallStates, 0)
+	}
+
+	// 2. get the smallest callIndex as lockedCallIndex
+	conflictCallIndexes := make([]api.CallIndex, 0)
+	for _, vote := range proof.Votes {
+		if vote.Type == api.Recall {
+			payload := &api.CXTConflictRWSetPayload{}
+			_ = json.Unmarshal(vote.Payload, payload)
+			conflictCallIndexes = append(conflictCallIndexes, payload.ConflictCallIndex)
+		}
+	}
+	sort.Slice(conflictCallIndexes, func(i, j int) bool {
+		return conflictCallIndexes[i].Compare(conflictCallIndexes[j]) < 0
+	})
+	simState.LockedCallIndex = conflictCallIndexes[0]
+}
+
 // ===== callStatesInWaiting 存储访问 =====
+
+// BuildCallStates 从 SimulationCallStates 构建 []*api.CXTCallState。
+// 在 CommitSimulation 中调用，用于构建 Simulation tx 的 call states。
+func (sim *Simulator) BuildCallStates(txHash common.Hash, simulationNum int) ([]*api.CXTCallState, error) {
+	simState, ok := sim.GetSimState(txHash)
+	if !ok || simState == nil {
+		return nil, fmt.Errorf("simulation state not found for %s", txHash.Hex())
+	}
+
+	simulationCallStates := simState.SimulationCallStates[simulationNum]
+	callStates := make([]*api.CXTCallState, 0, len(simulationCallStates))
+	for i, simulationCallState := range simulationCallStates {
+		depentResults := make([]*api.CXTCallSSCResult, 0)
+		for _, dc := range simulationCallState.DependentCXTCalls {
+			depentResults = append(depentResults, dc.SSCResult)
+			if dc.SSCResult == nil {
+				return nil, fmt.Errorf("dependent callIndex %s has no result", dc.CallIndex.ToString())
+			}
+		}
+		sort.Slice(depentResults, func(i, j int) bool {
+			return depentResults[i].CallIndex.Compare(depentResults[j].CallIndex) < 0
+		})
+		callState := &api.CXTCallState{
+			CallIndex:        simulationCallState.CallIndex,
+			TopRequest:       simulationCallState.TopRequest,
+			CallRequest:      simulationCallState.CallRequest,
+			RWSet:            simulationCallState.RWSet,
+			DependentResults: depentResults,
+			CallResult:       simulationCallState.CallSSCResult,
+			TopResult:        simulationCallState.TopSSCResult,
+		}
+		callStates = append(callStates, callState)
+		if callState.TopResult == nil && callState.CallResult == nil {
+			return nil, fmt.Errorf("callIndex %s has no result", simulationCallState.CallIndex.ToString())
+		}
+		utils.SSCLogger().Debug().Str("txHash", txHash.Hex()).Msgf("build commit simulation [%d/%d], callIndex: %s, rwset: %v",
+			i+1, len(simulationCallStates), simulationCallState.CallIndex.ToString(), simulationCallState.RWSet.WriteState.State)
+	}
+	return callStates, nil
+}
 
 // PopCallStatesInWaiting 取出并删除等待中的 callStates
 func (sim *Simulator) PopCallStatesInWaiting(txHash common.Hash) []*api.SimulationCallState {
@@ -364,8 +444,7 @@ func (sim *Simulator) processSimulationTask(task *simulateTask, workerId int) {
 		return
 	}
 
-	// 处理结果...
-	// TODO: 迁移 processSimulationTask 的结果处理逻辑
+	// 处理结果 — 结果已通过 RPC 返回给 leader，无需额外处理
 	_ = ret
 }
 
@@ -611,4 +690,248 @@ func (sim *Simulator) waitForSync(txHash common.Hash, callState *api.SimulationC
 	case <-sim.ctx.Done():
 		utils.SSCLogger().Debug().Msg("simulator context done")
 	}
+}
+
+// ========================================================================
+// SimulatorStateDB — API.Service 接口的模拟执行部分
+// 这些方法通过 sscService 内嵌提升到 sscService
+// ========================================================================
+
+// GetCallState 获取当前 call frame 对应的 call state。
+func (sim *Simulator) GetCallState(txHash common.Hash) *api.SimulationCallState {
+	cxtState, err := sim.state.GetTxState(txHash)
+	if err != nil || cxtState == nil {
+		utils.SSCLogger().Error().Str("txHash", txHash.Hex()).Msgf("get nil tx state")
+		return nil
+	}
+	simState, ok := sim.GetSimState(txHash)
+	if !ok || simState == nil {
+		utils.SSCLogger().Error().Str("txHash", txHash.Hex()).Msgf("get nil simulation state")
+		return nil
+	}
+	if simState.SimulationCallStates == nil {
+		utils.SSCLogger().Error().Str("txHash", txHash.Hex()).Msgf("get nil simulation callstates")
+		return nil
+	}
+	simulationCallState := simState.SimulationCallStates[cxtState.SimulationNum]
+	if simulationCallState == nil {
+		utils.SSCLogger().Error().Str("txHash", txHash.Hex()).Msgf("get nil simulationCallState")
+		return nil
+	}
+	callState := simState.SimulationCallStates[cxtState.SimulationNum].Get(simState.CurrentCallFrame.CallIndex)
+	if callState == nil {
+		utils.SSCLogger().Error().Str("txHash", txHash.Hex()).
+			Interface("callStates", simState.SimulationCallStates[cxtState.SimulationNum]).
+			Interface("currentFrame", simState.CurrentCallFrame).
+			Msgf("get nil callState")
+		return nil
+	}
+	return callState
+}
+
+// GetRWSet 获取当前 call frame 对应的 RWSet。
+func (sim *Simulator) GetRWSet(txHash common.Hash) *api.RWSet {
+	cxtState, err := sim.state.GetTxState(txHash)
+	if err != nil || cxtState == nil {
+		return nil
+	}
+	simState, ok := sim.GetSimState(txHash)
+	if !ok || simState == nil {
+		return nil
+	}
+	callState := simState.SimulationCallStates[cxtState.SimulationNum].Get(simState.CurrentCallFrame.CallIndex)
+	if callState == nil {
+		return nil
+	}
+	return callState.RWSet
+}
+
+// EndCTX 清理模拟状态。
+func (sim *Simulator) EndCTX(txHash common.Hash) {
+	sim.DeleteSimState(txHash)
+}
+
+// CreateAccount 在 RWSet 中创建账户。
+func (sim *Simulator) CreateAccount(txHash common.Hash, address common.Address) {
+	rwset := sim.GetRWSet(txHash)
+	if rwset == nil {
+		return
+	}
+	rwset.CurrentState.Balance[address] = new(big.Int)
+}
+
+// SubBalance 从 RWSet 中扣除余额。
+func (sim *Simulator) SubBalance(db api.StateDB, txHash common.Hash, address common.Address, balance *big.Int) {
+	rwset := sim.GetRWSet(txHash)
+	if rwset == nil {
+		return
+	}
+	bal := rwset.CurrentState.Balance[address]
+	if bal == nil {
+		bal = db.GetBalance(address)
+		rwset.ReadState.Balance[address] = bal
+	}
+	newBal := bal.Sub(bal, balance)
+	rwset.CurrentState.Balance[address] = newBal
+	rwset.WriteState.Balance[address] = newBal
+}
+
+// AddBalance 向 RWSet 中添加余额。
+func (sim *Simulator) AddBalance(db api.StateDB, txHash common.Hash, address common.Address, balance *big.Int) {
+	rwset := sim.GetRWSet(txHash)
+	if rwset == nil {
+		return
+	}
+	bal := rwset.CurrentState.Balance[address]
+	if bal == nil {
+		bal = db.GetBalance(address)
+		rwset.ReadState.Balance[address] = bal
+	}
+	newBal := bal.Add(bal, balance)
+	rwset.CurrentState.Balance[address] = newBal
+	rwset.WriteState.Balance[address] = newBal
+}
+
+// GetBalance 从 RWSet 中获取余额。
+func (sim *Simulator) GetBalance(db api.StateDB, txHash common.Hash, address common.Address) *big.Int {
+	rwset := sim.GetRWSet(txHash)
+	if rwset == nil {
+		return common.Big0
+	}
+	bal := rwset.CurrentState.Balance[address]
+	if bal == nil {
+		bal = db.GetBalance(address)
+		rwset.ReadState.Balance[address] = bal
+		rwset.CurrentState.Balance[address] = bal
+	}
+	return bal
+}
+
+// GetState 读取模拟执行中的状态值。
+// Step 0: 查 RetryScheduler patches（链式依赖路径）
+// Step 1: 查 SimulationState ChainPatch（直接 patch 路径）
+// Step 2: 查 callState RWSet
+func (sim *Simulator) GetState(db api.StateDB, txHash common.Hash, address common.Address, key common.Hash) (common.Hash, error) {
+	// Step 0: 递归查 RetryScheduler patches（链式依赖路径）
+	rs := sim.sscService.retryScheduler
+	chainPatchRef := rs.GetChainPatchRef(txHash)
+	if chainPatchRef != nil {
+		val, found := rs.readPatchChain(
+			chainPatchRef.TxHash,
+			chainPatchRef.SimulationNum,
+			address, key)
+		if found {
+			// Patch 命中：缓存到 callState 的 RWSet
+			if callState := sim.GetCallState(txHash); callState != nil {
+				callState.StateLock.Lock()
+				if callState.RWSet.ReadState.State[address] == nil {
+					callState.RWSet.ReadState.State[address] = make(map[common.Hash]common.Hash)
+				}
+				if callState.RWSet.CurrentState.State[address] == nil {
+					callState.RWSet.CurrentState.State[address] = make(map[common.Hash]common.Hash)
+				}
+				callState.RWSet.ReadState.State[address][key] = val
+				callState.RWSet.CurrentState.State[address][key] = val
+				callState.StateLock.Unlock()
+			}
+			utils.SSCLogger().Debug().Str("txHash", txHash.Hex()).
+				Str("address", address.Hex()).
+				Str("key", key.Hex()).
+				Str("value", val.Hex()).
+				Msg("GetState: ChainPatchRef hit, returning patched value")
+			return val, nil
+		}
+	}
+
+	// Step 1: 检查 SimulationState ChainPatch（直接 patch 路径，兼容旧逻辑）
+	simState, ok := sim.GetSimState(txHash)
+	if ok && simState != nil && simState.ChainPatch != nil {
+		if addrState, ok := simState.ChainPatch.WriteState.State[address]; ok {
+			if val, exists := addrState[key]; exists {
+				utils.SSCLogger().Debug().Str("txHash", txHash.Hex()).
+					Str("address", address.Hex()).
+					Str("key", key.Hex()).
+					Str("value", val.Hex()).
+					Msg("GetState: ChainPatch hit, returning patched value")
+				return val, nil
+			}
+		}
+	}
+
+	// Step 2: 查 callState RWSet
+	callState := sim.GetCallState(txHash)
+	if callState == nil {
+		utils.SSCLogger().Error().Str("txHash", txHash.Hex()).
+			Msg("failed to get state: call state not found")
+		return common.Hash{}, api.ErrInvalidExecution
+	}
+
+	callState.StateLock.Lock()
+	defer func() {
+		callState.StateLock.Unlock()
+	}()
+
+	rwset := callState.RWSet
+	if rwset.ReadState.State[address] == nil {
+		rwset.ReadState.State[address] = make(map[common.Hash]common.Hash)
+	}
+	if rwset.CurrentState.State[address] == nil {
+		rwset.CurrentState.State[address] = make(map[common.Hash]common.Hash)
+	}
+	if value, exists := rwset.CurrentState.State[address][key]; !exists {
+		val, err := db.GetState(txHash, address, key)
+		if err != nil {
+			if errors.Is(err, api.ErrLockedByOtherTx) {
+				callState.LockedByOtherTx = err
+			} else {
+				return common.Hash{}, err
+			}
+		}
+		rwset.CurrentState.State[address][key] = val
+		rwset.ReadState.State[address][key] = val
+		return val, nil
+	} else {
+		return value, nil
+	}
+}
+
+// SetState 写入模拟执行中的状态值。
+func (sim *Simulator) SetState(db api.StateDB, txHash common.Hash, address common.Address, key common.Hash, value common.Hash) error {
+	callState := sim.GetCallState(txHash)
+	if callState == nil {
+		utils.SSCLogger().Error().Str("txHash", txHash.Hex()).
+			Msg("failed to set state: call state not found")
+		return api.ErrInvalidExecution
+	}
+	callState.StateLock.Lock()
+	defer func() {
+		callState.StateLock.Unlock()
+	}()
+
+	rwset := callState.RWSet
+	if rwset.CurrentState.State[address] == nil {
+		rwset.CurrentState.State[address] = make(map[common.Hash]common.Hash)
+	}
+	if rwset.WriteState.State[address] == nil {
+		rwset.WriteState.State[address] = make(map[common.Hash]common.Hash)
+	}
+	if rwset.ReadState.State[address] == nil {
+		rwset.ReadState.State[address] = make(map[common.Hash]common.Hash)
+	}
+	if _, exists := rwset.ReadState.State[address][key]; !exists {
+		val, err := db.GetState(txHash, address, key)
+		if err != nil {
+			utils.SSCLogger().Error().Err(err).Str("txHash", txHash.Hex()).
+				Msgf("failed to set state: get conflict state [%s:%s]", address.Hex(), key.Hex())
+			if errors.Is(err, api.ErrLockedByOtherTx) {
+				return err
+			} else {
+				return err
+			}
+		}
+		rwset.ReadState.State[address][key] = val
+	}
+	rwset.CurrentState.State[address][key] = value
+	rwset.WriteState.State[address][key] = value
+	return nil
 }

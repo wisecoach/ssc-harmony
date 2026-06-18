@@ -32,6 +32,9 @@ type RetrySchedulerStateAccessor struct {
 	// 状态写入
 	SetChainPatch func(txHash common.Hash, patch *api.RWSet)
 
+	// SimulationState 访问（用于从 SimulationCallStates 提取 RWSet）
+	GetSimState func(txHash common.Hash) (*api.SimulationState, bool)
+
 	// 触发重试模拟
 	TriggerReSimulation func(txHash common.Hash, simulationNum int)
 }
@@ -132,6 +135,31 @@ func (rs *retryScheduler) AddToRetry(tx *api.RetryTx) {
 	if !rs.state.IsLeader(tx.Epochs[rs.selfShard]) {
 		return
 	}
+
+	// 从 SimulationCallStates 提取 RWSet
+	readSet := make([]api.LockKey, 0)
+	writeSet := make([]api.LockKey, 0)
+	if sim, ok := rs.state.GetSimState(tx.TxHash); ok && sim != nil {
+		if callStates, exists := sim.SimulationCallStates[tx.SimulationNum-1]; exists {
+			for _, callState := range callStates {
+				if callState.RWSet != nil {
+					for addr, account := range callState.RWSet.ReadState.State {
+						for key := range account {
+							readSet = append(readSet, api.FormKey(addr, key))
+						}
+					}
+					for addr, account := range callState.RWSet.WriteState.State {
+						for key := range account {
+							writeSet = append(writeSet, api.FormKey(addr, key))
+						}
+					}
+				}
+			}
+		}
+	}
+	tx.ReadSet = readSet
+	tx.WriteSet = writeSet
+
 	rs.mu.Lock()
 	defer rs.mu.Unlock()
 
@@ -531,58 +559,6 @@ func (rs *retryScheduler) RetryCancel(txHash common.Hash) {
 	rs.tempLockView.GarbageCollect(txHash)
 }
 
-// chainNextSim 在 SimTx 提交到 mempool 后触发，扫描 retryPool 找到依赖该 SimTx 的下游交易。
-// 线性链：只取第一个匹配的 retry tx。
-func (rs *retryScheduler) chainNextSim(upstreamTxHash common.Hash, writeSet *api.RWSet) {
-	if writeSet == nil || len(writeSet.WriteState.State) == 0 {
-		return
-	}
-
-	// 构建 key 查找表
-	keySet := make(map[api.LockKey]struct{})
-	for addr, state := range writeSet.WriteState.State {
-		for key := range state {
-			keySet[api.FormKey(addr, key)] = struct{}{}
-		}
-	}
-
-	// RLock 下收集匹配的 retry tx（只取第一个，线性链）
-	rs.mu.RLock()
-	var matched *api.RetryTx
-	for _, retryTx := range rs.retryPool {
-		if bytes.Equal(retryTx.TxHash.Bytes(), upstreamTxHash.Bytes()) {
-			continue
-		}
-		if rs.dependsOn(retryTx, keySet) {
-			matched = retryTx
-			break // 线性链：只取第一个匹配
-		}
-	}
-	rs.mu.RUnlock()
-
-	if matched == nil {
-		return
-	}
-
-	// 发送 chain signal
-	rs.sendChainSignal(matched.TxHash, matched, writeSet)
-}
-
-// dependsOn 判断 retryTx 是否依赖 keySet 中的任何 key。
-func (rs *retryScheduler) dependsOn(retryTx *api.RetryTx, keySet map[api.LockKey]struct{}) bool {
-	for _, key := range retryTx.ReadSet {
-		if _, exists := keySet[key]; exists {
-			return true
-		}
-	}
-	for _, key := range retryTx.WriteSet {
-		if _, exists := keySet[key]; exists {
-			return true
-		}
-	}
-	return false
-}
-
 // sendChainSignal 发送链式重试信号到 origin shard。
 func (rs *retryScheduler) sendChainSignal(txHash common.Hash, retryTx *api.RetryTx, writeSet *api.RWSet) {
 	// 构建 ChainNode
@@ -619,8 +595,15 @@ func (rs *retryScheduler) sendChainSignal(txHash common.Hash, retryTx *api.Retry
 		rs.HandleRetrySignal(signal)
 	} else {
 		// RPC 发送
+		originLeader := rs.state.GetLeader(retryTx.Epochs[originShard], originShard)
+		if originLeader == nil {
+			utils.SSCLogger().Warn().Str("txHash", txHash.Hex()).
+				Uint32("originShard", originShard).
+				Msg("sendChainSignal: origin leader not found")
+			return
+		}
 		go func() {
-			err := rs.comm.SendRetrySignal(originShard, signal)
+			err := rs.comm.Call(rs.ctx, nil, originLeader, api.Method_HandleRetrySignal, signal)
 			if err != nil {
 				utils.SSCLogger().Warn().Err(err).
 					Str("txHash", txHash.Hex()).
@@ -657,4 +640,20 @@ func (rs *retryScheduler) readPatchChain(txHash common.Hash, simNum int,
 	}
 
 	return common.Hash{}, false
+}
+
+// GetChainPatchRef 返回指定 tx 的链式 patch 引用（TxSimKey）。
+// 用于 VerifySimulation 判断是否跳过锁冲突检查。
+func (rs *retryScheduler) GetChainPatchRef(txHash common.Hash) *api.TxSimKey {
+	rs.mu.RLock()
+	defer rs.mu.RUnlock()
+	for _, node := range rs.patches[txHash] {
+		if node != nil {
+			return &api.TxSimKey{
+				TxHash:        node.TxHash,
+				SimulationNum: node.SimulationNum,
+			}
+		}
+	}
+	return nil
 }
