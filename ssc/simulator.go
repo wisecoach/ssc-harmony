@@ -881,8 +881,9 @@ func (sim *Simulator) GetState(db api.StateDB, txHash common.Hash, address commo
 	if value, exists := rwset.CurrentState.State[address][key]; !exists {
 		val, err := db.GetState(txHash, address, key)
 		if err != nil {
-			if errors.Is(err, api.ErrLockedByOtherTx) {
+			if errors.Is(err, api.ErrLockConflict_OnChain) {
 				callState.LockedByOtherTx = err
+				callState.LockedKeys = append(callState.LockedKeys, api.FormKey(address, key))
 			} else {
 				return common.Hash{}, err
 			}
@@ -923,8 +924,13 @@ func (sim *Simulator) SetState(db api.StateDB, txHash common.Hash, address commo
 		if err != nil {
 			utils.SSCLogger().Error().Err(err).Str("txHash", txHash.Hex()).
 				Msgf("failed to set state: get conflict state [%s:%s]", address.Hex(), key.Hex())
-			if errors.Is(err, api.ErrLockedByOtherTx) {
-				return err
+			if errors.Is(err, api.ErrLockConflict_OnChain) {
+				callState.LockedByOtherTx = err
+				callState.LockedKeys = append(callState.LockedKeys, api.FormKey(address, key))
+				// ForceSimulation: return the stale value from stateDB to continue execution
+				rwset.CurrentState.State[address][key] = value
+				rwset.WriteState.State[address][key] = value
+				return nil
 			} else {
 				return err
 			}

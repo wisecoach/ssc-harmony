@@ -8,10 +8,11 @@ import (
 )
 
 var (
-	ErrLockedByOtherTx  = errors.New("state is locked by other tx")
-	ErrTxHasBeenClosed  = errors.New("tx has been closed")
-	ErrTxNotExist       = errors.New("transaction is not exist")
-	ErrDeadLockDetected = errors.New("dead lock detected")
+	ErrLockConflict_OnChain  = errors.New("state is locked by other tx on chain")
+	ErrLockConflict_OffChain = errors.New("state is locked by other tx off chain")
+	ErrTxHasBeenClosed       = errors.New("tx has been closed")
+	ErrTxNotExist            = errors.New("transaction is not exist")
+	ErrDeadLockDetected      = errors.New("dead lock detected")
 )
 
 type LockKey string

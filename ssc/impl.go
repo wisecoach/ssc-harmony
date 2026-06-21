@@ -775,17 +775,22 @@ func (s *sscService) CommitSimulation(commit *api.SimulationCommit) {
 
 	utils.SSCLogger().Info().Str("txHash", txHash.Hex()).Msgf("build commit simulation completed")
 
+	// v5 Wound-Wait: 在提交 SimTx 前锁死 Patch（不可再被 Wound）
+	s.retryScheduler.patchPool.Finalize(txHash)
+
+	// v5 Wound-Wait: 二次验证锁仍然持有
+	if s.retryScheduler.tempLockView.IsWounded(txHash) {
+		utils.SSCLogger().Info().Str("txHash", txHash.Hex()).
+			Msg("commit simulation: tx was wounded, aborting submission")
+		// Finalize 了也要 Remove，确保其他 retryTx 能拿到
+		s.retryScheduler.patchPool.Release(txHash)
+		s.closeTransaction(txHash, false, "WoundedByHigherPriority")
+		return
+	}
+
 	s.buildSignaturesForSimulation(tx.Ctx, simulation)
 
-	// NEW: 如果 commit.UseCRSigner=true, 用 CR signer 的 nonce 提交
-	// 确保 CR tx(crN) → SimTx(crN+1) 在同一个区块按序执行
-	if commit.UseCRSigner {
-		err = s.txSubmitter.SubmitSimulationTxWithSigner(simulation, "CommitOrRollbackTx")
-		utils.SSCLogger().Info().Str("txHash", txHash.Hex()).
-			Msg("commit simulation: submitted with CR signer (hot key chain)")
-	} else {
-		err = s.txSubmitter.SubmitSimulationTx(simulation)
-	}
+	err = s.txSubmitter.SubmitSimulationTx(simulation)
 	s.recordTraceBlock(txHash, StageSimulationTxSubmit, s.bc.CurrentHeader().NumberU64())
 	if err != nil {
 		utils.SSCLogger().Error().Err(err).Msg("failed to submit simulation tx")
@@ -809,6 +814,10 @@ func (s *sscService) CommitSimulation(commit *api.SimulationCommit) {
 			}
 		}
 		s.retryScheduler.chainNextSim(txHash, writeSet)
+		// v4: Add to PatchPool for local shard matching
+		s.retryScheduler.patchPool.Add(txHash, writeSet)
+		// Trigger matching for retryPool entries
+		s.retryScheduler.OnPatchPoolUpdated()
 	}
 
 	s.stats.setCxtStage(txHash, 2)
@@ -1211,6 +1220,9 @@ func (s *sscService) closeTransaction(txHash common.Hash, commitOrRollback bool,
 	s.timerMgr.RemoveTx(txHash)
 
 	s.retryScheduler.StaleTx(txHash)
+
+	// v4: Clean up PatchPool
+	s.retryScheduler.patchPool.Remove(txHash)
 }
 
 func (s *sscService) closeTransactions(txs map[common.Hash]bool) {
@@ -1245,12 +1257,9 @@ func (s *sscService) AddRetryTx(tx *api.RetryTx) {
 }
 
 func (s *sscService) RetryCommit(txHash common.Hash) *api.RetryCommitResp {
-	locked := s.retryScheduler.RetryCommit(txHash)
-	utils.SSCLogger().Info().Str("txHash", txHash.Hex()).Msgf("retry commit, locked: %v", locked)
-	return &api.RetryCommitResp{
-		Locked: locked,
-		TxHash: txHash,
-	}
+	resp := s.retryScheduler.RetryCommit(txHash)
+	utils.SSCLogger().Info().Str("txHash", txHash.Hex()).Msgf("retry commit, locked: %v", resp.Locked)
+	return resp
 }
 
 func (s *sscService) RetryCancel(txHash common.Hash) {

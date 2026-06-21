@@ -98,6 +98,11 @@ type SSCVM struct {
 	// available gas is calculated in gasCall* according to the 63/64 rule and later
 	// applied in opCall*.
 	callGasTemp uint64
+
+	// forceVMErr records the lock conflict error in ForceSimulation mode.
+	// Set by opSload/opSstore when a lock conflict is encountered but execution continues.
+	// Read by TransitionDb to propagate the conflict to the caller.
+	forceVMErr error
 }
 
 func NewSSCVM(ctx Context, statedb *state.DB, chainConfig *params.ChainConfig, vmConfig Config, sscService api.Service, executionType ExecutionType) *SSCVM {
@@ -791,6 +796,15 @@ func (vm *SSCVM) canTransfer_EV(from common.Address, amount *big.Int, transferTy
 	return true
 }
 
-func IsLockedByOtherTxErr(err string) bool {
-	return strings.Contains(err, api.ErrLockedByOtherTx.Error())
+func (vm *SSCVM) SetForceVMErr(err error) {
+	vm.forceVMErr = err
+}
+
+func (vm *SSCVM) GetForceVMErr() error {
+	return vm.forceVMErr
+}
+
+func IsLockConflictErr(err string) bool {
+	return strings.Contains(err, api.ErrLockConflict_OnChain.Error()) ||
+		strings.Contains(err, api.ErrLockConflict_OffChain.Error())
 }

@@ -50,6 +50,11 @@ type Config struct {
 
 	// ExtraEips the additional EIPS that are to be enabled
 	ExtraEips []int
+
+	// ForceSimulation: when true, lock conflicts during simulation do not
+	// halt execution — the value is read from stateDB and execution continues.
+	// Only effective in SimulationCall / SimulationRecall instruction sets.
+	ForceSimulation bool
 }
 
 // Interpreter is used to run Ethereum based contracts and will utilise the

@@ -39,7 +39,11 @@ func opSload_SSC_Recall(pc *uint64, inp Interpreter, contract *Contract, memory 
 	loc := stack.peek()
 	val, err := interpreter.vm.SSCService.GetState(db, txHash, contract.Address(), common.BigToHash(loc))
 	if err != nil {
-		return nil, err
+		if interpreter.vm.vmConfig.ForceSimulation && IsLockConflictErr(err.Error()) {
+			interpreter.vm.SetForceVMErr(err)
+		} else {
+			return nil, err
+		}
 	}
 	loc.SetBytes(val.Bytes())
 	return nil, nil
@@ -53,6 +57,11 @@ func opSstore_SSC_Recall(pc *uint64, inp Interpreter, contract *Contract, memory
 	val := stack.pop()
 	err := interpreter.vm.SSCService.SetState(db, txHash, contract.Address(), loc, common.BigToHash(val))
 	if err != nil {
+		if interpreter.vm.vmConfig.ForceSimulation && IsLockConflictErr(err.Error()) {
+			interpreter.vm.SetForceVMErr(err)
+			interpreter.intPool.put(val)
+			return nil, nil
+		}
 		return nil, err
 	}
 	interpreter.intPool.put(val)
@@ -75,10 +84,15 @@ func opCall_SSC_Recall(pc *uint64, inp Interpreter, contract *Contract, memory *
 		gas += params.CallStipend
 	}
 	ret, returnGas, err := interpreter.vm.Call(contract, toAddr, args, gas, value)
-	if err != nil && IsLockedByOtherTxErr(err.Error()) {
+	if err != nil && IsLockConflictErr(err.Error()) {
 		utils.SSCLogger().Error().Str("txHash", interpreter.vm.Context.TxHash.Hex()).Err(err).Msgf("error during execution, pc=%d, type=%s", pc, interpreter.vm.ExecutionType.String())
-		if IsLockedByOtherTxErr(err.Error()) {
-			return ret, api.ErrLockedByOtherTx
+		if IsLockConflictErr(err.Error()) {
+			if interpreter.vm.vmConfig.ForceSimulation {
+				interpreter.vm.SetForceVMErr(err)
+				stack.push(interpreter.intPool.get().SetUint64(1))
+			} else {
+				return ret, api.ErrLockConflict_OnChain
+			}
 		} else {
 			stack.push(interpreter.intPool.getZero())
 		}

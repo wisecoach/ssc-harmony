@@ -8,15 +8,12 @@ function uploadCode() {
     --exclude='bin' \
     --exclude='db' \
     --exclude='.vscode' \
-    --exclude='.gitignore' \
-    --exclude='.gitmodules' \
     --exclude='.travis.yml' \
     --exclude='.editorconfig' \
     --exclude='.golangci.yml' \
     --exclude='.goreleaser.yml' \
     --exclude='.golangci.yml' \
     --exclude='.goreleaser.yml' \
-    --exclude='.gitignore' \
     --exclude="logs" \
     --exclude='output' \
     ./ $1:/home/zjnu/go/src/github.com/harmony-one/harmony-sscc

@@ -145,8 +145,8 @@ func (sim *Simulator) HandleCXTCall(req *api.CXTCallSSCRequest) *api.CXTCallResu
 		TreeNode:      callNode.ToData(),
 	}
 	if callState.LockedByOtherTx != nil {
-		result.Err = api.ErrLockedByOtherTx.Error()
-		utils.SSCLogger().Debug().Str("txHash", txHash.Hex()).Str("callIndex", req.CallIndex.ToString()).Msgf("return locked by other tx")
+		result.Err = api.ErrLockConflict_OnChain.Error()
+		utils.SSCLogger().Info().Str("txHash", txHash.Hex()).Str("callIndex", req.CallIndex.ToString()).Msgf("return locked by other tx")
 	}
 	if err != nil {
 		result.Err = fmt.Sprintf("error from targetShard %d, err=%s", req.TargetShardId, err.Error())
@@ -1067,10 +1067,24 @@ func (sim *Simulator) HandleSimulateRequest(ctx context.Context, req *api.CXTSim
 			},
 		}
 		if result.VMErr != nil {
-			ret.Err = result.VMErr.Error()
+			if vm.IsLockConflictErr(result.VMErr.Error()) && sim.timerMgr.GetTimeoutConfig() != nil && sim.timerMgr.GetTimeoutConfig().ForceSimulation {
+				// ForceSimulation: conflict but execution completed, mark conflict keys
+				utils.SSCLogger().Info().Str("txHash", txHash.Hex()).
+					Msgf("ForceSimulation: lock conflict, continuing execution")
+				if callState.LockedByOtherTx != nil && len(callState.LockedKeys) > 0 {
+					ret.ConflictKeys = callState.LockedKeys
+				}
+				ret.Err = "" // don't report error — we have full RWSet
+			} else {
+				ret.Err = result.VMErr.Error()
+			}
 		}
-		if callState.LockedByOtherTx != nil {
-			ret.Err = api.ErrLockedByOtherTx.Error()
+		if callState.LockedByOtherTx != nil && ret.Err == "" {
+			if sim.timerMgr.GetTimeoutConfig() != nil && sim.timerMgr.GetTimeoutConfig().ForceSimulation {
+				// Already handled above
+			} else {
+				ret.Err = api.ErrLockConflict_OnChain.Error()
+			}
 		}
 	}
 	sign, err := sim.communicator.signerMgr.GetSSCSigner().Sign(ret)

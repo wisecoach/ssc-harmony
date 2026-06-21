@@ -1927,8 +1927,8 @@ func opCall_SSC_Base(pc *uint64, inp Interpreter, contract *Contract, memory *Me
 	contract.Gas += returnGas
 
 	interpreter.intPool.put(addr, value, inOffset, inSize, retOffset, retSize)
-	if err != nil && err.Error() == api.ErrLockedByOtherTx.Error() {
-		return ret, api.ErrLockedByOtherTx
+	if err != nil && err.Error() == api.ErrLockConflict_OnChain.Error() {
+		return ret, api.ErrLockConflict_OnChain
 	}
 	return ret, nil
 }

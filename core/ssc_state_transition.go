@@ -155,6 +155,11 @@ func (st *SSCStateTransition) TransitionDb() (ExecutionResult, error) {
 	st.refundGas()
 	st.collectGas()
 
+	// ForceSimulation: if no VM error but we recorded a lock conflict, propagate it
+	if vmErr == nil && sscvm.GetForceVMErr() != nil {
+		vmErr = sscvm.GetForceVMErr()
+	}
+
 	return ExecutionResult{
 		ReturnData: ret,
 		UsedGas:    st.gasUsed(),

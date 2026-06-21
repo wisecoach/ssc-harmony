@@ -167,6 +167,7 @@ func (sim *Simulator) StartSimulateCXTransaction(req *api.CXTSimulationRequest) 
 			sscResult = &api.CXTSimulationSSCResult{
 				Err:           leaderRet.Err,
 				RelatedShards: []uint32{sim.committee.SelfShard},
+				ConflictKeys:  leaderRet.ConflictKeys,
 				BaseBLSSignedMessage: api.BaseBLSSignedMessage{
 					Epochs: leaderRet.Epochs,
 				},
@@ -214,13 +215,21 @@ func (sim *Simulator) StartSimulateCXTransaction(req *api.CXTSimulationRequest) 
 		simulationCommit.Commit = true
 		simulationCommit.Status = api.OK
 		simulationCommit.Reason = api.OK.String()
-		utils.SSCLogger().Debug().Str("txHash", simulationCommit.TxHash.Hex()).
+		utils.SSCLogger().Info().Str("txHash", simulationCommit.TxHash.Hex()).
 			Msgf("simulation accomplished, send simulation commit, commit type: %v, simulationNum: %d, relatedShards: %v",
 				simulationCommit.Commit, simulationCommit.SimulationNum, simulationCommit.RelatedShards)
 	} else {
-		if vm.IsLockedByOtherTxErr(sscResult.Err) {
+		simNumTag := fmt.Sprintf("[simNum=%d]", req.SimulationNum)
+		if vm.IsLockConflictErr(sscResult.Err) {
+			if len(sscResult.ConflictKeys) > 0 {
+				utils.SSCLogger().Info().Str("txHash", simulationCommit.TxHash.Hex()).
+					Int("conflictKeys", len(sscResult.ConflictKeys)).
+					Msgf("ForceSimulation: conflict keys=%d, full RWSet available for retry", len(sscResult.ConflictKeys))
+			}
 			utils.SSCLogger().Debug().Str("txHash", simulationCommit.TxHash.Hex()).
-				Msgf("simulation's state is locked by other tx, try to retry if self is leader: %v", sim.committee.IsLeader(req.Epochs[sim.committee.SelfShard]))
+				Str("simNum", fmt.Sprintf("%d", req.SimulationNum)).
+				Str("reason", sscResult.Err).
+				Msgf("simulation %s state is locked by other tx, try to retry if self is leader: %v", simNumTag, sim.committee.IsLeader(req.Epochs[sim.committee.SelfShard]))
 			simulationCommit.Commit = false
 			simulationCommit.Status = api.LockConflict
 			simulationCommit.Reason = sscResult.Err
@@ -243,8 +252,9 @@ func (sim *Simulator) StartSimulateCXTransaction(req *api.CXTSimulationRequest) 
 			simulationCommit.Reason = sscResult.Err
 		}
 		utils.SSCLogger().Error().Str("txHash", simulationCommit.TxHash.Hex()).
-			Err(errors.New(sscResult.Err)).Msgf("simulation accomplished, send simulation commit, commit type: %v, status: %v, simulationNum: %d, relatedShards: %v",
-			simulationCommit.Commit, simulationCommit.Status.String(), simulationCommit.SimulationNum, simulationCommit.RelatedShards)
+			Str("simNum", fmt.Sprintf("%d", req.SimulationNum)).
+			Err(errors.New(sscResult.Err)).Msgf("simulation %s accomplished, send simulation commit, commit type: %v, status: %v, simulationNum: %d, relatedShards: %v",
+			simNumTag, simulationCommit.Commit, simulationCommit.Status.String(), simulationCommit.SimulationNum, simulationCommit.RelatedShards)
 	}
 
 	var chs []chan *api.CXTSimulationSSCResult
@@ -285,10 +295,12 @@ func (sim *Simulator) StartSimulateCXTransaction(req *api.CXTSimulationRequest) 
 							writes = append(writes, api.FormKey(addr, key))
 						}
 					}
+					simNumTag := fmt.Sprintf("[simNum=%d]", req.SimulationNum)
 					if !sim.state.TempLockTryLock(txHash, reads, writes) {
 						utils.SSCLogger().Warn().Str("txHash", txHash.Hex()).
 							Int("reads", len(reads)).Int("writes", len(writes)).
-							Msg("TempLockView pre-check failed, deferring to retry pool")
+							Str("simNum", fmt.Sprintf("%d", req.SimulationNum)).
+							Msgf("TempLockView pre-check %s failed, deferring to retry pool", simNumTag)
 						simulationCommit.Commit = false
 						simulationCommit.Status = api.LockConflict
 						simulationCommit.Reason = "temp lock conflict"
@@ -359,6 +371,7 @@ func (sim *Simulator) aggregateSimulationResults(results []api.SSCMessage) (*api
 		UsedGas:       result.UsedGas,
 		Err:           result.Err,
 		TreeNode:      result.TreeNode,
+		ConflictKeys:  result.ConflictKeys,
 		BaseBLSSignedMessage: api.BaseBLSSignedMessage{
 			ShardId:    sim.committee.SelfShard,
 			Signatures: aggregatedSig,
@@ -756,6 +769,7 @@ func (sim *Simulator) StartReSimulation(txHash common.Hash, simulationNum int) {
 		leaderRet := results[0].(*api.CXTSimulationResult)
 		if leaderRet.Err != "" {
 			sscResult = &api.CXTSimulationSSCResult{Err: leaderRet.Err, RelatedShards: []uint32{sim.committee.SelfShard},
+				ConflictKeys: leaderRet.ConflictKeys,
 				BaseBLSSignedMessage: api.BaseBLSSignedMessage{
 					Epochs: leaderRet.Epochs,
 				},
@@ -815,26 +829,21 @@ func (sim *Simulator) StartReSimulation(txHash common.Hash, simulationNum int) {
 		},
 	}
 
-	// 检查是否有 ChainPatch — 如果有则应该用 CR signer 提交
-	// 确保 SimTx 按正确的 nonce 顺序执行
-	simState, _ = sim.GetSimState(txHash)
-	if simState != nil && simState.ChainPatch != nil {
-		simulationCommit.UseCRSigner = true
-		utils.SSCLogger().Info().Str("txHash", txHash.Hex()).
-			Int("patchSize", len(simState.ChainPatch.WriteState.State)).
-			Msg("startReSimulation: ChainPatch detected, UseCRSigner=true")
-	}
-
 	if len(sscResult.Err) == 0 {
 		simulationCommit.Commit = true
 		simulationCommit.Status = api.OK
 		simulationCommit.Reason = api.OK.String()
-		utils.SSCLogger().Debug().Str("txHash", simulationCommit.TxHash.Hex()).
+		utils.SSCLogger().Info().Str("txHash", simulationCommit.TxHash.Hex()).
 			Msgf("resimulation accomplished, send simulation commit, commit type: %v, simulationNum: %d, relatedShards: %v",
 				simulationCommit.Commit, simulationCommit.SimulationNum, simulationCommit.RelatedShards)
 	} else {
-		if vm.IsLockedByOtherTxErr(sscResult.Err) {
-			utils.SSCLogger().Debug().Str("txHash", txHash.Hex()).Msgf("resimulation failed err=%s, it has subscribe to resimulate again, nextSimulationNum=%d", sscResult.Err, req.SimulationNum+1)
+		if vm.IsLockConflictErr(sscResult.Err) {
+			if len(sscResult.ConflictKeys) > 0 {
+				utils.SSCLogger().Info().Str("txHash", txHash.Hex()).
+					Int("conflictKeys", len(sscResult.ConflictKeys)).
+					Msgf("ForceSimulation: resimulation conflict keys=%d, full RWSet available", len(sscResult.ConflictKeys))
+			}
+			utils.SSCLogger().Info().Str("txHash", txHash.Hex()).Msgf("resimulation failed err=%s, it has subscribe to resimulate again, nextSimulationNum=%d", sscResult.Err, req.SimulationNum+1)
 			simulationCommit.Commit = false
 			simulationCommit.Status = api.LockConflict
 			simulationCommit.Reason = sscResult.Err
@@ -864,7 +873,6 @@ func (sim *Simulator) StartReSimulation(txHash common.Hash, simulationNum int) {
 	}
 
 	utils.SSCLogger().Info().Str("txHash", txHash.Hex()).
-		Bool("useCRSigner", simulationCommit.UseCRSigner).
 		Msg("startReSimulation: calling thresholdSignSimulationCommit")
 	sim.thresholdSignSimulationCommit(simulationCommit)
 	utils.SSCLogger().Info().Str("txHash", txHash.Hex()).
@@ -1059,6 +1067,7 @@ func (sim *Simulator) aggregateCXSSCCallResult(results []api.SSCMessage) (*api.C
 		Err:           result.Err,
 		TreeNode:      result.TreeNode,
 		BaseBLSSignedMessage: api.BaseBLSSignedMessage{
+			ShardId:    sim.committee.SelfShard,
 			Epochs:     result.Epochs,
 			Signatures: aggregatedSig,
 			BLSBitMap:  bitMap,

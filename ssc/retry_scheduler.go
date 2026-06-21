@@ -50,7 +50,12 @@ func NewRetryScheduler(ctx context.Context, state *RetrySchedulerStateAccessor, 
 		staleTxs:     make(map[common.Hash]struct{}),
 		signals:      make(map[common.Hash]map[int]map[uint32]*api.RetrySignal),
 		patches:      make(map[common.Hash]map[int]*api.ChainNode),
-		mu:           sync.RWMutex{},
+		patchPool: &api.PatchPool{
+			Patches:  make(map[common.Hash]*api.ChainPatchNode),
+			KeyIndex: make(map[api.LockKey]map[common.Hash]struct{}),
+		},
+		consumedPatches: make(map[common.Hash]common.Hash),
+		mu:              sync.RWMutex{},
 	}
 
 	// NOTE: hotKeySet, updateHotKeys, isHotKey 等已废弃
@@ -72,6 +77,13 @@ type retryScheduler struct {
 	// 链式 Patch 存储
 	// patches[txHash][simulationNum] = ChainNode
 	patches map[common.Hash]map[int]*api.ChainNode
+
+	// PatchPool: 分片本地 Patch 池，用于 v4 机制
+	patchPool *api.PatchPool
+
+	// consumedPatches maps retryTxHash → consumed SimTx hash
+	// Used to release consumed patches on retry failure
+	consumedPatches map[common.Hash]common.Hash
 
 	// 依赖组件（通过接口解耦）
 	ctx          context.Context
@@ -285,7 +297,7 @@ func (rs *retryScheduler) isHotKey(key api.LockKey) bool { ... }
 // 发送带 ChainPatch 的 HandleChainSimSignal。
 func (rs *retryScheduler) chainNextSim(upstreamTxHash common.Hash, writeSet *api.RWSet) {
 	if writeSet == nil || len(writeSet.WriteState.State) == 0 {
-		utils.SSCLogger().Debug().Str("txHash", upstreamTxHash.Hex()).
+		utils.SSCLogger().Info().Str("txHash", upstreamTxHash.Hex()).
 			Msg("chainNextSim: empty writeSet, no downstream possible")
 		return
 	}
@@ -302,38 +314,81 @@ func (rs *retryScheduler) chainNextSim(upstreamTxHash common.Hash, writeSet *api
 		}
 	}
 
-	// 1. RLock 下收集所有匹配的 retry tx（不阻塞，不做 RPC）
+	// 1. RLock 下收集所有匹配的 retry tx
 	type matchedTx struct {
 		txHash  common.Hash
 		retryTx *api.RetryTx
 	}
-	var matched []matchedTx
+	var allMatched []matchedTx
 
 	rs.mu.RLock()
 	for txHash, retryTx := range rs.retryPool {
 		if bytes.Equal(retryTx.TxHash.Bytes(), upstreamTxHash.Bytes()) {
-			continue // 跳过自己
+			continue
 		}
 		if dependsOn(retryTx, keySet) {
-			matched = append(matched, matchedTx{txHash: txHash, retryTx: retryTx})
+			allMatched = append(allMatched, matchedTx{txHash: txHash, retryTx: retryTx})
 		}
 	}
 	rs.mu.RUnlock()
 
-	if len(matched) == 0 {
-		utils.SSCLogger().Debug().Str("txHash", upstreamTxHash.Hex()).
+	if len(allMatched) == 0 {
+		utils.SSCLogger().Info().Str("txHash", upstreamTxHash.Hex()).
 			Msg("chainNextSim: no downstream dependencies found")
 		return
 	}
 
-	utils.SSCLogger().Info().Str("txHash", upstreamTxHash.Hex()).
-		Int("downstreamCount", len(matched)).
-		Msg("chainNextSim: found downstream dependencies")
+	// 2. 状态预留（reservation）：每次匹配一个 retryTx 后，把它的所有 key 加入 reservedSet，
+	//    后续匹配跳过依赖 reserved key 的其他 retryTx，避免多个 retry 争抢同一组状态。
+	//
+	//    只有不冲突的 retryTx 才会被选中，确保每个被 chain 的 retryTx 独占其依赖的状态，
+	//    不再被其他 chain signal 同时争抢。
+	reservedKeys := make(map[api.LockKey]struct{})
+	var selected []matchedTx
 
-	// 2. 逐个发送 chain signal（不在 RLock 内做 RPC）
-	for _, m := range matched {
+	for _, m := range allMatched {
+		if dependsOnReserved(m.retryTx, reservedKeys) {
+			utils.SSCLogger().Info().Str("txHash", m.txHash.Hex()).
+				Int("reservedKeys", len(reservedKeys)).
+				Msg("chainNextSim: skipped due to reserved state conflict")
+			continue
+		}
+		selected = append(selected, m)
+		// 将 retryTx 涉及的所有 key 加入 reservedSet
+		for _, lockKey := range m.retryTx.ReadSet {
+			reservedKeys[lockKey] = struct{}{}
+		}
+		for _, lockKey := range m.retryTx.WriteSet {
+			reservedKeys[lockKey] = struct{}{}
+		}
+	}
+
+	utils.SSCLogger().Info().Str("txHash", upstreamTxHash.Hex()).
+		Int("totalMatched", len(allMatched)).
+		Int("selected", len(selected)).
+		Int("reservedKeys", len(reservedKeys)).
+		Msg("chainNextSim: reservation completed")
+
+	// 3. 逐个发送 chain signal（不在 RLock 内做 RPC）
+	for _, m := range selected {
 		rs.sendChainSignal(m.txHash, m.retryTx, writeSet)
 	}
+}
+
+// dependsOnReserved 判断 retryTx 是否依赖 reservedKeys 中的任意 key。
+// 如果依赖，则跳过此 retryTx（让给其他不冲突的交易）。
+func dependsOnReserved(retryTx *api.RetryTx, reservedKeys map[api.LockKey]struct{}) bool {
+	for _, lockKey := range retryTx.ReadSet {
+		if _, exists := reservedKeys[lockKey]; exists {
+			return true
+		}
+	}
+	for _, lockKey := range retryTx.WriteSet {
+		if _, exists := reservedKeys[lockKey]; exists {
+			return true
+		}
+	}
+	return false
 }
 
 // dependsOn 判断 retryTx 是否依赖 patch keySet 中的任意 key。
@@ -468,16 +523,41 @@ func (rs *retryScheduler) tryToReSimulation(retryTx *api.RetryTx) {
 		}
 	}
 	if success {
+		// 二次验证：检查本地是否被 Wound
+		if rs.tempLockView.IsWounded(txHash) {
+			utils.SSCLogger().Info().Str("txHash", txHash.Hex()).
+				Msg("retry commit success but local tx was wounded, aborting")
+			// 释放所有锁
+			for shardId, resp := range resps {
+				if resp.Locked {
+					go func(shardId uint32) {
+						_ = rs.comm.Call(rs.ctx, nil, rs.state.GetLeader(retryTx.Epochs[shardId], shardId), api.Method_RetryCancel, resp.TxHash)
+					}(shardId)
+				}
+			}
+			return
+		}
 		rs.state.RetrySuccessCount()
 		utils.SSCLogger().Info().Str("txHash", txHash.Hex()).Msg("retry commit success")
 		go rs.state.TriggerReSimulation(retryTx.TxHash, retryTx.SimulationNum)
 		rs.mu.Lock()
 		delete(rs.signals, txHash)
 		delete(rs.retryPool, txHash)
+		delete(rs.consumedPatches, txHash)
 		rs.mu.Unlock()
 	} else {
 		rs.state.RetryFailCount()
 		utils.SSCLogger().Info().Str("txHash", txHash.Hex()).Msg("retry commit failed")
+		// v4: Release consumed PatchPool entry so other retryTxs can use it
+		rs.mu.Lock()
+		if consumedSimTx, exists := rs.consumedPatches[txHash]; exists {
+			rs.patchPool.Release(consumedSimTx)
+			delete(rs.consumedPatches, txHash)
+			utils.SSCLogger().Info().Str("txHash", txHash.Hex()).
+				Str("releasedPatch", consumedSimTx.Hex()).
+				Msg("retry commit failed: released consumed patch")
+		}
+		rs.mu.Unlock()
 		for shardId, resp := range resps {
 			// 如果失败，则将临时上锁的交易解锁
 			if resp.Locked {
@@ -535,24 +615,66 @@ func (rs *retryScheduler) StaleTx(txHash common.Hash) {
 	rs.staleTxs[txHash] = struct{}{}
 }
 
-func (rs *retryScheduler) RetryCommit(txHash common.Hash) bool {
+func (rs *retryScheduler) RetryCommit(txHash common.Hash) *api.RetryCommitResp {
+	// Check if this tx has been Wounded — if so, return failure immediately
+	if rs.tempLockView.IsWounded(txHash) {
+		utils.SSCLogger().Info().Str("txHash", txHash.Hex()).Msg("retryCommit: wounded by higher priority tx")
+		return &api.RetryCommitResp{Locked: false, TxHash: txHash}
+	}
+
 	rs.mu.RLock()
 	retryTx := rs.retryPool[txHash]
-	if retryTx == nil {
-		rs.mu.RUnlock()
-		return false
-	}
 	rs.mu.RUnlock()
+	if retryTx == nil {
+		return &api.RetryCommitResp{Locked: false, TxHash: txHash}
+	}
 	if !rs.state.IsLeader(retryTx.Epochs[rs.selfShard]) {
-		return false
+		return &api.RetryCommitResp{Locked: false, TxHash: txHash}
 	}
-	locked := rs.tempLockView.TryLock(txHash, retryTx.ReadSet, retryTx.WriteSet)
+
+	// 构建优先级
+	priority := api.Priority{
+		Nonce:         retryTx.Nonce,
+		OriginShardID: retryTx.OriginShardID,
+		SimulationNum: retryTx.SimulationNum,
+	}
+
+	// v4: Check local PatchPool for conflict with this retryTx
+	if matched, node := rs.patchPool.HasConflict(retryTx); matched {
+		if patch := rs.patchPool.TryConsume(node.TxHash, txHash, priority); patch != nil {
+			rs.state.SetChainPatch(txHash, patch)
+			rs.mu.Lock()
+			rs.consumedPatches[txHash] = node.TxHash
+			rs.mu.Unlock()
+			utils.SSCLogger().Info().Str("txHash", txHash.Hex()).
+				Str("patchFrom", node.TxHash.Hex()).
+				Msg("retryCommit: found local patch in PatchPool, skipping lock conflict")
+			return &api.RetryCommitResp{Locked: true, TxHash: txHash}
+		}
+	}
+
+	// Check wounded BEFORE any lock operation — if we were wounded in a previous
+	// round, don't try to lock again (the lock is held by higher priority tx).
+	if rs.tempLockView.IsWounded(txHash) {
+		utils.SSCLogger().Info().Str("txHash", txHash.Hex()).Msg("retryCommit: previously wounded, skip this round")
+		return &api.RetryCommitResp{Locked: false, TxHash: txHash}
+	}
+
+	// Normal lock competition path with Wound-Wait priority
+	locked, wounded := rs.tempLockView.TryLockWithPriority(txHash, priority, retryTx.ReadSet, retryTx.WriteSet)
+	if wounded {
+		utils.SSCLogger().Info().Str("txHash", txHash.Hex()).Msg("retryCommit: wounded by higher priority tx")
+		return &api.RetryCommitResp{Locked: false, TxHash: txHash}
+	}
 	if !locked {
-		utils.SSCLogger().Debug().Str("txHash", txHash.Hex()).Msg("retryCommit failed: try lock failed")
-		return false
+		utils.SSCLogger().Info().Str("txHash", txHash.Hex()).Msg("retryCommit failed: try lock failed")
+		return &api.RetryCommitResp{Locked: false, TxHash: txHash}
 	}
+
+	// Clear wounded flag after successful lock — only now it's safe
+	rs.tempLockView.ClearWounded(txHash)
 	utils.SSCLogger().Info().Str("txHash", txHash.Hex()).Msg("retryCommit")
-	return true
+	return &api.RetryCommitResp{Locked: true, TxHash: txHash}
 }
 
 func (rs *retryScheduler) RetryCancel(txHash common.Hash) {
@@ -656,4 +778,40 @@ func (rs *retryScheduler) GetChainPatchRef(txHash common.Hash) *api.TxSimKey {
 		}
 	}
 	return nil
+}
+
+// OnPatchPoolUpdated scans the retryPool for conflicts with PatchPool entries.
+// Called after each Add to PatchPool, or periodically.
+func (rs *retryScheduler) OnPatchPoolUpdated() {
+	rs.mu.RLock()
+	pool := rs.patchPool
+	// Snapshot retryPool keys under lock to avoid concurrent map iteration
+	retryKeys := make([]common.Hash, 0, len(rs.retryPool))
+	retryTxs := make(map[common.Hash]*api.RetryTx, len(rs.retryPool))
+	for txHash, retryTx := range rs.retryPool {
+		retryKeys = append(retryKeys, txHash)
+		retryTxs[txHash] = retryTx
+	}
+	rs.mu.RUnlock()
+
+	for _, txHash := range retryKeys {
+		retryTx := retryTxs[txHash]
+		matched, node := pool.HasConflict(retryTx)
+		if matched {
+			priority := api.Priority{
+				Nonce:         retryTx.Nonce,
+				OriginShardID: retryTx.OriginShardID,
+				SimulationNum: retryTx.SimulationNum,
+			}
+			// Temporary exclusive: mark Consumed to prevent other retryTxs from taking it
+			patch := pool.TryConsume(node.TxHash, txHash, priority)
+			if patch != nil {
+				rs.mu.Lock()
+				rs.consumedPatches[txHash] = node.TxHash
+				rs.mu.Unlock()
+				// Send RetrySignal with local Patch
+				rs.sendChainSignal(txHash, retryTx, patch)
+			}
+		}
+	}
 }

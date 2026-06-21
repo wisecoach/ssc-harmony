@@ -285,6 +285,8 @@ CallStates:
 			Str("callIndex", callState.CallIndex.ToString()).
 			Msgf("verify call state %d", i)
 
+		simNumTag := fmt.Sprintf("[simNum=%d]", simulation.SimulationNum)
+
 		// check if states in write set are locked by other tx
 		// 链式交易跳过锁冲突检查，nonce 排序保证执行顺序
 		if !isChainTx {
@@ -293,9 +295,11 @@ CallStates:
 					lockKey := api.FormKey(address, key)
 					_, stateErr := stateDB.GetState(txHash, address, key)
 					if stateErr != nil {
-						if errors.Is(stateErr, api.ErrLockedByOtherTx) {
-							utils.SSCLogger().Debug().Str("txHash", txHash.Hex()).
-								Msgf("mu conflict for key: %s", lockKey)
+						if errors.Is(stateErr, api.ErrLockConflict_OnChain) {
+							utils.SSCLogger().Info().Str("txHash", txHash.Hex()).
+								Str("simNum", fmt.Sprintf("%d", simulation.SimulationNum)).
+								Str("conflictSource", stateErr.Error()).
+								Msgf("VerifySimulation %s mu conflict (write) for key: %s", simNumTag, lockKey)
 							conflictLockKeys = append(conflictLockKeys, lockKey)
 							conflictLockCallIndexes = append(conflictLockCallIndexes, callState.CallIndex)
 						} else {
@@ -316,9 +320,11 @@ CallStates:
 					lockKey := api.FormKey(address, key)
 					onChainValue, stateErr := stateDB.GetState(txHash, address, key)
 					if stateErr != nil {
-						if errors.Is(stateErr, api.ErrLockedByOtherTx) {
-							utils.SSCLogger().Debug().Str("txHash", txHash.Hex()).
-								Msgf("mu conflict for key: %s", lockKey)
+						if errors.Is(stateErr, api.ErrLockConflict_OnChain) {
+							utils.SSCLogger().Info().Str("txHash", txHash.Hex()).
+								Str("simNum", fmt.Sprintf("%d", simulation.SimulationNum)).
+								Str("conflictSource", stateErr.Error()).
+								Msgf("VerifySimulation %s mu conflict (read) for key: %s", simNumTag, lockKey)
 							conflictLockKeys = append(conflictLockKeys, lockKey)
 							conflictLockCallIndexes = append(conflictLockCallIndexes, callState.CallIndex)
 						} else {
@@ -487,6 +493,11 @@ CallStates:
 		if v.committee.SelfShard == simulation.OriginShardId && v.committee.IsLeader(simulation.Epochs[v.committee.SelfShard]) {
 			v.stats.setCxtStage(txHash, 4)
 		}
+		utils.SSCLogger().Info().Str("txHash", txHash.Hex()).
+			Int("simulationNum", simulation.SimulationNum).
+			Uint32("shardId", v.committee.SelfShard).
+			Uint32("originShard", simulation.OriginShardId).
+			Msgf("VerifySimulation: success, sending Commit vote")
 		vote := &api.CXTCommitVote{
 			TxHash:         txHash,
 			ShardId:        v.committee.SelfShard,
@@ -637,15 +648,18 @@ func (v *Verifier) verifyExecuteForCallState(simulation *api.CXTSimulation, txHa
 func (v *Verifier) checkLockConflict(simulation *api.CXTSimulation, stateDB api.StateDB) bool {
 	txHash := simulation.TxHash
 	conflictLockKeys := make([]api.LockKey, 0)
+	simNumTag := fmt.Sprintf("[simNum=%d]", simulation.SimulationNum)
 
 	for _, callState := range simulation.CallStates {
 		for address, stateMap := range callState.RWSet.ReadState.State {
 			for key := range stateMap {
 				lockKey := api.FormKey(address, key)
 				_, err := stateDB.GetState(txHash, address, key)
-				if err != nil && errors.Is(err, api.ErrLockedByOtherTx) {
-					utils.SSCLogger().Debug().Str("txHash", txHash.Hex()).
-						Msgf("mu conflict for key: %s", lockKey)
+				if err != nil && errors.Is(err, api.ErrLockConflict_OnChain) {
+					utils.SSCLogger().Info().Str("txHash", txHash.Hex()).
+						Str("simNum", fmt.Sprintf("%d", simulation.SimulationNum)).
+						Str("conflictSource", err.Error()).
+						Msgf("checkLockConflict %s mu conflict (read) for key: %s", simNumTag, lockKey)
 					conflictLockKeys = append(conflictLockKeys, lockKey)
 				}
 			}
@@ -654,9 +668,11 @@ func (v *Verifier) checkLockConflict(simulation *api.CXTSimulation, stateDB api.
 			for key := range stateMap {
 				lockKey := api.FormKey(address, key)
 				_, err := stateDB.GetState(txHash, address, key)
-				if err != nil && errors.Is(err, api.ErrLockedByOtherTx) {
-					utils.SSCLogger().Debug().Str("txHash", txHash.Hex()).
-						Msgf("mu conflict for key: %s", lockKey)
+				if err != nil && errors.Is(err, api.ErrLockConflict_OnChain) {
+					utils.SSCLogger().Info().Str("txHash", txHash.Hex()).
+						Str("simNum", fmt.Sprintf("%d", simulation.SimulationNum)).
+						Str("conflictSource", err.Error()).
+						Msgf("checkLockConflict %s mu conflict (write) for key: %s", simNumTag, lockKey)
 					conflictLockKeys = append(conflictLockKeys, lockKey)
 				}
 			}

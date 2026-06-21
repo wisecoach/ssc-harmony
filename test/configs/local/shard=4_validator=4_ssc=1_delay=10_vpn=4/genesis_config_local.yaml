@@ -1,0 +1,144 @@
+ssc_config:
+  committees:
+  - shardid: 0
+    epoch: 0
+    members:
+    - address: 0x040c58c98df724d931475866aa8465bae4e199d2
+      pubkey: 04850dbb8f362ec19ccfc47997019bdd966135611626241336652dce6ef41433b2fbe6d2472a7ec4a83007fc1da87ee4911315aad019d2260fabf9e60e8b331b28
+      endpoint: http://127.0.0.1:9500
+      blspubkey: 54f8b21cf0a49ffee123fdde3b7d091b207f191a60677ab96205c52a05189359ec3e2b2725d0615bb3a854b044b06882
+    threshold: 1
+    validators:
+    - address: 0x040c58c98df724d931475866aa8465bae4e199d2
+      pubkey: 04850dbb8f362ec19ccfc47997019bdd966135611626241336652dce6ef41433b2fbe6d2472a7ec4a83007fc1da87ee4911315aad019d2260fabf9e60e8b331b28
+      endpoint: http://127.0.0.1:9500
+      blspubkey: 54f8b21cf0a49ffee123fdde3b7d091b207f191a60677ab96205c52a05189359ec3e2b2725d0615bb3a854b044b06882
+    - address: 0x061ff6d8ecb8ae360eeb1b4bbae2bf5ed4d6d88d
+      pubkey: 0490d35df597d2bb323ce778fa92cd6ff2fe9c62ee59cb04721abb71567cf5f12392cf3ae190d4559487ade480bbd06269def67111d821942e713d691a271ca713
+      endpoint: http://127.0.0.1:9502
+      blspubkey: 28d79435ff16021c32a1195546dab38dabb6592107dc20646dc0ceb63960c021d0191ecf8e3fa91b6302bf71f53c398c
+    - address: 0x02a7b783f4d4092a4be4d39d08dfaae7d2bcc311
+      pubkey: 04cac59fcce87d9ed4de663c8820527193cf23db260d45a5374571a85c226f1158f6d435bd34c60ee76c815cc304c5cd51db54b2bf98e1605ba29a28c45bda9ab1
+      endpoint: http://127.0.0.1:9504
+      blspubkey: 63f22047116d66cad9d77ed7c6058310b7e16655f48eec2fdfeb564e96b9810074f9e09f157ec78863265b7785537f0d
+    - address: 0x006e927d80f40ce9f6c5dd67f0fe52df9e00cb42
+      pubkey: 04d40aff8cc280784702e554d65f7f6d63ec072e9500d58e5cf16381c23ee7fa024393d32415b7bbf438db2ed580fd25f57a1c686063eb407084543d78ad14a5bd
+      endpoint: http://127.0.0.1:9506
+      blspubkey: 568268bd964f84da050d044b9b9242163cb49f31c6c657a8f2927b40705700f08d70f11e2d7986f428b3c6573d75e296
+    validatorthreshold: 3
+    number: 1
+    memberindex: {}
+    validatorindex: {}
+  - shardid: 1
+    epoch: 0
+    members:
+    - address: 0x0d43914fdb5c89997b122057cd480a04c582a1ad
+      pubkey: 04e06f8957940541f3bc17bf5c0cc18f03505859a4abbf821bebdf62c37de725f477260753ec75fa446afddeeeb46b02f18156c244a1bbaa2ab358776acc3d0d12
+      endpoint: http://127.0.0.1:9540
+      blspubkey: 36135007f2d6509e972d104f83621c49851537764f7ab9db56c440c266a32eb7229b0b65aeb851f20793be177ad2c491
+    threshold: 1
+    validators:
+    - address: 0x0d43914fdb5c89997b122057cd480a04c582a1ad
+      pubkey: 04e06f8957940541f3bc17bf5c0cc18f03505859a4abbf821bebdf62c37de725f477260753ec75fa446afddeeeb46b02f18156c244a1bbaa2ab358776acc3d0d12
+      endpoint: http://127.0.0.1:9540
+      blspubkey: 36135007f2d6509e972d104f83621c49851537764f7ab9db56c440c266a32eb7229b0b65aeb851f20793be177ad2c491
+    - address: 0x0b01241225ed1c1ef1316e85bfd769b56ccde55c
+      pubkey: 04d3c3fe7271545aa13329facc68e5873e5a54447a5adb8afb6acd4cf9b4cff5fbdab2dd1016b8123d02d158cb99c3aac449a87d174c6710e3181a839bc1d0733f
+      endpoint: http://127.0.0.1:9542
+      blspubkey: 55d385a0efe6e97213e03d4fc3430e0f284d5ccf09d242a69e04923851f7af668271734a4ecddea051da4a100b24a580
+    - address: 0x0de06f2c243cc69be791f1097280b83c5a7a65b5
+      pubkey: 04bfde5e9ddf2720d6443b89c3d0fcb601607e12b783dc2fad090de00c9dfa754332c196d1795750bb30c3331fc7f4cb15027f7aecb92d398132ad54770cccf235
+      endpoint: http://127.0.0.1:9544
+      blspubkey: 5b4819fbdeec6470009bdaac73e992db4b734aec1c44f30c46180b36b3482cc76f1d1ac6ca6e4d3031d78be01258f30e
+    - address: 0x0b44069349f8eda86eeb44faa191e4f9f7a40612
+      pubkey: 04ba22842503ce93954c87bfcb8a2dce0d27b8743724866a1881499e46d612a6e5adab2cbd1400cbeb686c4995a9b233920ab8af6f7c8f5b9bfeb4fa7f70c7c6fb
+      endpoint: http://127.0.0.1:9546
+      blspubkey: 3e68a42fd207d2c525657a904073b13cd24b314330acb9c2aa7e4267c7a282b6fe053be044337e9d4f15fb935e32f698
+    validatorthreshold: 3
+    number: 1
+    memberindex: {}
+    validatorindex: {}
+  - shardid: 2
+    epoch: 0
+    members:
+    - address: 0x144b2a902ee2ce1b43f2ee5dfc7a52fb114e556a
+      pubkey: 04b35d875efeda0fd4a5916741905269ed07bef54d252f32f705d92e67b2a732ea9bc7b1d43115814fe493227b80b41bc4f94f6b7d85bf971665a95f6e4001e873
+      endpoint: http://127.0.0.1:9580
+      blspubkey: 8d6b1572ecc17c8672652d38d10d39837161feb383228aec2b83679953b8156ad8cfa3bb62f325257a8ea0656d93d691
+    threshold: 1
+    validators:
+    - address: 0x144b2a902ee2ce1b43f2ee5dfc7a52fb114e556a
+      pubkey: 04b35d875efeda0fd4a5916741905269ed07bef54d252f32f705d92e67b2a732ea9bc7b1d43115814fe493227b80b41bc4f94f6b7d85bf971665a95f6e4001e873
+      endpoint: http://127.0.0.1:9580
+      blspubkey: 8d6b1572ecc17c8672652d38d10d39837161feb383228aec2b83679953b8156ad8cfa3bb62f325257a8ea0656d93d691
+    - address: 0x16d4da87204d601d9d7e851c677210cb90346e55
+      pubkey: 04d111dc22243de24552377004063f1cabc9eda7753bae8fdce1414d2c6450f74ea47106c73a8583ab7c0a7b590bb109594697b30c748a1a38611e60aaff07fc95
+      endpoint: http://127.0.0.1:9582
+      blspubkey: 68a19b497bed814c2e737d3e7ae04937643ac15ddbd12f8afce30d76ba31609fa304f9eed18d0118acd3e40b57a56d88
+    - address: 0x156eb1e8ac06b25ce39dfecd15c19efe779a9715
+      pubkey: 04b3b0ae064ee2d0ecee6e1740d8e1744d2716183ca9e2c181682aeae90cedfe976a90b12886ce96731b1a37674bc16700055a7686c97ea9078103b7e2d132dab3
+      endpoint: http://127.0.0.1:9584
+      blspubkey: e3c9ae77ad8e6a8bf68e71e416afde0f74925b97665433a357643f1c8fdd24f2942412ace7ab5119dee2ce4b53198012
+    - address: 0x132a8c4e85ccb08032665187142a9abaf44c4d35
+      pubkey: 0449f3951f211be0794b5aac849b82d65b33bcc8fc75d2d76537eeecb734cec70de8b07167143510191e0697ad39cae19c394e11f1412c70ca58e94039dfe60717
+      endpoint: http://127.0.0.1:9586
+      blspubkey: bf5795a5f8b9e88db432fe5d59c2d11a69c06892d66a6cf38e6c5ceb1524f80a3bf65b391516c35b8a7a83b3f6898617
+    validatorthreshold: 3
+    number: 1
+    memberindex: {}
+    validatorindex: {}
+  - shardid: 3
+    epoch: 0
+    members:
+    - address: 0x1cdab3a8d28c7e43cb3a14c06ddef9376b5bf348
+      pubkey: 04dd7497f6f7ad334d5d1ca8919d45f286ef892a29c551bfe25a79a382d187f350075a5634d11b26da64ce02d126db5c8a372c1befb19d096e887ea0def72e38d3
+      endpoint: http://127.0.0.1:9620
+      blspubkey: ea9676b6348e7573573d21007140d5e975de838096dfd4722a2b779ef5beeef8c40bfd55a3135aa749f5e4a144698e84
+    threshold: 1
+    validators:
+    - address: 0x1cdab3a8d28c7e43cb3a14c06ddef9376b5bf348
+      pubkey: 04dd7497f6f7ad334d5d1ca8919d45f286ef892a29c551bfe25a79a382d187f350075a5634d11b26da64ce02d126db5c8a372c1befb19d096e887ea0def72e38d3
+      endpoint: http://127.0.0.1:9620
+      blspubkey: ea9676b6348e7573573d21007140d5e975de838096dfd4722a2b779ef5beeef8c40bfd55a3135aa749f5e4a144698e84
+    - address: 0x1c6ec9cbfe7b9903c313a08ef6203719731f756a
+      pubkey: 040e49cec192d751fde6f905e508fecd7e5312620faf0cdc741eb22306a44bae5ae99b1ca8eded84af862355c44871d4a0faf4e4efb408ada872baf629130d16c1
+      endpoint: http://127.0.0.1:9622
+      blspubkey: 30329a297bb051663b4062bc05145a8e8a5a9287f859505664c66cd3618bb3ccedc5eb9f383dc8fb011476bef4a57e99
+    - address: 0x1c2fd20879fa3913c85936bef1a51a809a6ec723
+      pubkey: 0447340aa0e111749b3a17a69b0d493e5458adcee8f7c581381289dc37c6db0391a7f5e5faddae063bbfb9571c1cfe704837388e43a4501227808eb4dcb187f995
+      endpoint: http://127.0.0.1:9624
+      blspubkey: 946f9bc5ea1c97776f355c032ec914063479fd53784f007d620af04c659b1599f57a0f7f353ea2e1ed4a87a6de0af699
+    - address: 0x1cf6f70cf9b4911a5db8878275deb46e8505b9e6
+      pubkey: 04326c1f0671219bcdb3404ce0174208e867f207032059456438112013cf9aa9880c3afd95ef2d423fb98ee9df21b8036de082a9aed56b1cb8190f841b8f3c6fdf
+      endpoint: http://127.0.0.1:9626
+      blspubkey: b1dbb61d582eb0ac8d4a22ea4d7cae6b9126506ac07cc09f0404566a5e0371425a33033595fd62ca4426b385c9f42311
+    validatorthreshold: 3
+    number: 1
+    memberindex: {}
+    validatorindex: {}
+  timeout:
+    sp1: 10
+    pool_timeout: 100000
+    max_on_chain_retries: 5
+    force_simulation: true
+  chain: null
+  reputation:
+    sl_file_size: 1000
+    sl_difficulty: 5
+    sl_timeout: 200ms
+    sl_period: 10h0m0s
+    a: 0.5
+    c: 2
+    w1: 0.33
+    w2: 0.33
+    w3: 0.34
+    reward_price: "10000"
+    rb: 1
+    rs: 2
+    block_per_epoch: 1000000000000000
+    theta: 1
+    t: 5
+genesis_accounts_dir: .hmy/expr_accounts
+contract_deployer_dir: .hmy/contract_deploy_accounts
+validator_key_dir: .hmy/validator_ecdsa
+commit_rollback_key_dir: .hmy/commit_rollback_ecdsa

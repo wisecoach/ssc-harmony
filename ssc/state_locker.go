@@ -133,13 +133,13 @@ func (s *stateLocker) RLockable(key api.LockKey, txHash common.Hash) error {
 	// 检查 base snapshot（只读，不可变）
 	if ls, exists := s.baseSnapshot.lockedStates[key]; exists {
 		s.sscService.stats.LockableFailRlock.Add(1)
-		return errors.Wrap(api.ErrLockedByOtherTx, fmt.Sprintf("locked by tx %s", ls.lockedBy.Hex()))
+		return errors.Wrap(api.ErrLockConflict_OnChain, fmt.Sprintf("locked by tx %s", ls.lockedBy.Hex()))
 	}
 
 	// 检查 pending states（本 instance 未提交的变更）
 	if ls, exists := s.pendingStates.lockedStates[key]; exists {
 		s.sscService.stats.LockableFailRlock.Add(1)
-		return errors.Wrap(api.ErrLockedByOtherTx, fmt.Sprintf("locked by tx %s in pending states", ls.lockedBy.Hex()))
+		return errors.Wrap(api.ErrLockConflict_OffChain, fmt.Sprintf("locked by tx %s in pending states", ls.lockedBy.Hex()))
 	}
 
 	return nil
@@ -169,8 +169,9 @@ func (s *stateLocker) Lockable(key api.LockKey, txHash common.Hash) error {
 			utils.SSCLogger().Debug().Str("txHash", txHash.Hex()).
 				Str("key", string(key)).
 				Str("root", s.root.Hex()).
-				Msgf("key is locked by other tx %s in base snapshot", ls.lockedBy.Hex())
-			return errors.Wrap(api.ErrLockedByOtherTx, fmt.Sprintf("locked by tx %s", ls.lockedBy.Hex()))
+				Str("lockedBy", ls.lockedBy.Hex()).
+				Msgf("[stateDB] key is locked by other tx %s in base snapshot", ls.lockedBy.Hex())
+			return errors.Wrap(api.ErrLockConflict_OnChain, fmt.Sprintf("[stateDB] locked by tx %s", ls.lockedBy.Hex()))
 		}
 	}
 
@@ -182,21 +183,22 @@ func (s *stateLocker) Lockable(key api.LockKey, txHash common.Hash) error {
 			utils.SSCLogger().Debug().Str("txHash", txHash.Hex()).
 				Str("key", string(key)).
 				Str("root", s.root.Hex()).
-				Msgf("key is locked by other tx %s in pending states", ls.lockedBy.Hex())
-			return errors.Wrap(api.ErrLockedByOtherTx, fmt.Sprintf("locked by tx %s", ls.lockedBy.Hex()))
+				Str("lockedBy", ls.lockedBy.Hex()).
+				Msgf("[TempLockView] key is locked by other tx %s in pending states", ls.lockedBy.Hex())
+			return errors.Wrap(api.ErrLockConflict_OffChain, fmt.Sprintf("[TempLockView] locked by tx %s", ls.lockedBy.Hex()))
 		}
 	}
 
 	// 检查 base snapshot 的读锁
 	if ls, exists := s.baseSnapshot.rlockedStates[key]; exists {
 		s.sscService.stats.LockableFailRlock.Add(1)
-		return errors.Wrap(api.ErrLockedByOtherTx, fmt.Sprintf("rlocked by tx %s in base snapshot", ls.lockedBy))
+		return errors.Wrap(api.ErrLockConflict_OnChain, fmt.Sprintf("[stateDB] rlocked by tx %s", ls.lockedBy))
 	}
 
 	// 检查 pending states 的读锁
 	if ls, exists := s.pendingStates.rlockedStates[key]; exists {
 		s.sscService.stats.LockableFailRlock.Add(1)
-		return errors.Wrap(api.ErrLockedByOtherTx, fmt.Sprintf("rlocked by tx %s in pending states", ls.lockedBy))
+		return errors.Wrap(api.ErrLockConflict_OffChain, fmt.Sprintf("[TempLockView] rlocked by tx %s", ls.lockedBy))
 	}
 
 	return nil

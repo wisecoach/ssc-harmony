@@ -312,6 +312,7 @@ type TimeoutConfig struct {
 	Sp1               uint64 `json:"sp1" yaml:"sp1"`                                   // source phase 1, used to notify origin shard to rollback cxt for timeout
 	PoolTimeout       uint64 `json:"pool_timeout" yaml:"pool_timeout"`                 // the timeout to remove cxt from pool
 	MaxOnChainRetries uint64 `json:"max_on_chain_retries" yaml:"max_on_chain_retries"` // max retries for on-chain verification
+	ForceSimulation   bool   `json:"force_simulation" yaml:"force_simulation"`         // continue execution on lock conflict, get full RWSet
 }
 
 type ReputationConfig struct {
@@ -419,6 +420,7 @@ type CXTSimulationResult struct {
 	UsedGas       uint64
 	Err           string
 	TreeNode      *CallNodeData
+	ConflictKeys  []LockKey `json:"conflict_keys,omitempty"` // ForceSimulation mode: keys that had lock conflicts
 }
 
 func (m *CXTSimulationResult) Bytes() []byte {
@@ -429,6 +431,7 @@ func (m *CXTSimulationResult) Bytes() []byte {
 		UsedGas       uint64
 		Err           string
 		TreeNode      *CallNodeData
+		ConflictKeys  []LockKey
 	}
 	msg := CXTSimulationResultWithoutSignature{
 		RelatedShards: m.RelatedShards,
@@ -437,6 +440,7 @@ func (m *CXTSimulationResult) Bytes() []byte {
 		UsedGas:       m.UsedGas,
 		Err:           m.Err,
 		TreeNode:      m.TreeNode,
+		ConflictKeys:  m.ConflictKeys,
 	}
 	bytes, err := json.Marshal(msg)
 	if err != nil {
@@ -453,6 +457,7 @@ type CXTSimulationSSCResult struct {
 	UsedGas       uint64
 	Err           string
 	TreeNode      *CallNodeData
+	ConflictKeys  []LockKey
 	BaseBLSSignedMessage
 }
 
@@ -464,6 +469,7 @@ func (m *CXTSimulationSSCResult) Bytes() []byte {
 		UsedGas       uint64
 		Err           string
 		TreeNode      *CallNodeData
+		ConflictKeys  []LockKey
 	}
 	msg := CXTSimulationSSCResultWithoutSignature{
 		RelatedShards: m.RelatedShards,
@@ -472,6 +478,7 @@ func (m *CXTSimulationSSCResult) Bytes() []byte {
 		UsedGas:       m.UsedGas,
 		Err:           m.Err,
 		TreeNode:      m.TreeNode,
+		ConflictKeys:  m.ConflictKeys,
 	}
 	bytes, err := json.Marshal(msg)
 	if err != nil {
@@ -1072,10 +1079,6 @@ type SimulationCommit struct {
 	Status        SimulationCommitStatus
 	Reason        string
 	BaseBLSSignedMessage
-	// UseCRSigner tells the handler to submit the resulting SimTx using the
-	// CR signer's nonce chain (crSigner, crNonce) instead of the normal
-	// simulation signer. This ensures CR(crN) → SimTx(crN+1) ordering.
-	UseCRSigner bool `json:"usecrsigner"`
 }
 
 func (m *SimulationCommit) Bytes() []byte {
@@ -1087,7 +1090,6 @@ func (m *SimulationCommit) Bytes() []byte {
 		RelatedShards RelatedShards
 		Commit        bool
 		Status        SimulationCommitStatus
-		UseCRSigner   bool
 	}
 	msg := SimulationCommitWithoutSignature{
 		SimulationNum: m.SimulationNum,
@@ -1097,7 +1099,6 @@ func (m *SimulationCommit) Bytes() []byte {
 		RelatedShards: m.RelatedShards,
 		Commit:        m.Commit,
 		Status:        m.Status,
-		UseCRSigner:   m.UseCRSigner,
 	}
 	bytes, err := json.Marshal(msg)
 	if err != nil {
@@ -1316,6 +1317,197 @@ type TxSimKey struct {
 	SimulationNum int
 }
 
+// Priority defines a global ordering for retryTx lock contention.
+// Lower value = higher priority (earlier nonce / lower shardId / fewer retries wins).
+type Priority struct {
+	Nonce         uint64 `json:"nonce"`
+	OriginShardID uint32 `json:"origin_shard_id"`
+	SimulationNum int    `json:"simulation_num"`
+}
+
+// Less returns true if p has higher priority than other.
+// Priority order: simulationNum (more retries = higher priority) > Nonce > OriginShardID
+func (p Priority) Less(other Priority) bool {
+	if p.SimulationNum != other.SimulationNum {
+		return p.SimulationNum > other.SimulationNum // 重试次数越多优先级越高
+	}
+	if p.Nonce != other.Nonce {
+		return p.Nonce < other.Nonce
+	}
+	if p.OriginShardID != other.OriginShardID {
+		return p.OriginShardID < other.OriginShardID
+	}
+	return false
+}
+
+// PatchConsumeStatus represents the lifecycle state of a ChainPatchNode.
+type PatchConsumeStatus int
+
+const (
+	PatchFree      PatchConsumeStatus = iota // Not yet taken by any retryTx
+	PatchConsumed                            // Taken by a retryTx, can still be Wounded
+	PatchFinalized                           // Locked by CommitSimulation, cannot be Wounded
+)
+
+// ChainPatchNode is a node in the PatchPool.
+// Each submitted SimTx corresponds to one node.
+type ChainPatchNode struct {
+	TxHash    common.Hash        // txHash of the SimTx
+	Patch     *RWSet             // WriteSet of the SimTx
+	Status    PatchConsumeStatus // Free → Consumed → Finalized
+	Consumer  common.Hash        // retryTx that consumed this Patch (zero if Free)
+	Priority  Priority           // priority of the consumer
+	CreatedAt time.Time          // time when added to pool
+}
+
+// PatchPool is a shard-local pool of chain patches maintained by the leader.
+// Each shard has its own instance, storing only WriteSets of SimTxs submitted by this shard.
+type PatchPool struct {
+	mu       sync.RWMutex
+	Patches  map[common.Hash]*ChainPatchNode      // patches[txHash] = ChainPatchNode
+	KeyIndex map[LockKey]map[common.Hash]struct{} // keyIndex[lockKey] = set of txHashes that write this key
+}
+
+// Add adds a submitted SimTx's WriteSet to the PatchPool.
+// Also updates the keyIndex inverted index.
+func (pp *PatchPool) Add(txHash common.Hash, writeSet *RWSet) {
+	pp.mu.Lock()
+	defer pp.mu.Unlock()
+
+	pp.Patches[txHash] = &ChainPatchNode{
+		TxHash:    txHash,
+		Patch:     writeSet,
+		Status:    PatchFree,
+		CreatedAt: time.Now(),
+	}
+
+	// Update keyIndex
+	for addr, state := range writeSet.WriteState.State {
+		for key := range state {
+			lockKey := FormKey(addr, key)
+			if pp.KeyIndex[lockKey] == nil {
+				pp.KeyIndex[lockKey] = make(map[common.Hash]struct{})
+			}
+			pp.KeyIndex[lockKey][txHash] = struct{}{}
+		}
+	}
+}
+
+// HasConflict checks if a retryTx depends on any SimTx in the PatchPool.
+// Returns true + the best matching node (highest key coverage).
+func (pp *PatchPool) HasConflict(retryTx *RetryTx) (bool, *ChainPatchNode) {
+	pp.mu.RLock()
+	defer pp.mu.RUnlock()
+
+	// Collect all owners of keys that retryTx touches, count hits per txHash
+	candidates := make(map[common.Hash]int)
+	for _, key := range retryTx.ReadSet {
+		if owners, ok := pp.KeyIndex[key]; ok {
+			for txHash := range owners {
+				candidates[txHash]++
+			}
+		}
+	}
+	for _, key := range retryTx.WriteSet {
+		if owners, ok := pp.KeyIndex[key]; ok {
+			for txHash := range owners {
+				candidates[txHash]++
+			}
+		}
+	}
+
+	// Select the one with highest coverage (most matching keys)
+	// Skip Finalized patches (already committed, cannot be Wounded)
+	var best common.Hash
+	var bestCnt int
+	for txHash, cnt := range candidates {
+		node, exists := pp.Patches[txHash]
+		if cnt > bestCnt && exists && node.Status != PatchFinalized && node.Status != PatchConsumed {
+			bestCnt = cnt
+			best = txHash
+		}
+	}
+	if bestCnt > 0 {
+		return true, pp.Patches[best]
+	}
+	return false, nil
+}
+
+// TryConsume attempts to take the Patch for the given txHash.
+// Returns the Patch if successful, nil if already consumed/finalized or not found.
+// Sets Status to PatchConsumed.
+func (pp *PatchPool) TryConsume(txHash common.Hash, consumer common.Hash, priority Priority) *RWSet {
+	pp.mu.Lock()
+	defer pp.mu.Unlock()
+
+	node, ok := pp.Patches[txHash]
+	if !ok || node.Status != PatchFree {
+		return nil
+	}
+	node.Status = PatchConsumed
+	node.Consumer = consumer
+	node.Priority = priority
+	return node.Patch
+}
+
+// Release releases a consumed Patch (on retry failure), allowing other retryTxs to take it.
+func (pp *PatchPool) Release(txHash common.Hash) {
+	pp.mu.Lock()
+	defer pp.mu.Unlock()
+
+	if node, ok := pp.Patches[txHash]; ok && node.Status == PatchConsumed {
+		node.Status = PatchFree
+		node.Consumer = common.Hash{}
+		node.Priority = Priority{}
+	}
+}
+
+// Finalize marks a Patch as Finalized — cannot be Wounded anymore.
+// Called in CommitSimulation before submitting the SimTx.
+func (pp *PatchPool) Finalize(txHash common.Hash) {
+	pp.mu.Lock()
+	defer pp.mu.Unlock()
+
+	if node, ok := pp.Patches[txHash]; ok && node.Status == PatchConsumed {
+		node.Status = PatchFinalized
+	}
+}
+
+// IsFinalized returns true if the given txHash's Patch is Finalized.
+func (pp *PatchPool) IsFinalized(txHash common.Hash) bool {
+	pp.mu.RLock()
+	defer pp.mu.RUnlock()
+
+	node, ok := pp.Patches[txHash]
+	return ok && node.Status == PatchFinalized
+}
+
+// Remove removes a Patch from the pool and cleans up keyIndex.
+func (pp *PatchPool) Remove(txHash common.Hash) {
+	pp.mu.Lock()
+	defer pp.mu.Unlock()
+
+	node, ok := pp.Patches[txHash]
+	if !ok {
+		return
+	}
+
+	// Clean up keyIndex
+	for addr, state := range node.Patch.WriteState.State {
+		for key := range state {
+			lockKey := FormKey(addr, key)
+			if owners, ok := pp.KeyIndex[lockKey]; ok {
+				delete(owners, txHash)
+				if len(owners) == 0 {
+					delete(pp.KeyIndex, lockKey)
+				}
+			}
+		}
+	}
+
+	delete(pp.Patches, txHash)
+}
+
 func NewCallStack(txHash common.Hash, simulationNum int) *CallStack {
 	return &CallStack{
 		TxHash:        txHash,
@@ -1490,6 +1682,7 @@ type SimulationCallState struct {
 	CallSSCResult     *CXTCallSSCResult
 	TopSSCResult      *CXTSimulationSSCResult
 	LockedByOtherTx   error
+	LockedKeys        []LockKey `json:"-"` // keys that had lock conflicts, used by ForceSimulation
 	CallForest        *CallForest
 	DB                StateDB       `json:"-"` // the state db of the simulation
 	SyncedCh          chan struct{} `json:"-"` // used to notify the state is synced
