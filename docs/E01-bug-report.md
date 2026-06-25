@@ -297,3 +297,130 @@ type Priority struct {
 | 🟡 Medium | #3 | `ssc/simulator_member.go` | ConflictKeys 永远为无效的零值 key |
 | 🟢 Minor | #4 | `ssc/retry_scheduler.go` | CanLock 不兼容 Wound-Wait，但路径已阻塞 |
 | 🟢 Minor | #5 | `docs/A06-lock-priority-coordination.md` | 文档字段顺序歧义 |
+
+---
+
+# E02：onChainPatches 实现问题与链式重试失效
+
+> **评估日期**：2026-06-21
+> **评估范围**：`docs/A05-hotkey-retry-design.md` v6 onChainPatches 设计 vs 代码实现
+> **评估方法**：实验日志分析 + 代码审查
+
+## 问题 #6：[Critical] sendChainSignal 未设置 ChainNode.UpstreamTxHash
+
+### 位置
+
+`ssc/retry_scheduler.go` 第 822-827 行（`sendChainSignal`）
+
+### 描述
+
+`sendChainSignal` 创建的 `ChainNode` 中 `UpstreamTxHash` 和 `UpstreamSimNum` 始终为零值。注释说"将在 HandleRetrySignal 中设置"，但 `HandleRetrySignal` 中从未设置这两个字段：
+
+```go
+chainNode := &api.ChainNode{
+    TxHash:        txHash,
+    SimulationNum: retryTx.SimulationNum,
+    Patch:         writeSet,
+    // UpstreamTxHash 和 UpstreamSimNum 将在 HandleRetrySignal 中设置
+    // ← 从未设置，永远为零值！
+}
+```
+
+### 后果
+
+- `patches[downstreamTxHash][simNum].UpstreamTxHash` 始终为零值
+- `GetUpstreamTxRef(txHash)` 永远返回 `(common.Hash{}, 0)`
+- `CommitSimulation` 中 `UpstreamTxHash` 永远为空
+- SimTx 的 `hasUpstream` 永远为 false
+- `ReadOnChainPatch` 无法被调用（因为 `isChainTx && UpstreamTxHash != zero` 条件不满足）
+- 链式交易的依赖链断裂，所有 SimTx 都被当作根节点
+
+### 实验证据
+
+4540 次 `chain tx detected` 中 `hasUpstream=false` 占比 100%，`ReadOnChainPatch` 日志为 0。
+
+### 修复
+
+1. `chainNextSim` 加 `upstreamSimNum` 参数
+2. `sendChainSignal` 加 `upstreamTxHash`/`upstreamSimNum` 参数，写入 ChainNode
+3. `CommitSimulation` 使用 `GetUpstreamTxRef`（新增方法）替代 `GetChainPatchRef` 获取上游信息
+
+### 状态
+
+✅ 已修复（2026-06-21 编码完成，待实验验证）
+
+---
+
+## 问题 #7：[Medium] GetChainPatchRef 被误用于获取上游信息
+
+### 位置
+
+`ssc/impl.go` 第 783 行
+
+### 描述
+
+`CommitSimulation` 中原代码：
+
+```go
+if chRef := s.retryScheduler.GetChainPatchRef(txHash); chRef != nil {
+    upstreamTxHash = chRef.TxHash  // ← 这是当前 tx 自己的 hash！
+    upstreamSimNum = chRef.SimulationNum
+}
+```
+
+`GetChainPatchRef` 返回 `node.TxHash`（当前交易自己的 hash），不是 `node.UpstreamTxHash`（上游 hash）。
+
+### 修复
+
+新增 `GetUpstreamTxRef(txHash)` 方法，返回真实的 `(UpstreamTxHash, UpstreamSimNum)`。
+
+### 状态
+
+✅ 已修复
+
+---
+
+## 问题 #8：[Medium] ForceSimulation 导致 VerifySimulation 结果不一致
+
+### 位置
+
+全局 — `ForceSimulation=true` 时
+
+### 描述
+
+`ForceSimulation` 在锁冲突时从 stateDB 读值继续模拟。但该值可能已被 Wound-Wait 中的更高优先级交易修改，导致模拟结果与链上执行结果不同，出现 `simulation result is not equal to execution result` 错误（527 次）。
+
+### 当前状态
+
+**已暂关**（`ForceSimulation=false`），等待 onChainPatches 完善后重新评估。
+
+---
+
+## 问题 #9：[Medium] unfinished 交易原因不明
+
+### 描述
+
+每轮实验有 300-400 笔 `unfinished` 交易（既不 commit 也不 rollback）。理论上锁最终会被释放，交易应终结。
+
+### 分析方向
+
+需在新 session 中排查：
+1. 是否有交易在 `closeTransaction` 前死锁
+2. `PoolTimeout` 是否正确触发
+3. `TimerMgr` 的清理是否完整
+4. 是否 Wound 后交易进入僵尸状态（与 Bug #2 相关）
+
+### 状态
+
+待排查
+
+---
+
+## 总结
+
+| 严重程度 | Bug ID | 文件 | 影响 | 状态 |
+|:--------:|:------:|------|------|:----:|
+| 🔴 Critical | #6 | `ssc/retry_scheduler.go` | ChainNode.UpstreamTxHash 恒为零，链式重试全部断裂 | ✅ 已修 |
+| 🟡 Medium | #7 | `ssc/impl.go` | GetChainPatchRef 返回自己 hash 而非上游 hash | ✅ 已修 |
+| 🟡 Medium | #8 | 全局 | ForceSimulation 导致链上验证不一致 | ⏸️ 暂关 |
+| 🟡 Medium | #9 | 待排查 | unfinished 交易清理不完整 | 🔍 待查 |

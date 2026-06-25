@@ -182,10 +182,13 @@ func newBaseService(ctx context.Context, config *api.Config, cm *CommitteeMechan
 	service.lockStateMgr = lockStateMgr
 	service.tempLockView = lockStateMgr.GetTempLockView()
 	service.timerMgr = NewTimerManager(sscConfig.Timeout, service)
-	service.retryScheduler = NewRetryScheduler(ctx, &RetrySchedulerStateAccessor{
+	service.retryScheduler = NewRetryScheduler(ctx, bc, &RetrySchedulerStateAccessor{
 		IsLeader: func(epoch api.Epoch) bool { return service.CommitteeMechanism.IsLeader(epoch) },
 		GetLeader: func(epoch api.Epoch, shardId uint32) *api.Member {
 			return service.CommitteeMechanism.GetLeader(epoch, shardId)
+		},
+		GetBlockHash: func(txHash common.Hash) (common.Hash, bool) {
+			return service.Simulator.GetBlockHash(txHash)
 		},
 		ShardNum:            func() uint32 { return service.CommitteeMechanism.ShardNum() },
 		RetryAddCount:       func() { service.stats.RetryAddCount.Add(1) },
@@ -336,6 +339,9 @@ func newBaseService(ctx context.Context, config *api.Config, cm *CommitteeMechan
 			},
 			CloseTx: func(txHash common.Hash, success bool, reason string) {
 				service.closeTransaction(txHash, success, reason)
+			},
+			RemoveOnChainPatch: func(txHash common.Hash) {
+				service.retryScheduler.RemoveOnChainPatch(txHash)
 			},
 		},
 	)
@@ -725,6 +731,10 @@ func (s *sscService) HandleCXTRecallProof(proof *api.CXTCommitProof) {
 
 func (s *sscService) CommitSimulation(commit *api.SimulationCommit) {
 	txHash := commit.TxHash
+	utils.SSCLogger().Info().Str("txHash", txHash.Hex()).
+		Int("simNum", commit.SimulationNum).
+		Bool("commit", commit.Commit).
+		Msg("CommitSimulation: called")
 	switch commit.Status {
 	case api.OK:
 		utils.SSCLogger().Info().Str("txHash", txHash.Hex()).Msgf("simulation committed, status=%s", commit.Status.String())
@@ -759,15 +769,43 @@ func (s *sscService) CommitSimulation(commit *api.SimulationCommit) {
 		return
 	}
 
+	// 从 callStates 中提取 WriteSet，用于 chainNextSim 和 ChainPatch
+	writeSet := &api.RWSet{WriteState: api.NewStateSet()}
+	for _, cs := range callStates {
+		if cs.RWSet != nil && cs.RWSet.WriteState != nil {
+			for addr, state := range cs.RWSet.WriteState.State {
+				if writeSet.WriteState.State[addr] == nil {
+					writeSet.WriteState.State[addr] = make(map[common.Hash]common.Hash)
+				}
+				for key, val := range state {
+					writeSet.WriteState.State[addr][key] = val
+				}
+			}
+		}
+	}
+
+	// 检查当前 SimTx 是否有上游依赖（链式重试）
+	var upstreamTxHash common.Hash
+	var upstreamSimNum int
+	if upHash, upSim := s.retryScheduler.GetUpstreamTxRef(txHash); upHash != (common.Hash{}) {
+		upstreamTxHash = upHash
+		upstreamSimNum = upSim
+		chainRetryStats.ChainLengthMu.Lock()
+		chainRetryStats.ChainCommitCnt[commit.SimulationNum]++
+		chainRetryStats.ChainLengthMu.Unlock()
+	}
 	simulation := &api.CXTSimulation{
-		SimulationNum: commit.SimulationNum,
-		TxHash:        commit.TxHash,
-		Nonce:         commit.Nonce,
-		Sender:        commit.Sender,
-		ShardId:       commit.ShardId,
-		OriginShardId: tx.OriginShardId,
-		RelatedShards: commit.RelatedShards,
-		CallStates:    callStates,
+		SimulationNum:  commit.SimulationNum,
+		TxHash:         commit.TxHash,
+		Nonce:          commit.Nonce,
+		Sender:         commit.Sender,
+		ShardId:        commit.ShardId,
+		OriginShardId:  tx.OriginShardId,
+		RelatedShards:  commit.RelatedShards,
+		CallStates:     callStates,
+		ChainPatch:     writeSet,
+		UpstreamTxHash: upstreamTxHash,
+		UpstreamSimNum: upstreamSimNum,
 		BaseBLSSignedMessage: api.BaseBLSSignedMessage{
 			Epochs: commit.Epochs,
 		},
@@ -782,13 +820,21 @@ func (s *sscService) CommitSimulation(commit *api.SimulationCommit) {
 	if s.retryScheduler.tempLockView.IsWounded(txHash) {
 		utils.SSCLogger().Info().Str("txHash", txHash.Hex()).
 			Msg("commit simulation: tx was wounded, aborting submission")
-		// Finalize 了也要 Remove，确保其他 retryTx 能拿到
+		// Finalize 了也要 Release，确保其他 retryTx 能拿到
 		s.retryScheduler.patchPool.Release(txHash)
-		s.closeTransaction(txHash, false, "WoundedByHigherPriority")
+		// 清理 TempLockTryLock 残留的锁（空 Priority 极难被 Wound，必须手动清理）
+		s.retryScheduler.tempLockView.GarbageCollect(txHash)
+		// 不清除交易状态（不调 closeTransaction）：
+		// 被 Wound 的交易应放回 retryPool，等待 OnBlockCommitted 清理 wounded 标记后重新竞争。
+		// 调 closeTransaction 会 delete txStates + 标记 finishedTxs，导致交易永久终结且链上锁泄漏。
 		return
 	}
 
 	s.buildSignaturesForSimulation(tx.Ctx, simulation)
+
+	// 提交 SimTx 后，所有节点收到后入 onChainPatches
+	// Leader 在提交前先入，确保本地即刻可用
+	s.retryScheduler.AddOnChainPatch(txHash, commit.SimulationNum, simulation.ChainPatch, upstreamTxHash, upstreamSimNum)
 
 	err = s.txSubmitter.SubmitSimulationTx(simulation)
 	s.recordTraceBlock(txHash, StageSimulationTxSubmit, s.bc.CurrentHeader().NumberU64())
@@ -797,23 +843,17 @@ func (s *sscService) CommitSimulation(commit *api.SimulationCommit) {
 		return
 	}
 
+	// SimTx 提交成功后，统计链式深度
+	if upstreamTxHash != (common.Hash{}) {
+		// 是链式交易，记录提交深度
+		chainRetryStats.ChainLengthMu.Lock()
+		chainRetryStats.ChainCommitCnt[commit.SimulationNum]++
+		chainRetryStats.ChainLengthMu.Unlock()
+	}
+
 	// SimTx 提交成功后，检查是否可以链式触发依赖它的 retry tx（DAG chaining）
 	if s.IsLeader(commit.Epochs[s.SelfShard]) {
-		// 从 callStates 中提取完整 WriteSet 用于 chainNextSim
-		writeSet := &api.RWSet{WriteState: api.NewStateSet()}
-		for _, cs := range callStates {
-			if cs.RWSet != nil && cs.RWSet.WriteState != nil {
-				for addr, state := range cs.RWSet.WriteState.State {
-					if writeSet.WriteState.State[addr] == nil {
-						writeSet.WriteState.State[addr] = make(map[common.Hash]common.Hash)
-					}
-					for key, val := range state {
-						writeSet.WriteState.State[addr][key] = val
-					}
-				}
-			}
-		}
-		s.retryScheduler.chainNextSim(txHash, writeSet)
+		s.retryScheduler.chainNextSim(txHash, commit.SimulationNum, writeSet)
 		// v4: Add to PatchPool for local shard matching
 		s.retryScheduler.patchPool.Add(txHash, writeSet)
 		// Trigger matching for retryPool entries

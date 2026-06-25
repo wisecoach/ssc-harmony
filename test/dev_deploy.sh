@@ -203,12 +203,6 @@ function deploy() {
         echo "begin to work: $cmd"
         call_for_validator $validator_index "$cmd" < /dev/null &
 
-        # Start CPU monitoring (one per server, batch-mode top at 2s interval)
-        if [ $(($validator_index % $validator_per_node)) -eq 0 ]; then
-            monitor_cmd='nohup top -b -d 2 >"'"${log_folder}"'/cpu-monitor.log" 2>&1 &'
-            ssh -p 10022 "${SERVERS[$(($validator_index / $validator_per_node))]}" "cd $WORK_DIR && $monitor_cmd" < /dev/null &
-        fi
-
         validator_index=$(($validator_index + 1))
     done
 }

@@ -214,9 +214,11 @@ type stateLockManager struct {
 	mu sync.RWMutex
 
 	// 基础锁状态字段
-	commitCnt    uint64
-	lockedStates *lockedStates        // 全局写锁/读锁状态
-	finishedTxs  map[common.Hash]bool // 已完成（已提交）的交易
+	commitCnt       uint64
+	currentBlockNum uint64                 // 当前区块号（用于锁时长统计）
+	lockedStates    *lockedStates          // 全局写锁/读锁状态
+	finishedTxs     map[common.Hash]bool   // 已完成（已提交）的交易
+	lockStartBlock  map[api.LockKey]uint64 // LockKey → 首次上锁的区块号（用于检测超时锁）
 
 	// 版本化支持（NEW）
 	currentRoot  common.Hash                           // 当前区块的 stateRoot
@@ -233,16 +235,18 @@ type stateLockManager struct {
 // newStateLockManager 创建一个新的版本化锁管理器。
 func newStateLockManager(service *sscService) *stateLockManager {
 	mgr := &stateLockManager{
-		sscService:   service,
-		mu:           sync.RWMutex{},
-		commitCnt:    0,
-		lockedStates: newLockedStates(),
-		finishedTxs:  make(map[common.Hash]bool),
-		snapshots:    make(map[common.Hash]*lockedStatesSnapshot),
-		snapshotMeta: make(map[common.Hash]*snapshotMetadata),
-		maxSnapshots: DefaultMaxSnapshots,
-		snapshotTTL:  DefaultSnapshotTTL,
-		cleanupStop:  make(chan struct{}),
+		sscService:      service,
+		mu:              sync.RWMutex{},
+		commitCnt:       0,
+		currentBlockNum: 0,
+		lockedStates:    newLockedStates(),
+		finishedTxs:     make(map[common.Hash]bool),
+		lockStartBlock:  make(map[api.LockKey]uint64),
+		snapshots:       make(map[common.Hash]*lockedStatesSnapshot),
+		snapshotMeta:    make(map[common.Hash]*snapshotMetadata),
+		maxSnapshots:    DefaultMaxSnapshots,
+		snapshotTTL:     DefaultSnapshotTTL,
+		cleanupStop:     make(chan struct{}),
 	}
 
 	mgr.tempLockView = NewTempLockView(mgr)
@@ -447,18 +451,60 @@ func (s *stateLockManager) handleLockCommit(newRoot common.Hash) error {
 	s.commitCnt++
 	s.lockedStates.clear()
 
-	lockedTxs := make([]string, 0)
-	for txHash := range s.lockedStates.callIndex2lockedState {
-		lockedTxs = append(lockedTxs, txHash.Hex()[:8])
+	// === 锁状态统计 ===
+	// 更新当前区块号
+	if s.sscService != nil && s.sscService.bc != nil {
+		s.currentBlockNum = s.sscService.bc.CurrentHeader().NumberU64()
+	}
+	lockedStatesCount := s.lockedStates.length()
+	lockedTxCount := len(s.lockedStates.callIndex2lockedState)
+
+	// 统计锁持有时间（以 block 数为单位）
+	type lockInfo struct {
+		txHash string
+		key    string
+		block  uint64
+	}
+	staleLocks := make([]lockInfo, 0)
+	for key, state := range s.lockedStates.lockedStates {
+		startBlock, hasStart := s.lockStartBlock[key]
+		if !hasStart {
+			s.lockStartBlock[key] = s.currentBlockNum
+		} else {
+			heldBlocks := s.currentBlockNum - startBlock
+			if heldBlocks > 10 {
+				staleLocks = append(staleLocks, lockInfo{
+					txHash: state.lockedBy.Hex()[:16],
+					key:    string(key),
+					block:  heldBlocks,
+				})
+			}
+		}
+	}
+	// 清理已释放的 key 的 startBlock 记录
+	for key := range s.lockStartBlock {
+		if _, stillLocked := s.lockedStates.lockedStates[key]; !stillLocked {
+			delete(s.lockStartBlock, key)
+		}
 	}
 
 	utils.SSCLogger().Info().
 		Str("oldRoot", oldRoot.Hex()).
 		Str("newRoot", newRoot.Hex()).
+		Uint64("blockNum", s.currentBlockNum).
 		Int("snapshot_count", len(s.snapshots)).
-		Int("lockedStates", s.lockedStates.length()).
-		Int("lockedTx", len(s.lockedStates.callIndex2lockedState)).
+		Int("lockedStates", lockedStatesCount).
+		Int("lockedTx", lockedTxCount).
+		Int("staleLockCount", len(staleLocks)).
 		Msg("locker snapshot created")
+
+	for _, l := range staleLocks {
+		utils.SSCLogger().Warn().
+			Str("txHash", l.txHash).
+			Str("lockKey", l.key).
+			Uint64("heldBlocks", l.block).
+			Msg("LOCK_STALE: lock held more than 10 blocks, possible leak")
+	}
 
 	return nil
 }

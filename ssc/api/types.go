@@ -1,6 +1,7 @@
 package api
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -550,37 +551,46 @@ func (m *CXTReSimulationSSCResult) Bytes() []byte {
 
 // CXTSimulation is the simulation of the cross-shard transaction
 type CXTSimulation struct {
-	SimulationNum int
-	TxHash        common.Hash
-	Nonce         uint64
-	Sender        common.Address
-	ShardId       uint32
-	OriginShardId uint32
-	RelatedShards RelatedShards
-	CallStates    []*CXTCallState // all cross-shard call of cxt related to this shard
+	SimulationNum  int
+	TxHash         common.Hash
+	Nonce          uint64
+	Sender         common.Address
+	ShardId        uint32
+	OriginShardId  uint32
+	RelatedShards  RelatedShards
+	CallStates     []*CXTCallState // all cross-shard call of cxt related to this shard
+	ChainPatch     *RWSet          `json:"chain_patch,omitempty"`      // direct upstream WriteSet, populated for chained retries
+	UpstreamTxHash common.Hash     `json:"upstream_tx_hash,omitempty"` // upstream SimTx hash
+	UpstreamSimNum int             `json:"upstream_sim_num,omitempty"` // upstream SimTx simulationNum
 	BaseBLSSignedMessage
 }
 
 func (m *CXTSimulation) Bytes() []byte {
 	type CXTSimulationWithoutSignature struct {
-		SimulationNum int
-		TxHash        common.Hash
-		Nonce         uint64
-		Sender        common.Address
-		ShardId       uint32
-		OriginShardId uint32
-		RelatedShards RelatedShards
-		CallStates    []*CXTCallState
+		SimulationNum  int
+		TxHash         common.Hash
+		Nonce          uint64
+		Sender         common.Address
+		ShardId        uint32
+		OriginShardId  uint32
+		RelatedShards  RelatedShards
+		CallStates     []*CXTCallState
+		ChainPatch     *RWSet
+		UpstreamTxHash common.Hash
+		UpstreamSimNum int
 	}
 	msg := CXTSimulationWithoutSignature{
-		SimulationNum: m.SimulationNum,
-		TxHash:        m.TxHash,
-		Nonce:         m.Nonce,
-		Sender:        m.Sender,
-		ShardId:       m.ShardId,
-		OriginShardId: m.OriginShardId,
-		RelatedShards: m.RelatedShards,
-		CallStates:    m.CallStates,
+		SimulationNum:  m.SimulationNum,
+		TxHash:         m.TxHash,
+		Nonce:          m.Nonce,
+		Sender:         m.Sender,
+		ShardId:        m.ShardId,
+		OriginShardId:  m.OriginShardId,
+		RelatedShards:  m.RelatedShards,
+		CallStates:     m.CallStates,
+		ChainPatch:     m.ChainPatch,
+		UpstreamTxHash: m.UpstreamTxHash,
+		UpstreamSimNum: m.UpstreamSimNum,
 	}
 	bytes, err := json.Marshal(msg)
 	if err != nil {
@@ -1318,18 +1328,19 @@ type TxSimKey struct {
 }
 
 // Priority defines a global ordering for retryTx lock contention.
-// Lower value = higher priority (earlier nonce / lower shardId / fewer retries wins).
+// Lower value = higher priority (earlier FirstSimBlock / earlier nonce / lower shardId / smaller txHash wins).
 type Priority struct {
-	Nonce         uint64 `json:"nonce"`
-	OriginShardID uint32 `json:"origin_shard_id"`
-	SimulationNum int    `json:"simulation_num"`
+	FirstSimBlock uint64      `json:"first_sim_block"` // 首次模拟时的区块高度，越小越优先
+	Nonce         uint64      `json:"nonce"`
+	OriginShardID uint32      `json:"origin_shard_id"`
+	TxHash        common.Hash `json:"tx_hash"` // 最终 tiebreaker，确保所有交易有确定全序
 }
 
 // Less returns true if p has higher priority than other.
-// Priority order: simulationNum (more retries = higher priority) > Nonce > OriginShardID
+// Priority order: FirstSimBlock (earlier block = higher priority) > Nonce > OriginShardID > TxHash (hash.larger = lower priority)
 func (p Priority) Less(other Priority) bool {
-	if p.SimulationNum != other.SimulationNum {
-		return p.SimulationNum > other.SimulationNum // 重试次数越多优先级越高
+	if p.FirstSimBlock != other.FirstSimBlock {
+		return p.FirstSimBlock < other.FirstSimBlock // 区块高度越低优先级越高（越早进入系统）
 	}
 	if p.Nonce != other.Nonce {
 		return p.Nonce < other.Nonce
@@ -1337,7 +1348,9 @@ func (p Priority) Less(other Priority) bool {
 	if p.OriginShardID != other.OriginShardID {
 		return p.OriginShardID < other.OriginShardID
 	}
-	return false
+	// Final tiebreaker: compare TxHash as big-endian bytes
+	// Using bytes.Compare: -1 means p.TxHash < other.TxHash (higher priority)
+	return bytes.Compare(p.TxHash.Bytes(), other.TxHash.Bytes()) < 0
 }
 
 // PatchConsumeStatus represents the lifecycle state of a ChainPatchNode.
@@ -1812,6 +1825,7 @@ type RetryTx struct {
 	RelatedShards RelatedShards
 	SimulationNum int
 	Condition     ConflictCondition
+	FirstSimBlock uint64 // 首次模拟时的区块高度，由 origin shard 在第一次 CallForRetry 时设置
 }
 
 type RetryCommitResp struct {

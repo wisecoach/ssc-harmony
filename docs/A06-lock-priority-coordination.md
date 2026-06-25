@@ -481,19 +481,29 @@ Wound-Wait 完全在已有 `RetryCommit` RPC 内完成。没有新增跨 shard �
 | 4.2 | 提交前 wounded 检查 | `ssc/simulator_leader.go` | 调 `IsWounded(txHash)`，被踢则 `closeTransaction` + return | 📝 |
 | 4.3 | 添加 `WoundedByHigherPriority` 关闭原因 | `ssc/impl.go` | `closeTransaction` 的 reason 参数 | 📝 |
 
-### Phase 5：同步与清理（P1，~15 行）
+### Phase 5：onChainPatches 清理归属（P0，~10 行）
 
 | # | 任务 | 文件 | 说明 | 状态 |
 |---|------|------|------|:----:|
-| 5.1 | `OnBlockCommitted` 清理 `woundedTxs` | `ssc/retry_scheduler.go` | 被踢的交易在 retryPool 中重新触发时，清理其 `wounded` 标记 | 📝 |
-| 5.2 | `closeTransaction` 清理 `woundedTxs` | `ssc/impl.go` | 交易关闭时清理 `consumedPatches` 和 `woundedTxs` | 📝 |
-| 5.3 | 日志加 wounded 统计 | `ssc/retry_scheduler.go` | 新增 Info 级别日志：`wounded count: {len(v.woundedTxs)}` 在 `OnBlockCommitted` 中 | 📝 |
+| 5.1 | `CommitOrRollbackWithProof` 加 `RemoveOnChainPatch` | `ssc/committer.go` | CR 完成后链上清理 `onChainPatches[txHash]` | 📝 |
+| 5.2 | `closeTransaction` 只清链下数据 | `ssc/impl.go` | 保持现有 `StaleTx`（清 `patches`） + `patchPool.Remove`，**不加** `onChainPatches` 清理 | 📝 |
+| 5.3 | `OnBlockCommitted` 清理 `woundedTxs` | `ssc/retry_scheduler.go` | 被踢的交易在 retryPool 中重新触发时，清理其 `wounded` 标记 | 📝 |
+| 5.4 | 日志加 wounded 统计 | `ssc/retry_scheduler.go` | 新增 Info 级别日志：`wounded count: {len(v.woundedTxs)}` 在 `OnBlockCommitted` 中 | 📝 |
 
-### Phase 6：测试与验证（P0）
+### Phase 6：CXTSimulation 扩展 + onChainPatches 写入（P0，~40 行）
+
+| # | 任务 | 文件 | 说明 | 状态 |
+|---|------|------|------|:----:|
+| 6.1 | `CXTSimulation` 加 `ChainPatch`/`UpstreamTxHash`/`UpstreamSimNum` | `ssc/api/types.go` | 结构体 + `Bytes()` + `WithoutSignature` 同步 | 📝 |
+| 6.2 | `onChainPatches` 字段 + 方法 | `ssc/retry_scheduler.go` | `AddOnChainPatch`/`GetOnChainPatch`/`RemoveOnChainPatch`/`MergeChainPatches` | 📝 |
+| 6.3 | `CommitSimulation` 构建 SimTx 时含 ChainPatch | `ssc/impl.go` | 从 callStates 提取 WriteSet 传入 CXTSimulation | 📝 |
+| 6.4 | 收到 SimTx 后入 `onChainPatches` | SimTx handler | 所有节点在收到多播/链上 SimTx 时写入 | 📝 |
+
+### Phase 7：测试与验证（P0）
 
 | # | 任务 | 说明 | 状态 |
 |---|------|------|:----:|
-| 6.1 | 编译验证 | `go build ./ssc/...` + `go build ./cmd/...` 无报错 | 📝 |
-| 6.2 | 实验跑通 | `test_single` 正常跑完，无 fatal error | 📝 |
-| 6.3 | 漏斗验证 | `TriggerReSimulation` > 0，PatchPool 命中率不降 | 📝 |
-| 6.4 | 日志确认 | 能 grep 到 `TryLockWithPriority` / `Wound` / `Finalized` / `WoundedByHigherPriority` 日志 | 📝 |
+| 7.1 | 编译验证 | `go build ./ssc/...` + `go build ./cmd/...` 无报错 | 📝 |
+| 7.2 | 实验跑通 | `test_single` 正常跑完，无 fatal error | 📝 |
+| 7.3 | 漏斗验证 | `TriggerReSimulation` > 0，PatchPool 命中率不降 | 📝 |
+| 7.4 | 日志确认 | 能 grep 到 `TryLockWithPriority` / `Wound` / `Finalized` / `WoundedByHigherPriority` / `onChainPatch` 日志 | 📝 |

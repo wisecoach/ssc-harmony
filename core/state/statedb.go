@@ -1152,6 +1152,15 @@ func (db *DB) SetTxHashETH(ethTxHash common.Hash) {
 	db.ethTxHash = ethTxHash
 }
 
+// CheckLock 检查指定 key 在当前 state 中是否可被交易上锁（只检查不锁定）。
+// 用于 retryCommit 中确认 stateDB 层面没有锁冲突后再提交。
+func (db *DB) CheckLock(key api.LockKey, txHash common.Hash) error {
+	if db.locker != nil {
+		return db.locker.Lockable(key, txHash)
+	}
+	return nil
+}
+
 func (db *DB) CommitTx(txHash common.Hash) error {
 	return db.locker.CommitTx(txHash)
 }

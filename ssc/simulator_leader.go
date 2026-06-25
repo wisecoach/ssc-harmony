@@ -242,6 +242,7 @@ func (sim *Simulator) StartSimulateCXTransaction(req *api.CXTSimulationRequest) 
 					SimulationNum: req.SimulationNum + 1,
 					Condition:     api.Simulate,
 					OriginShardID: state.OriginShardId,
+					FirstSimBlock: sim.bc.CurrentHeader().NumberU64(),
 				})
 			}
 			sim.state.SetTxStatus(txHash, api.WAITING_FOR_RESIMULATION_OFF_CHAIN)
@@ -312,6 +313,7 @@ func (sim *Simulator) StartSimulateCXTransaction(req *api.CXTSimulationRequest) 
 							SimulationNum: req.SimulationNum + 1,
 							Condition:     api.Simulate,
 							OriginShardID: state.OriginShardId,
+							FirstSimBlock: sim.bc.CurrentHeader().NumberU64(),
 						})
 						return sscResult
 					}
@@ -323,13 +325,32 @@ func (sim *Simulator) StartSimulateCXTransaction(req *api.CXTSimulationRequest) 
 	sim.thresholdSignSimulationCommit(simulationCommit)
 
 	leaders := make([]*api.Member, 0)
+	selfAddr := sim.communicator.signerMgr.GetSSCSigner().Address()
 	for _, shardId := range simulationCommit.RelatedShards {
-		leaders = append(leaders, sim.committee.GetLeader(req.Epochs[shardId], shardId))
+		leader := sim.committee.GetLeader(req.Epochs[shardId], shardId)
+		if leader == nil {
+			utils.SSCLogger().Error().Str("txHash", txHash.Hex()).
+				Uint32("shardId", shardId).
+				Msg("CommitSimulation: leader not found for shard (StartSimulateCXTransaction)")
+			continue
+		}
+		if bytes.Equal(leader.Address.Bytes(), selfAddr.Bytes()) {
+			utils.SSCLogger().Info().Str("txHash", txHash.Hex()).
+				Uint32("shardId", shardId).
+				Msg("CommitSimulation: self is leader, calling locally (StartSimulateCXTransaction)")
+			sim.sscService.CommitSimulation(simulationCommit)
+			continue
+		}
+		leaders = append(leaders, leader)
 	}
 	ctxCS, cancelCS := context.WithTimeout(sim.ctx, sim.config.CallTimeout)
 	defer cancelCS()
 
-	sim.communicator.comm.Multicast(ctxCS, leaders, api.Method_CommitSimulation, simulationCommit)
+	if err := sim.communicator.comm.Multicast(ctxCS, leaders, api.Method_CommitSimulation, simulationCommit); err != nil {
+		utils.SSCLogger().Error().Str("txHash", txHash.Hex()).Err(err).
+			Int("memberCount", len(leaders)).
+			Msg("CommitSimulation Multicast failed (StartSimulateCXTransaction)")
+	}
 
 	var resultCh chan *api.CXTSimulationSSCResult
 	func() {
@@ -859,6 +880,7 @@ func (sim *Simulator) StartReSimulation(txHash common.Hash, simulationNum int) {
 					SimulationNum: req.SimulationNum + 1,
 					Condition:     api.Simulate,
 					OriginShardID: originShardId,
+					FirstSimBlock: sim.bc.CurrentHeader().NumberU64(),
 				})
 			}
 			return
@@ -877,11 +899,36 @@ func (sim *Simulator) StartReSimulation(txHash common.Hash, simulationNum int) {
 	sim.thresholdSignSimulationCommit(simulationCommit)
 	utils.SSCLogger().Info().Str("txHash", txHash.Hex()).
 		Msg("startReSimulation: after thresholdSignSimulationCommit")
+
+	// 创建独立的 ctx 用于后续 Multicast，避免被 thresholdSignSimulationCommit 的 cancel 影响
+	notifyCtx, notifyCancel := context.WithTimeout(txState.Ctx, sim.config.CallTimeout)
+	defer notifyCancel()
+
 	members := make([]*api.Member, 0, len(committee.Members))
+	selfAddr := sim.communicator.signerMgr.GetSSCSigner().Address()
 	for _, shardId := range simulationCommit.RelatedShards {
-		members = append(members, sim.committee.GetLeader(simulationCommit.Epochs[shardId], shardId))
+		leader := sim.committee.GetLeader(simulationCommit.Epochs[shardId], shardId)
+		if leader == nil {
+			utils.SSCLogger().Error().Str("txHash", txHash.Hex()).
+				Uint32("shardId", shardId).
+				Msg("CommitSimulation: leader not found for shard")
+			continue
+		}
+		if bytes.Equal(leader.Address.Bytes(), selfAddr.Bytes()) {
+			// 自己就是目标 leader，直接本地调用，不走 RPC
+			utils.SSCLogger().Info().Str("txHash", txHash.Hex()).
+				Uint32("shardId", shardId).
+				Msg("CommitSimulation: self is leader, calling locally")
+			sim.sscService.CommitSimulation(simulationCommit)
+			continue
+		}
+		members = append(members, leader)
 	}
-	_ = sim.communicator.comm.Multicast(ctx, members, api.Method_CommitSimulation, simulationCommit)
+	if err := sim.communicator.comm.Multicast(notifyCtx, members, api.Method_CommitSimulation, simulationCommit); err != nil {
+		utils.SSCLogger().Error().Str("txHash", txHash.Hex()).Err(err).
+			Int("memberCount", len(members)).
+			Msg("CommitSimulation Multicast failed")
+	}
 	utils.SSCLogger().Info().Str("txHash", txHash.Hex()).
 		Int("members", len(members)).
 		Msg("startReSimulation: after Multicast")

@@ -1915,7 +1915,8 @@ func (bc *BlockChainImpl) insertChain(chain types.Blocks, verifyHeaders bool) (i
 			return i, events, coalescedLogs, err
 		}
 		for _, tx := range block.Transactions() {
-			utils.Logger().Info().Uint64("blockNum", block.NumberU64()).Str("txHash", tx.Hash().Hex()).Bool("crossShard", tx.CrossShard()).Msg("commit transaction")
+			_ = tx
+			// [removed] commit transaction log
 		}
 		utils.Logger().Info().Str("duration", time.Since(substart).String()).Int("txn", len(block.Transactions())).Msg("replica process block")
 

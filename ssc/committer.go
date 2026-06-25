@@ -11,9 +11,10 @@ import (
 // CommitterStateAccessor 封装 Committer 需要的 simulationState 原子读写操作。
 // 所有操作内部自带锁，锁永远在 sscService 内部。
 type CommitterStateAccessor struct {
-	IsTxFinished func(txHash common.Hash) bool
-	SetStatus    func(txHash common.Hash, status api.CXTStatus)
-	CloseTx      func(txHash common.Hash, success bool, reason string)
+	IsTxFinished       func(txHash common.Hash) bool
+	SetStatus          func(txHash common.Hash, status api.CXTStatus)
+	CloseTx            func(txHash common.Hash, success bool, reason string)
+	RemoveOnChainPatch func(txHash common.Hash) // v6: CR 完成后清理 onChainPatches
 }
 
 // Committer 负责 Commit/Rollback 交易的链上执行。
@@ -90,6 +91,11 @@ func (c *Committer) CommitOrRollbackWithProof(commitProofBytes []byte, stateDB a
 
 	if c.committee.SelfShard == commitProof.OriginShard && c.committee.IsLeader(commitProof.Epochs[c.committee.SelfShard]) {
 		c.stats.setCxtStage(txHash, 6)
+	}
+
+	// v6: CR 完成后所有节点清理 onChainPatches
+	if c.state.RemoveOnChainPatch != nil {
+		c.state.RemoveOnChainPatch(txHash)
 	}
 
 	return nil

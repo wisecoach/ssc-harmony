@@ -7,6 +7,7 @@
 > 4. 📄 `docs/A04-onchain-retry-limit.md` [A04] — 链上重试次数限制
 > 5. 📄 `docs/A05-hotkey-retry-design.md` [A05] **（本文）** — HotKey 链式重试（数据层）
 > 6. 📄 `docs/A06-lock-priority-coordination.md` [A06] — 锁优先级协调（协调层）
+> 7. 📄 `docs/A07-force-simulation.md` [A07] — ForceSimulation 冲突容忍模拟（设计阶段，**已暂关**）
 >
 > **运维辅助**（与主线并行的独立文档）：
 > - 📄 `docs/B01-log-query-guide.md` [B01] — 日志查询指南
@@ -14,12 +15,12 @@
 
 > **当前版本**：v4 — PatchPool 分片本地池化方案（2026-06-19）
 > **历史版本**：v1（CR 触发+HotKey 分类，`docs/archived/Z01-cr-hotkey-chaining-design.md`）、v2（DAG 树形，`docs/archived/Z02-sim-dag-chaining-design.md`）、v3（线性链，`docs/A05-hotkey-retry-design.md` 上卷）
->
+
 > **阅读顺序**：本系列文档应按以下顺序阅读，反映机制演进过程：
 > 1. 📄 `docs/A05-hotkey-retry-design.md`（本文）— 链式数据依赖与 PatchPool 数据层设计（v1→v4）
 > 2. 📄 `docs/A06-lock-priority-coordination.md` — 锁优先级协调：Wound-Wait 跨分片锁竞争解决（v5）
->
-> **实现状态**：v1-v3 已上线实验验证 ✅，v4 已上线实验验证 ✅，v5（Wound-Wait）设计待实现
+
+> **实现状态**：v1-v3 已上线实验验证 ✅，v4 已上线实验验证 ✅，v5（Wound-Wait）已上线实验验证 ✅
 
 ## 1. 实现状态总览
 
@@ -37,13 +38,16 @@
 | `Z01-cr-hotkey-chaining-design.md` | 旧方案（CR 触发） | 🗂️ 已归档 |
 | `Z02-sim-dag-chaining-design.md` | 旧方案（DAG 树形） | 🗂️ 已归档 |
 
-### 待办
+### v6 待办：onChainPatches
 
 | 任务 | 优先级 | 备注 |
 |------|:------:|------|
-| `commitSimulation` 函数拆分（当前 ~120 行） | P1 | `buildCallStates` 已迁入 Simulator |
-| `buildSignaturesForSimulation` 可否迁入 Simulator | P2 | 需要 `sscService` 的 `BLSSignerMgr` |
-| 删除 `getState` 兼容函数（当前零引用） | P2 | 确认所有调用点已替换 |
+| CXTSimulation 加 `ChainPatch` / `UpstreamTxHash` 字段 | P0 | 所有节点通过 SimTx 同步 Patch |
+| `retryScheduler.onChainPatches` 数据结构 | P0 | `map[txHash]map[simNum]*RWSet`，所有节点共享 |
+| SimTx 收到后入 `onChainPatches` | P0 | 多播/链上读取时写入 |
+| `Committer.CommitOrRollbackWithProof` 中清理 `onChainPatches` | P0 | CR 完成后链上清理 |
+| `closeTransaction` 中清理 `patches` / `PatchPool`（链下） | P0 | 已有，不变 |
+| VerifySimulation 从 `onChainPatches` 递归读 Patch | P0 | 替代当前 `GetChainPatchRef` |
 
 ## 2. Problem Statement
 
@@ -148,569 +152,125 @@ func (rs *retryScheduler) chainNextSim(upstreamTxHash common.Hash, writeSet *api
     if writeSet == nil || len(writeSet.WriteState.State) == 0 {
         return
     }
-
-    // 构建 key 查找表
-    keySet := make(map[api.LockKey]struct{})
-    for addr, state := range writeSet.WriteState.State {
-        for key := range state {
-            keySet[api.FormKey(addr, key)] = struct{}{}
-        }
-    }
-
-    // RLock 下收集匹配的 retry tx（只取第一个，线性链）
-    rs.mu.RLock()
-    var matched *api.RetryTx
-    for _, retryTx := range rs.retryPool {
-        if bytes.Equal(retryTx.TxHash.Bytes(), upstreamTxHash.Bytes()) {
-            continue
-        }
-        if dependsOn(retryTx, keySet) {
-            matched = retryTx
-            break  // 线性链：只取第一个匹配
-        }
-    }
-    rs.mu.RUnlock()
-
-    if matched == nil {
-        return
-    }
-
-    // 发送 chain signal
-    rs.sendChainSignal(matched.TxHash, matched, writeSet)
-}
-
-func dependsOn(retryTx *api.RetryTx, keySet map[api.LockKey]struct{}) bool {
-    for _, key := range retryTx.ReadSet {
-        if _, exists := keySet[key]; exists {
-            return true
-        }
-    }
-    for _, key := range retryTx.WriteSet {
-        if _, exists := keySet[key]; exists {
-            return true
-        }
-    }
-    return false
-}
 ```
 
 ---
 
-## 5. 数据结构变更
+## 5. 数据结构（v4 PatchPool）
 
-### 4.1 `RetryScheduler` — 新增 patches 存储
+### 5.1 PatchPool
 
 ```go
-type RetryScheduler struct {
-    // ... 现有字段 ...
-
-    // 链式 Patch 存储
-    // patches[txHash][simulationNum] = ChainNode
-    patches map[common.Hash]map[int]*ChainNode
-}
-
-type ChainNode struct {
-    TxHash        common.Hash
-    SimulationNum int
-    Patch         *api.RWSet    // 自己的 WriteSet
-    UpstreamTxHash common.Hash  // 上游 txHash（零值=根节点）
-    UpstreamSimNum int          // 上游 simulationNum
-}
-```
-
-### 4.2 `RetrySignal`（重命名自 `ReSimulationSignal`）
-
-```go
-type RetrySignal struct {
-    TxHash        common.Hash
-    FromShard     uint32
-    Epoch         Epoch
-    SimulationNum int
-    Condition     ConflictCondition
-    Ready         bool
-
-    // ChainPatch carries the WriteSet from the upstream SimTx.
-    // nil = normal retry path; non-nil = chain-optimized path.
-    ChainPatch *RWSet `json:"chain_patch,omitempty"`
-}
-```
-
-### 4.3 `CXTSimulationState`
-
-```go
-type CXTSimulationState struct {
-    // ... 现有字段 ...
-
-    // ChainPatch 引用：当此 tx 是链式 retry 时，指向 RetryScheduler.patches 中的节点
-    // GetState 时递归查 patches 链读取上游 WriteSet
-    ChainPatchRef *TxSimKey `json:"chain_patch_ref,omitempty"`
-}
-
-type TxSimKey struct {
-    TxHash        common.Hash
-    SimulationNum int
-}
-```
-
----
-
-## 6. 数据流端到端
-
-### 6.1 完整流程
-
-```
-Phase 1: 链下构建与提交
-────────────────────────
-1. Leader 发现 retryTx1 可以执行（正常信号或区块边界触发）
-2. Leader 链下模拟 retryTx1 → 成功
-3. txSubmitter 为 SimTx1 分配 nonce=crN+1
-4. SubmitSimulationTx(crSigner, nonce=crN+1)
-5. afterSubmitSimulation → chainNextSim(SimTx1.hash, writeSet1)
-6. chainNextSim 扫描 retryPool:
-   └─ 找到 retryTx2（依赖 K）→ 发 RetrySignal(ChainPatch=writeSet1)
-
-Phase 2: Origin shard 响应
-───────────────────────────
-7. Shard B 收到 HandleRetrySignal:
-   ├─ stateLock → 存储 ChainNode 到 patches[tx2][simNum]
-   │              → state.ChainPatchRef = {tx2, simNum}
-   └─ rs.setSignal(fromShard, signal) → readyCnt check
-       └─ readyCnt == len(RelatedShards)?
-           ├─ Yes → tryToReSimulation(Tx2)
-           │          ├─ 链下模拟（GetState 递归查 patches）
-           │          ├─ 成功 → txSubmitter 分配 nonce=crN+2
-           │          └─ afterSubmitSimulation → chainNextSim(SimTx2)
-           └─ No  → 等待其他 shard 信号
-
-Phase 3: 区块执行与验证
-────────────────────────
-8. Block N 打包（按 nonce 升序执行）:
-   ├─ SimTx1(nonce=crN+1) → VerifySimulation
-   │   → 锁 {K, L} → 执行 → K=v1, L=w1 → 成功
-   │
-   ├─ SimTx2(nonce=crN+2) → VerifySimulation
-   │   → Patch vs stateDB 检查: K=v1 ✓
-   │   → ChainPatch 存在 → 跳过锁冲突检查
-   │   → 读 K=v1（stateDB，SimTx1 已写入）→ 执行 → K=v2
-   │   → 成功
-   │
-   └─ SimTx3(nonce=crN+3) → VerifySimulation
-       → Patch vs stateDB 检查: K=v2 ✓
-       → 读 K=v2 → 执行 → K=v3
-       → 成功
-
-Phase 4: CR 与清理
-────────────────────
-9. SimTx1 CR 完成 → 删除 patches[tx1][simNum]
-   SimTx2 CR 完成 → 删除 patches[tx2][simNum]
-   SimTx3 CR 完成（叶子节点）→ 删除 patches[tx3][simNum] → TempLockView 解锁
-```
-
-### 6.2 失败场景
-
-```
-Phase 3 变体: SimTx2 VerifySimulation 失败
-────────────────────────────────────────────
-SimTx1 → 成功 → CR → 删 patch
-SimTx2 → Patch vs stateDB 不匹配（或模拟失败）→ 回滚
-SimTx3 → 读 patch(tx2) → Patch vs stateDB 不匹配 → 自动失败 → 回滚
-
-结果: SimTx1 成功, SimTx2+SimTx3 回滚
-```
-
----
-
-## 7. GetState 的 Patch 读取路径
-
-```go
-func (s *sscService) GetState(db api.StateDB, txHash common.Hash,
-    address common.Address, key common.Hash) (common.Hash, error) {
-
-    // Step 0: 递归查 ChainPatch
-    s.stateLock.RLock()
-    state, err := s.getState(txHash)
-    s.stateLock.RUnlock()
-    if err == nil && state != nil && state.ChainPatchRef != nil {
-        val, found := s.retryScheduler.readPatchChain(
-            state.ChainPatchRef.TxHash,
-            state.ChainPatchRef.SimulationNum,
-            address, key)
-        if found {
-            // Patch 命中：缓存到 callState 的 RWSet
-            if callState := s.GetCallState(txHash); callState != nil {
-                callState.StateLock.Lock()
-                callState.RWSet.ReadState.State[address][key] = val
-                callState.RWSet.CurrentState.State[address][key] = val
-                callState.StateLock.Unlock()
-            }
-            return val, nil
-        }
-    }
-
-    // Step 1: 正常路径
-    callState := s.GetCallState(txHash)
-    // ... 现有逻辑 ...
-}
-
-// readPatchChain 递归查 patches 链，读到就停
-func (rs *retryScheduler) readPatchChain(txHash common.Hash, simNum int,
-    address common.Address, key common.Hash) (common.Hash, bool) {
-
-    node, ok := rs.patches[txHash][simNum]
-    if !ok {
-        return common.Hash{}, false
-    }
-
-    // 先查自己的 patch
-    if node.Patch != nil {
-        if addrState, ok := node.Patch.WriteState.State[address]; ok {
-            if val, exists := addrState[key]; exists {
-                return val, true
-            }
-        }
-    }
-
-    // 自己没有，递归查上游
-    if node.UpstreamTxHash != (common.Hash{}) {
-        return rs.readPatchChain(node.UpstreamTxHash, node.UpstreamSimNum, address, key)
-    }
-
-    return common.Hash{}, false
-}
-```
-
----
-
-## 8. VerifySimulation 的链式处理
-
-### 8.1 锁跳过
-
-当 `state.ChainPatchRef != nil` 时，VerifySimulation 对 patch 中的 key 跳过 lockManager 的冲突检查：
-
-```go
-// VerifySimulation 中的锁检查逻辑
-if state.ChainPatchRef != nil {
-    // 链式交易：对 patch 中的 key 跳过锁冲突
-    // nonce 排序保证区块内执行顺序
-    // 不需要 lockManager 的互斥保护
-    skipLockCheck = true
-}
-```
-
-### 8.2 上游一致性检查
-
-```go
-// VerifySimulation 中的一致性检查
-if state.ChainPatchRef != nil {
-    // 从 patch 链读取期望值
-    expectedVal := rs.readPatchChain(...)
-    // 从 stateDB 读取实际值
-    actualVal := stateDB.GetState(address, key)
-    // 不匹配 → 上游失败 → 自己也失败
-    if expectedVal != actualVal {
-        return ErrUpstreamFailed
-    }
-}
-```
-
----
-
-## 9. 清理机制
-
-### 9.1 正常完成
-
-| 事件 | 动作 |
-|------|------|
-| 节点 CR 完成 | 删除 `patches[txHash][simNum]` |
-| 叶子节点 CR 完成 | 删除 patch + 从 TempLockView 解锁 |
-| 节点 CR 完成 + 有下游 | 删 patch（下游自验证 stateDB） |
-
-### 9.2 失败清理
-
-| 事件 | 动作 |
-|------|------|
-| VerifySimulation 失败 | 回滚该节点及下游 |
-| Patch vs stateDB 不匹配 | 自动失败，等同于 VerifySimulation 失败 |
-| 交易超时/关闭 | `closeTransaction` → `StaleTx` → 删 patch |
-
-### 9.3 隐式传播
-
-不需要显式的"上游失败通知"。每个节点在 VerifySimulation 时自行检查 Patch vs stateDB。上游失败 → stateDB 值不匹配 → 下游自动失败。
-
----
-
-## 10. 跨区块链延伸
-
-链可以跨区块延伸。每个区块内有一段线性链，区块之间通过 `chainNextSim` 连接：
-
-```
-Block N:   SimTx1 提交 → chainNextSim → SimTx2
-Block N+1: SimTx1 上链 CR → SimTx2 提交 → chainNextSim → SimTx3
-Block N+2: SimTx2 上链 CR → SimTx3 提交 → ...
-```
-
-- patch 链跨区块连接：`patches[tx3][1]` → `patches[tx2][1]` → `patches[tx1][1]`
-- TempLockView 在整个链存活期间保持锁
-- VerifySimulation 的 Patch vs stateDB 检查在跨区块场景同样有效
-
----
-
-## 11. RetrySignal 命名与聚合
-
-### 11.1 命名变更
-
-```
-ReSimulationSignal → RetrySignal
-Method_HandleReSimulationSignal → Method_HandleRetrySignal
-HandleReSimulationSignal → HandleRetrySignal
-```
-
-### 11.2 聚合路径
-
-正常 retry 和链式 retry 共用同一个 `RetrySignal` 结构和 `HandleRetrySignal` 入口，通过 `ChainPatch == nil` 区分：
-
-| 路径 | ChainPatch | 行为 |
-|------|-----------|------|
-| 正常 retry | `nil` | 走现有信号聚合（`setSignal` + `readyCnt` → `tryToReSimulation`） |
-| 链式 retry | 非 nil | 存储 ChainNode 到 patches → 走同样的信号聚合 |
-
----
-
-## 12. RPC 接口
-
-```go
-// ssc/api/sscs.go
-SSCServiceServer interface {
-    // ... 现有接口 ...
-
-    // HandleRetrySignal receives a retry signal from another shard.
-    // If ChainPatch is set, stores the chain node for GetState patch reads.
-    HandleRetrySignal(signal *RetrySignal)
-}
-```
-
----
-
-## 13. 文件变更清单
-
-| 文件 | 变更 | 优先级 | 状态 |
-|------|------|:------:|:----:|
-| `ssc/api/types.go` | `ReSimulationSignal` → `RetrySignal`；`ReSimulationSignals` → `RetrySignals`；新增 `ChainNode`, `TxSimKey` 结构体；`CXTSimulationState` 加 `ChainPatchRef`、保留 `ChainPatch` | P0 | ✅ 已实现 |
-| `ssc/api/sscs.go` | `Method_HandleChainSimSignal` → `Method_HandleRetrySignal`；接口签名 `HandleRetrySignal(signal *RetrySignal)` | P0 | ✅ 已实现 |
-| `ssc/retry_scheduler.go` | 新增 `patches` 字段、`chainNextSim()`、`dependsOn()`、`sendChainSignal()`、`readPatchChain()`、`GetChainPatchRef()`；`HandleChainSimSignal` → `HandleRetrySignal`；`AddToRetry` 内化 RWSet 提取；追加 `GetSimState` accessor | P0 | ✅ 已实现 |
-| `ssc/state_impl.go` | ~~`GetState` 加递归 patch 读取路径~~ → 已删除。`GetState` 迁至 `simulator.go`，通过 `sim.sscService.retryScheduler` 访问 patches | P0 | ✅ 已实现 |
-| `ssc/simulator.go` | 新增 `HandleCXTRecallProof()`、`BuildCallStates()`；迁入所有模拟执行期 state 方法（`GetCallState`/`GetRWSet`/`GetState`/`SetState`/`GetBalance`/`AddBalance`/`SubBalance`/`CreateAccount`/`EndCTX`） | P0 | ✅ 已实现 |
-| `ssc/verify.go` | VerifySimulation 加锁跳过 + Patch vs stateDB 一致性检查；迁入验证期 state 方法（`SubSimuBalance`/`AddSimuBalance`/`GetSimuBalance`/`GetSimuState`/`SetSimuState`） | P0 | ✅ 已实现 |
-| `ssc/impl.go` | `chainNextSim` 触发（`CommitSimulation` 末尾，SimTx 提交后）；`HandleRetrySignal` 委托；`AddRetryTx` 简化为委托；`buildSignaturesForSimulation` 签名改为 `(ctx context.Context, ...)`；移除所有 `getState` 调用 | P0 | ✅ 已实现 |
-| `rpc/ssc.go` | RPC 方法重命名：`HandleChainSimSignal` → `HandleRetrySignal` | P0 | ✅ 已实现 |
-| `ssc/simulator_leader.go` | `aggregateCXSSCCallResult` 添加 BLS 聚合签名（修复 `empty bitmap` bug） | P0 | ✅ 已实现 |
-
----
-
-## 14. 设计决策记录
-
-| # | 决策 | 结论 | 理由 |
-|---|------|------|------|
-| D1 | 链结构 | 线性链 | 分片场景中多 signal 处理复杂，收到一个就立即尝试 |
-| D2 | 触发点 | SimTx 提交后 | 不等 CR，减少 2-3 区块等待 |
-| D3 | Patch 存储 | `patches[txHash][simNum]` 链式指针 | 每节点只存自己的 WriteSet + 上游指针，O(n) 存储 |
-| D4 | 读取路径 | 递归查 patches，读到就停 | 不需要合并扁平 patch |
-| D5 | 锁跳过 | ChainPatch → VerifySimulation 跳过锁冲突 | nonce 排序保证执行顺序 |
-| D6 | 上游失败检测 | Patch vs stateDB 不匹配 → 自动失败 | 隐式一致性检查，不需要显式通知 |
-| D7 | 回滚语义 | 失败点及下游回滚 | 上游已成功不回滚 |
-| D8 | 清理 | CR 完成后删 patch，下游自验证 | 简化生命周期管理 |
-| D9 | 跨区块 | 允许链跨区块延伸 | TempLockView 保持锁，Patch vs stateDB 自动处理 |
-| D10 | RetrySignal | 聚合，ChainPatch 区分 | 复用信号聚合逻辑 |
-|| D11 | 命名 | ReSimulationSignal → RetrySignal | 语义更清晰 |
-
----
-
-## 16. TODO List
-
-| 优先级 | 任务 | 文件/模块 | 说明 |
-|:------:|------|-----------|------|
-| **P0** | 跑实验验证 HotKeyRetry | 全链路 | 修复 BLS 签名后重新跑实验，确认 commit rate 回升 |
-| **P1** | `commitSimulation` 函数拆分 | `ssc/impl.go` | 当前 ~120 行，`BuildCallStates` 已迁出，剩余签名+chainNextSim 逻辑可再拆分 |
-| **P1** | 验证 chainNextSim 触发覆盖率 | `ssc/retry_scheduler.go` | 上次实验 60 次扫描只找到 1 次下游依赖——确认是 retryPool 为空还是依赖判断问题 |
-| **P2** | `buildSignaturesForSimulation` 迁入 Simulator | `ssc/impl.go` | 需要 `sscService.BLSSignerMgr`，可通过 accessor 回调 |
-| **P2** | 删除 `getState` 兼容函数 | `ssc/impl.go` | 当前零引用，确认无遗留依赖后可删除 |
-| **P2** | `HandleReSimulationSignal` 函数重命名 | `ssc/retry_scheduler.go` | 聚合信号路径，旧名残留，后续改为 `HandleRetrySignal` |
-| **P0** | **PatchPool v4 实现** | `ssc/retry_scheduler.go` | SimTx 提交后入 Pool，Leader 独立匹配，RetryCommit 取 Patch |
-
----
-
-# v4 — PatchPool 分片本地池化方案
-
-> **版本**：v4（2026-06-19）
-> **目标**：解决当前 HotKeyRetry 链式重试中 HandleRetrySignal(81) → startReSimulation(14) 大量丢失的问题，让所有相关 shard 都能利用 ChainPatch 跳过锁冲突。
-
-## 1. 问题分析
-
-### 1.1 瓶颈诊断（基于 2026-06-19 实验数据）
-
-| 阶段 | 数量 | 流失率 |
-|------|:----:|:------:|
-| `chainNextSim` 触发 | ~1,049 | - |
-| HandleRetrySignal unique txs | **81** | - |
-| startReSimulation unique txs | **14** | 83% 丢失 |
-| retry commit success | **17** | - |
-| TriggerReSimulation | **1** | 93% 丢失 |
-| VerifySimulation success (simNum>0) | **0** | 100% |
-
-### 1.2 根因
-
-```text
-SimTx1 提交（写 Key K）→ chainNextSim → 匹配 retryTx2（依赖 K）
-  └→ HandleRetrySignal（origin shard 存 ChainPatch）
-       └→ tryToReSimulation → 各 shard 并发 RetryCommit
-            ├─ origin shard: 有 ChainPatch → 跳过锁冲突 ✅
-            └─ related shard: 无 ChainPatch → 锁冲突失败 ❌
-```
-
-当前 `ChainPatch` 只在 origin shard 存储（`retryScheduler.patches`），其他 related shard 的 `RetryCommit` 看不到它，导致跨 shard retry 锁竞争失败率极高。
-
-## 2. PatchPool 设计
-
-### 2.1 核心原则
-
-| 原则 | 说明 |
-|------|------|
-| **分片自治** | 每个 shard 的 leader 维护自己的 PatchPool，不跨 shard 同步 |
-| **延迟匹配** | SimTx 提交后先进 Pool，不立即扫 retryPool；匹配由独立触发机制完成 |
-| **倒排索引** | key → txHash 的倒排结构，O(1) 匹配 |
-| **临时独占** | 被取出的 Patch 标记为 Consumed，防止多笔 retryTx 抢同一个 Patch |
-
-### 2.2 数据结构
-
-```go
-// PatchPool 是分片 Leader 本地维护的链式 Patch 池。
-// 每个 shard 独立一个实例，只存储当前 shard 已提交 SimTx 的 WriteSet。
 type PatchPool struct {
-    mu      sync.RWMutex
-
-    // patches[txHash] = ChainPatchNode
-    patches map[common.Hash]*ChainPatchNode
-
-    // 倒排索引：key → 持有该 key 的 SimTx 集合
-    // 用于快速判断一笔 retryTx 是否依赖 Pool 中的某个 SimTx
-    keyIndex map[api.LockKey]map[common.Hash]struct{}
+    mu       sync.RWMutex
+    Patches  map[common.Hash]*ChainPatchNode           // SimTx hash → node
+    KeyIndex map[LockKey]map[common.Hash]struct{}       // 倒排索引：key → {SimTx hashes}
 }
 
-// ChainPatchNode 是 PatchPool 中的节点。
-// 每笔提交的 SimTx 对应一个节点。
 type ChainPatchNode struct {
-    TxHash    common.Hash   // 自己的 txHash
-    Patch     *api.RWSet    // 自己的 WriteSet
-    Consumed  bool          // true = 已被某 retryTx 取走
-    CreatedAt time.Time     // 入池时间，用于过期清理
+    TxHash    common.Hash   // SimTx 的 txHash
+    Patch     *RWSet        // SimTx 的 WriteSet
+    Consumed  bool          // 已被某 retryTx 取走
+    CreatedAt time.Time
 }
 ```
 
-### 2.3 倒排索引匹配算法
+### 5.2 onChainPatches（v6 新增）
 
 ```go
-// HasConflict 判断 retryTx 是否依赖 Pool 中的某个 SimTx。
-// 返回 true + 命中的节点。
-func (pp *PatchPool) HasConflict(retryTx *api.RetryTx) (bool, *ChainPatchNode) {
-    pp.mu.RLock()
-    defer pp.mu.RUnlock()
-
-    // 收集所有 retryTx 涉及 key 的持有者 txHash，按命中次数计数
-    candidates := make(map[common.Hash]int)
-    for _, key := range retryTx.ReadSet {
-        if owners, ok := pp.keyIndex[key]; ok {
-            for txHash := range owners {
-                candidates[txHash]++
-            }
-        }
-    }
-    for _, key := range retryTx.WriteSet {
-        if owners, ok := pp.keyIndex[key]; ok {
-            for txHash := range owners {
-                candidates[txHash]++
-            }
-        }
-    }
-
-    // 选覆盖度最高的（命中最多的 key 的那个上游 SimTx）
-    var best common.Hash
-    var bestCnt int
-    for txHash, cnt := range candidates {
-        node, exists := pp.patches[txHash]
-        if cnt > bestCnt && exists && !node.Consumed {
-            bestCnt = cnt
-            best = txHash
-        }
-    }
-    if bestCnt > 0 {
-        return true, pp.patches[best]
-    }
-    return false, nil
-}
-
-// Add 将一笔已提交 SimTx 的 WriteSet 加入 PatchPool。
-// 同时更新 keyIndex 倒排索引。
-func (pp *PatchPool) Add(txHash common.Hash, writeSet *api.RWSet) {
-    pp.mu.Lock()
-    defer pp.mu.Unlock()
-
-    pp.patches[txHash] = &ChainPatchNode{
-        TxHash:    txHash,
-        Patch:     writeSet,
-        Consumed:  false,
-        CreatedAt: time.Now(),
-    }
-
-    // 更新 keyIndex
-    for addr, state := range writeSet.WriteState.State {
-        for key := range state {
-            lockKey := api.FormKey(addr, key)
-            if pp.keyIndex[lockKey] == nil {
-                pp.keyIndex[lockKey] = make(map[common.Hash]struct{})
-            }
-            pp.keyIndex[lockKey][txHash] = struct{}{}
-        }
-    }
-}
-
-// TryConsume 尝试取出指定 txHash 的 Patch。
-// 成功返回 Patch，节点标记为 Consumed。
-func (pp *PatchPool) TryConsume(txHash common.Hash) *api.RWSet {
-    pp.mu.Lock()
-    defer pp.mu.Unlock()
-
-    node, ok := pp.patches[txHash]
-    if !ok || node.Consumed {
-        return nil
-    }
-    node.Consumed = true
-    return node.Patch
-}
-
-// Release 释放被 Consumed 的 Patch（重试失败时回退）。
-func (pp *PatchPool) Release(txHash common.Hash) {
-    pp.mu.Lock()
-    defer pp.mu.Unlock()
-
-    if node, ok := pp.patches[txHash]; ok {
-        node.Consumed = false
-    }
+// retry_scheduler.go
+type retryScheduler struct {
+    // ...现有字段
+    patches         map[common.Hash]map[int]*ChainNode   // 仅 leader：链式触发缓存（链下）
+    onChainPatches  map[common.Hash]map[int]*RWSet       // 所有节点：SimTx 同步的 Patch
+    patchPool       *PatchPool                            // 仅 leader：锁竞争优化（链下）
 }
 ```
 
-### 2.4 匹配时间复杂度分析
+**onChainPatches 与 patches 的职责分工：**
 
-| 操作 | 复杂度 | 说明 |
-|------|:------:|------|
-| `Add(writeSet)` | O(k) | k=writeSet 中 key 的数量（通常 1-2） |
-| `HasConflict(retryTx)` | O(r) | r=retryTx 中 key 的数量（通常 1-5） |
-| `TryConsume(txHash)` | O(1) | 哈希表直接定位 |
+| 组件 | 作用域 | 写入时机 | 清理时机 | 用途 |
+|------|:------:|----------|----------|------|
+| `patches`（现有） | 仅 leader | `chainNextSim` / `HandleRetrySignal` 发信号时 | `closeTransaction` | 链式触发缓存 |
+| `PatchPool`（现有） | 仅 leader | `CommitSimulation` 入池 | `closeTransaction` | 锁竞争优化 |
+| **`onChainPatches`（新增）** | **所有节点** | **收到 SimTx（多播）时** | **Committer CR 完成时** | **VerifySimulation 递归查上游 Patch** |
 
-匹配时间几乎恒定在 O(1~5)，**不是性能瓶颈**。
+---
 
-## 3. 流程变更
+### 5.3 CXTSimulation 扩展（v6）
 
-### 3.1 Phase 1: SimTx 提交 → PatchPool 写入
+```go
+type CXTSimulation struct {
+    // ...现有字段
+    ChainPatch        *RWSet       `json:"chain_patch,omitempty"`          // 直接上游的 WriteSet
+    UpstreamTxHash    common.Hash  `json:"upstream_tx_hash,omitempty"`    // 上游 SimTx hash
+    UpstreamSimNum    int           `json:"upstream_sim_num,omitempty"`    // 上游 SimTx 的 simulationNum
+}
+```
+
+**说明：**
+- SimTx 只携带**直接上游**的 Patch，不记录完整链
+- VerifySimulation 通过 `UpstreamTxHash` 查 `onChainPatches` 递归获取完整链
+- 递归时先确认上游 SimTx 已上链（链上存在性验证），再取 Patch
+
+### 5.4 VerifySimulation 读取路径（v6）
+
+```go
+func (v *Verifier) getChainPatch(txHash common.Hash, sim *api.CXTSimulation) *RWSet {
+    if sim.ChainPatch == nil {
+        return nil  // 不是链式交易
+    }
+    // 递归从 onChainPatches 合并所有上游 Patch
+    return v.retrySchd.MergeChainPatches(sim)
+}
+
+// retry_scheduler.go
+func (rs *retryScheduler) MergeChainPatches(sim *api.CXTSimulation) *RWSet {
+    if sim.UpstreamTxHash == (common.Hash{}) {
+        return sim.ChainPatch  // 根节点
+    }
+    upstream := rs.onChainPatches[sim.UpstreamTxHash][sim.UpstreamSimNum]
+    if upstream == nil {
+        return sim.ChainPatch  // 上游未同步，只用自己的
+    }
+    // 递归合并
+    upstreamSim := &api.CXTSimulation{
+        ChainPatch:     upstream,
+        UpstreamTxHash: ???,  // 需要从 onChainPatches 知道上游的 upstream
+    }
+    merged := MergeChainPatches(upstreamSim)
+    return mergeRWSet(sim.ChainPatch, merged)
+}
+```
+
+> ⚠️ 上述是示意代码，实际需要从 `onChainPatches` 的结构中获知每个 SimTx 的 `UpstreamTxHash`。因此 `onChainPatches` 除了存 `*RWSet` 外，可能需要存 `UpstreamTxHash`，或者直接用 `*CXTSimulation` 的部分字段。具体在实现时确定。
+
+### 5.5 onChainPatches 生命周期
+
+```
+写入:
+  CommitSimulation 构建 SimTx（含 ChainPatch + UpstreamTxHash）
+    → SubmitSimulationTx 多播到所有 shard
+    → 所有节点收到 SimTx
+    → onChainPatches[txHash][simNum] = ChainPatch   ✅
+
+清理（链上）:
+  Committer.CommitOrRollbackWithProof:
+    → CR 完成 → rs.RemoveOnChainPatch(txHash)       ✅
+    → closeTransaction（清理链下 patches / PatchPool）
+
+清理（链下）:
+  closeTransaction（超时/失败）:
+    → rs.patchPool.Remove(txHash)                    ✅ 已有的
+    → rs.retryScheduler.StaleTx(txHash)              ✅ 已有的（清 patches）
+    → onChainPatches 不清理（因为链上未确认，让链上 CR 决定清理）
+```
+
+---
+
+## 6. 流程变更（v4 PatchPool）
+
+### 6.1 Phase 1: SimTx 提交 → PatchPool 写入
 
 ```text
 CommitSimulation → tx.SubmitSimulationTx() 成功
@@ -721,7 +281,7 @@ CommitSimulation → tx.SubmitSimulationTx() 成功
 
 **不删除 `chainNextSim`**，保留作为实时匹配路径（低延迟优先）。PatchPool 作为辅助路径。
 
-### 3.2 Phase 2: 独立匹配触发
+### 6.2 Phase 2: 独立匹配触发
 
 ```go
 // OnPatchPoolUpdated 在每次 Add 后触发，也可定时触发。
@@ -743,7 +303,7 @@ func (rs *retryScheduler) OnPatchPoolUpdated() {
 }
 ```
 
-### 3.3 Phase 3: RetryCommit — 取本地 Patch 跳过锁
+### 6.3 Phase 3: RetryCommit — 取本地 Patch 跳过锁
 
 ```go
 func (s *sscService) RetryCommit(txHash common.Hash) *api.RetryCommitResp {
@@ -762,24 +322,38 @@ func (s *sscService) RetryCommit(txHash common.Hash) *api.RetryCommitResp {
 }
 ```
 
-### 3.4 Phase 4: 清理
+### 6.4 Phase 4: 清理
 
 | 事件 | 动作 |
 |------|------|
-| SimTx CR 完成（成功） | 从 Pool 删除 `patches[txHash]`，清理 keyIndex |
-| retryTx 重试失败 | `Release(txHash)` — 释放 Consumed 标记，允许其他 retryTx 取走 |
-| 交易超时关闭 | `closeTransaction` → `StaleTx` → 从 Pool 清理 |
+| SimTx CR 完成（成功） | `Committer.CommitOrRollbackWithProof` → `RemoveOnChainPatch(txHash)`；`closeTransaction` → 清 `patches[txHash]`、`PatchPool.Remove` |
+| retryTx 重试失败 | `patchPool.Release(txHash)` — 释放 Consumed 标记，允许其他 retryTx 取走 |
+| 交易超时关闭 | `closeTransaction` → `StaleTx` → 清 `patches`、`PatchPool.Remove` |
 
-## 4. 端到端数据流
+### 6.5 匹配时间复杂度分析
+
+| 操作 | 复杂度 | 说明 |
+|------|:------:|------|
+| `Add(writeSet)` | O(k) | k=writeSet 中 key 的数量（通常 1-2） |
+| `HasConflict(retryTx)` | O(r) | r=retryTx 中 key 的数量（通常 1-5） |
+| `TryConsume(txHash)` | O(1) | 哈希表直接定位 |
+
+匹配时间几乎恒定在 O(1~5)，**不是性能瓶颈**。
+
+---
+
+## 7. 端到端数据流
 
 ```text
 Phase 1: SimTx 提交
 ───────────────────
 SimTx1 提交（写 Key K）
-  ├─ afterSubmitSimulation → chainNextSim(后备)
-  └─ patchPool.Add(SimTx1, writeSet={K=v1})
-       ├─ patches[SimTx1] = {Patch: {K=v1}, Consumed: false}
-       └─ keyIndex[K] = {SimTx1}
+  ├─ CommitSimulation:
+  │   ├─ 构建 CXTSimulation{ChainPatch={K=v1}, UpstreamTxHash=..., UpstreamSimNum=...}
+  │   ├─ patchPool.Add(SimTx1, writeSet={K=v1})
+  │   └─ SubmitSimulationTx → 多播到所有 shard
+  └─ 所有节点收到 SimTx:
+       └─ onChainPatches[SimTx1][simNum] = {K=v1}
 
 Phase 2: 匹配触发
 ────────────────
@@ -805,17 +379,22 @@ HandleRetrySignal → setSignal → readyCnt 聚合
 Phase 4: 链上 VerifySimulation
 ────────────────────────────────
 SimTx2 VerifySimulation:
-  ├─ ChainPatchRef → readPatchChain 读上游 WriteSet
-  ├─ 跳过锁冲突检查（因为 ChainPatchRef 非 nil）
+  ├─ 从 SimTx 的 UpstreamTxHash → 查 onChainPatches → 递归读上游 Patch
+  ├─ 确认上游 SimTx 已上链
   └─ Patch vs stateDB 隐式一致性检查
 
 Phase 5: 清理
 ─────────────
-SimTx1 CR 完成 → patchPool.Remove(SimTx1) → keyIndex 清理
+SimTx1 CR 完成 → Committer.CommitOrRollbackWithProof
+  └─ RemoveOnChainPatch(SimTx1)
+  └─ closeTransaction → 清 patches、PatchPool.Remove
+
 SimTx2 重试失败 → patchPool.Release(SimTx1) → 允许其他 retryTx 取用
 ```
 
-## 5. 设计决策记录
+---
+
+## 8. 设计决策记录
 
 | # | 决策 | 结论 | 理由 |
 |---|------|------|------|
@@ -825,19 +404,24 @@ SimTx2 重试失败 → patchPool.Release(SimTx1) → 允许其他 retryTx 取�
 | D15 | 保留 chainNextSim | 保留 | 低延迟路径（实时匹配）和批量匹配路径（OnPatchPoolUpdated）共存 |
 | D16 | 匹配触发 | OnPatchPoolUpdated（Add 后触发） | 不需要定时扫描，事件驱动 |
 | D17 | RetryCommit 取 Patch | TryConsume 出本地 Patch | 成功取出就跳过锁冲突，取不到走正常路径 |
+| D18 | onChainPatches vs patches | 分离 | patches 仅 leader 链下缓存，onChainPatches 所有节点共享，职责不同 |
+| D19 | onChainPatches 写入时机 | 收到 SimTx 时 | 所有节点统一入池，不依赖 leader 侧流程 |
+| D20 | onChainPatches 清理 | Committer CR 完成时 | 链上清理与 CR 绑定，链下清理由 closeTransaction 负责 |
+| D21 | SimTx 只带直接上游 Patch | 不记录完整链 | VerifySimulation 通过 onChainPatches 递归查上游，同时验证上游 SimTx 已上链 |
 
-## 6. 文件变更清单
+## 9. 文件变更清单
 
 | 文件 | 变更 | 优先级 | 估算 |
 |------|------|:------:|:----:|
-| `ssc/retry_scheduler.go` | 新增 `PatchPool` 结构体 + `Add`/`HasConflict`/`TryConsume`/`Release`；新增 `OnPatchPoolUpdated`；`RetryCommit` 加 Patch 检查分支 | P0 | ~200 行 |
-| `ssc/impl.go` | `CommitSimulation` 末尾加 `patchPool.Add`；`afterSubmitSimulation` 逻辑扩展 | P0 | ~10 行 |
-| `ssc/verify.go` | 无需改动（ChainPatchRef 逻辑已存在） | - | - |
-| `ssc/api/types.go` | 新增 `PatchPool` 结构体定义 | P1 | ~30 行 |
+| `ssc/retry_scheduler.go` | 新增 `PatchPool` 结构体 + `Add`/`HasConflict`/`TryConsume`/`Release`；新增 `OnPatchPoolUpdated`；`RetryCommit` 加 Patch 检查分支；新增 `onChainPatches` 字段 + `AddOnChainPatch`/`GetOnChainPatch`/`RemoveOnChainPatch`/`MergeChainPatches` | P0 | ~300 行 |
+| `ssc/impl.go` | `CommitSimulation` 末尾加 `patchPool.Add` + SimTx 构建含 ChainPatch；`afterSubmitSimulation` 逻辑扩展 | P0 | ~20 行 |
+| `ssc/committer.go` | `CommitOrRollbackWithProof` 末尾加 `RemoveOnChainPatch` | P0 | ~3 行 |
+| `ssc/api/types.go` | `CXTSimulation` 加 `ChainPatch`/`UpstreamTxHash`/`UpstreamSimNum` + `Bytes()` 同步 | P0 | ~15 行 |
+| `ssc/verify.go` | `VerifySimulation` 改用 `onChainPatches` 递归读上游 Patch | P0 | ~20 行 |
+| `ssc/simulator.go` | `GetState` 读 Patch 路径扩展（查 `onChainPatches` 兜底） | P1 | ~10 行 |
 
-## 7. 预期效果
+## 10. 预期效果
 
 - **HandleRetrySignal** → **startReSimulation** 转化率提升：Patch 在写 key 的 shard 本地可用，至少该 shard 的 RetryCommit 能跳过锁冲突 ✅
 - **startReSimulation** → **TriggerReSimulation** 转化率提升：不保证全部 shard 都有 Patch，但只要 Patch 所在的 shard 锁冲突跳过，其他 shard 竞争到的概率增大
-- **VerifySimulation chain tx** 成功率：不变（现有 ChainPatchRef 机制即可）
-
+- **VerifySimulation chain tx** 成功率：改进，onChainPatches 让所有节点都能读到上游 Patch

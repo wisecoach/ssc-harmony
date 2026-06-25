@@ -1,8 +1,14 @@
 # [A07] ForceSimulation（冲突容忍模拟）
 
-> **版本**：v1（2026-06-20，设计阶段）
+> **版本**：v1（2026-06-20，设计阶段，**已暂关** `ForceSimulation=false`）
 > **前置依赖**：PatchPool v4（[A05](./A05-hotkey-retry-design.md)）、Wound-Wait 锁协调（[A06](./A06-lock-priority-coordination.md)）
 > **解决的问题**：模拟时遇锁冲突立即中断，无法获取完整状态，导致重试效率低下
+>
+> **⚠️ 当前状态**：代码已实现（Error 重命名、SSCVM.forceVMErr、指令级 ForceSimulation 分支），但 `ForceSimulation=true` 时发现链上 VerifySimulation 报 `simulation result is not equal to execution result` 错误——因为模拟基于过期状态执行，与链上实际执行结果不一致。
+>
+> **根因**：`ForceSimulation` 在锁冲突时从 stateDB 读当前值继续执行，但该值可能已被更高优先级的交易修改（Wound-Wait 场景下常见），导致模拟结果与链上执行结果不同。
+>
+> **结论**：`ForceSimulation=false`（默认关闭），等待 `onChainPatches`（v6）完善后重新评估是否开启。
 
 ---
 

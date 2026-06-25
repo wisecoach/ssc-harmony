@@ -2,7 +2,6 @@ package ssc
 
 import (
 	"context"
-	"fmt"
 	"net/http"
 	"sync"
 	"time"
@@ -10,6 +9,7 @@ import (
 	"github.com/harmony-one/harmony/eth/rpc"
 	"github.com/harmony-one/harmony/internal/utils"
 	"github.com/harmony-one/harmony/ssc/api"
+	"github.com/pkg/errors"
 )
 
 type Comm struct {
@@ -48,7 +48,7 @@ func (c *Comm) Multicast(ctx context.Context, members []*api.Member, method stri
 
 	select {
 	case <-ctx.Done():
-		return fmt.Errorf("ctx canceled before call")
+		return nil // ctx 取消是正常行为（如 threshold 签名完成后的 cancel）
 	default:
 	}
 
@@ -58,8 +58,14 @@ func (c *Comm) Multicast(ctx context.Context, members []*api.Member, method stri
 
 			err := c.Call(ctx, nil, member, method, args...)
 			if err != nil {
-				utils.SSCLogger().Error().Err(err).Msg("Failed to call")
-				return
+				if !errors.Is(err, context.Canceled) {
+					utils.SSCLogger().Error().Err(err).
+						Str("endpoint", member.Endpoint).
+						Str("address", member.Address.Hex()).
+						Str("method", method).
+						Msg("Multicast: Failed to call member")
+					return
+				}
 			}
 
 		}(i, member)

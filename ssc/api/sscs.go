@@ -98,6 +98,7 @@ type StateDB interface {
 	SetStateWithoutLock(common.Address, common.Hash, common.Hash) error
 	GetAndLockState(txHash common.Hash, callIndex CallIndex, address common.Address, key common.Hash) (common.Hash, error)
 	SetAndLockState(txHash common.Hash, callIndex CallIndex, address common.Address, key common.Hash, value common.Hash) error
+	CheckLock(key LockKey, txHash common.Hash) error
 
 	Exist(common.Address) bool
 	Empty(common.Address) bool

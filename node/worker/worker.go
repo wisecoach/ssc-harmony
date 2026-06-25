@@ -448,17 +448,12 @@ func (w *Worker) commitTransaction(
 			vm.Config{},
 		)
 	} else {
-		startTime := time.Now()
 		// simulate cross-shard transaction with SSCService, use the blockchain current header, and state is not needed
 		originGasUsed := w.current.header.GasUsed()
 		receipt, cx, stakeMsgs, _, err = core.SimulateCXTransaction(w.sscService, w.chain, &coinbase, w.current.gasPool, w.current.state, w.chain.CurrentHeader(), tx, &gasUsed, vm.Config{})
 		newCrossGasUsed := crossGasUsed + gasUsed - originGasUsed
 		w.current.header.SetCrossGasUsed(newCrossGasUsed)
-		utils.SSCLogger().Info().
-			Uint64("blockNum", w.current.header.NumberU64()).
-			Dur("cost", time.Since(startTime)).
-			Uint64("crossGasUsed", newCrossGasUsed).
-			Str("txHash", tx.Hash().Hex()).Msgf("Cross shard transaction")
+		// [removed] Cross shard transaction log — too noisy
 	}
 	w.current.header.SetGasUsed(gasUsed)
 	if err != nil {

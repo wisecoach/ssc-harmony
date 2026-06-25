@@ -165,6 +165,24 @@ func (sim *Simulator) DeleteSimState(txHash common.Hash) {
 	delete(sim.simStates, txHash)
 }
 
+func (sim *Simulator) GetBlockHash(txHash common.Hash) (common.Hash, bool) {
+	sim.simLock.RLock()
+	defer sim.simLock.RUnlock()
+	state, ok := sim.simStates[txHash]
+	if !ok {
+		return common.Hash{}, false
+	}
+	if state.SimulationRequest != nil {
+		return state.SimulationRequest.BlockHash, true
+	}
+	if len(state.SimulationCallStates) > 0 {
+		for _, callState := range state.SimulationCallStates[len(state.SimulationCallStates)-1] {
+			return callState.BlockHash, true
+		}
+	}
+	return common.Hash{}, false
+}
+
 // Cleanup 清理 Simulator 中该交易的所有资源。
 // 由 sscService.closeTransaction 调用。
 func (sim *Simulator) Cleanup(txHash common.Hash) {
@@ -920,19 +938,52 @@ func (sim *Simulator) SetState(db api.StateDB, txHash common.Hash, address commo
 		rwset.ReadState.State[address] = make(map[common.Hash]common.Hash)
 	}
 	if _, exists := rwset.ReadState.State[address][key]; !exists {
-		val, err := db.GetState(txHash, address, key)
-		if err != nil {
-			utils.SSCLogger().Error().Err(err).Str("txHash", txHash.Hex()).
-				Msgf("failed to set state: get conflict state [%s:%s]", address.Hex(), key.Hex())
-			if errors.Is(err, api.ErrLockConflict_OnChain) {
-				callState.LockedByOtherTx = err
-				callState.LockedKeys = append(callState.LockedKeys, api.FormKey(address, key))
-				// ForceSimulation: return the stale value from stateDB to continue execution
-				rwset.CurrentState.State[address][key] = value
-				rwset.WriteState.State[address][key] = value
-				return nil
-			} else {
-				return err
+		// Step 0: 先查 Patch 路径，避免触发 stateDB 锁检查
+		rs := sim.sscService.retryScheduler
+		chainPatchRef := rs.GetChainPatchRef(txHash)
+		var val common.Hash
+		var patchFound bool
+		if chainPatchRef != nil {
+			val, patchFound = rs.readPatchChain(
+				chainPatchRef.TxHash,
+				chainPatchRef.SimulationNum,
+				address, key)
+		}
+		// Step 1: 没命中 Patch 则查 SimulationState ChainPatch
+		if !patchFound {
+			simState, simOk := sim.GetSimState(txHash)
+			if simOk && simState != nil && simState.ChainPatch != nil {
+				if addrState, addrOk := simState.ChainPatch.WriteState.State[address]; addrOk {
+					var exists bool
+					val, exists = addrState[key]
+					if exists {
+						patchFound = true
+						utils.SSCLogger().Debug().Str("txHash", txHash.Hex()).
+							Str("address", address.Hex()).
+							Str("key", key.Hex()).
+							Str("value", val.Hex()).
+							Msg("SetState: ChainPatch hit, reading patched value")
+					}
+				}
+			}
+		}
+		// Step 2: Patch 未命中，从 stateDB 读（可能触发 Lockable）
+		if !patchFound {
+			var err error
+			val, err = db.GetState(txHash, address, key)
+			if err != nil {
+				utils.SSCLogger().Error().Err(err).Str("txHash", txHash.Hex()).
+					Msgf("failed to set state: get conflict state [%s:%s]", address.Hex(), key.Hex())
+				if errors.Is(err, api.ErrLockConflict_OnChain) {
+					callState.LockedByOtherTx = err
+					callState.LockedKeys = append(callState.LockedKeys, api.FormKey(address, key))
+					// ForceSimulation: return the stale value from stateDB to continue execution
+					rwset.CurrentState.State[address][key] = value
+					rwset.WriteState.State[address][key] = value
+					return nil
+				} else {
+					return err
+				}
 			}
 		}
 		rwset.ReadState.State[address][key] = val

@@ -120,7 +120,7 @@ ssc_config:
     sp1: 10
     pool_timeout: 100000
     max_on_chain_retries: 5
-    force_simulation: true
+    force_simulation: false
   chain: null
   reputation:
     sl_file_size: 1000

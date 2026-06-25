@@ -2,6 +2,7 @@ package ssc
 
 import (
 	"bytes"
+	"math"
 	"sync"
 
 	"github.com/ethereum/go-ethereum/common"
@@ -51,7 +52,8 @@ func NewTempLockView(manager *stateLockManager) *TempLockView {
 // TryLock 尝试为交易获取临时读/写锁。
 // 无优先级判断，等价于 TryLockWithPriority 但总是返回 wounded=false。
 func (v *TempLockView) TryLock(txHash common.Hash, reads []api.LockKey, writes []api.LockKey) bool {
-	locked, _ := v.TryLockWithPriority(txHash, api.Priority{}, reads, writes)
+	// 使用最低优先级（FirstSimBlock=MaxUint64），确保后续 retry tx 的 TryLockWithPriority 可将其 Wound
+	locked, _ := v.TryLockWithPriority(txHash, api.Priority{FirstSimBlock: math.MaxUint64, TxHash: txHash}, reads, writes)
 	return locked
 }
 
@@ -212,7 +214,12 @@ func (v *TempLockView) OnBlockCommitted(block *types.Block) {
 		blockTxHashes = append(blockTxHashes, tx.Hash())
 	}
 
-	utils.SSCLogger().Info().Uint64("blockNum", block.NumberU64()).Int("lockedNum", len(v.tempWriteLocks)).Msg("TempLockView on block committed")
+	utils.SSCLogger().Info().Uint64("blockNum", block.NumberU64()).
+		Int("tempWriteLocks", len(v.tempWriteLocks)).
+		Int("tempReadLocks", len(v.tempReadLocks)).
+		Int("committedWriteLocks", len(v.committedWriteLocks)).
+		Int("woundedTxs", len(v.woundedTxs)).
+		Msg("TempLockView on block committed")
 
 	v.mu.Lock()
 	defer v.mu.Unlock()

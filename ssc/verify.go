@@ -229,6 +229,13 @@ func (v *Verifier) VerifySimulation(simulationBytes []byte, stateDB api.StateDB,
 	}
 
 	txHash := simulation.TxHash
+
+	// v6: 所有节点收到 SimTx 后，将 ChainPatch 存入 onChainPatches
+	if simulation.ChainPatch != nil {
+		v.retrySchd.AddOnChainPatch(txHash, simulation.SimulationNum, simulation.ChainPatch,
+			simulation.UpstreamTxHash, simulation.UpstreamSimNum)
+	}
+
 	if v.committee.SelfShard == simulation.OriginShardId {
 		v.timerMgr.StartSp1Timer(txHash, simulation.Epochs, header.NumberU64(), v.committee.SelfShard)
 	}
@@ -269,14 +276,16 @@ func (v *Verifier) VerifySimulation(simulationBytes []byte, stateDB api.StateDB,
 
 	v.state.SetStatus(txHash, api.VERIFYING_SIMULATION)
 
-	// 检查是否为链式依赖交易（有 ChainPatchRef）
+	// 检查是否为链式依赖交易（有 ChainPatch / 在 onChainPatches 中有匹配的 Patch）
 	// 如果是，跳过锁冲突检查，因为 nonce 排序保证了执行顺序
 	isChainTx := false
-	chainPatchRef := v.retrySchd.GetChainPatchRef(txHash)
-	if chainPatchRef != nil {
+	if simulation.ChainPatch != nil {
+		// v6: 直接从 SimTx 的 ChainPatch 判断是否为链式交易
 		isChainTx = true
 		utils.SSCLogger().Info().Str("txHash", txHash.Hex()).
-			Msg("VerifySimulation: chain tx detected, skipping lock conflict check")
+			Int("simNum", simulation.SimulationNum).
+			Bool("hasUpstream", simulation.UpstreamTxHash != (common.Hash{})).
+			Msg("VerifySimulation: chain tx detected (from SimTx ChainPatch), skipping lock conflict check")
 	}
 
 CallStates:
@@ -344,12 +353,12 @@ CallStates:
 
 		// 链式交易：Patch vs stateDB 一致性检查
 		// 如果上游失败，stateDB 值与 patch 期望值不匹配，自己也失败
-		if isChainTx && chainPatchRef != nil {
+		if isChainTx && simulation.UpstreamTxHash != (common.Hash{}) {
 			for address, stateMap := range callState.RWSet.ReadState.State {
 				for key := range stateMap {
-					expectedVal, found := v.retrySchd.readPatchChain(
-						chainPatchRef.TxHash,
-						chainPatchRef.SimulationNum,
+					expectedVal, found := v.retrySchd.ReadOnChainPatch(
+						simulation.UpstreamTxHash,
+						simulation.UpstreamSimNum,
 						address, key)
 					if found {
 						actualVal, err := stateDB.GetState(txHash, address, key)
