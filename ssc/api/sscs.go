@@ -17,7 +17,6 @@ const (
 	Method_HandleSimulateRequest      = "ssc_handleSimulateRequest"
 	Method_RequestCallCXT             = "ssc_requestCallCXT"
 	Method_HandleCXTCall              = "ssc_handleCXTCall"
-	Method_HandleCXTRecallProof       = "ssc_handleCXTRecallProof"
 	Method_SignSimulationCommit       = "ssc_signSimulationCommit"
 	Method_SignCXTSimulation          = "ssc_signCXTSimulation"
 	Method_HandleCommitVote           = "ssc_handleCommitVote"
@@ -150,8 +149,6 @@ type InternalService interface {
 	//	@Description: simulate cross-shard transaction called by proposer, send request to leader of CXTransaction
 	SimulateCXTransaction(req *CXTSimulationRequest)
 
-	// SimulationResult(txHash common.Hash) (*CXTSimulationSSCResult, error)
-
 	// CallCXTContract
 	//
 	//	@Description: call for cross-shard contract, send request to leader of CXTransaction, and wait for the simulation
@@ -236,11 +233,6 @@ type CrossService interface {
 	//  @Description: handle the signed call request from caller shard ssc, broadcast to members to simulate contract
 	//	execution and wait for the result and signatures
 	HandleCXTSSCCall(req *CXTCallSSCRequest) *CXTCallSSCResult
-
-	// HandleCXTSSCRecall
-	//  @Description: handle the signed call request from caller shard ssc, broadcast to members to simulate contract
-	//	execution and wait for the result and signatures
-	// HandleCXTSSCRecall(req *CXTRecallSSCRequest) *CXTRecallSSCResult
 
 	// CommitSimulation
 	//  @Description: handle the commit request from original shard'S ssc, used to commit the simulation result as a

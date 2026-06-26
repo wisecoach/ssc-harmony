@@ -2,7 +2,6 @@ package ssc
 
 import (
 	"bytes"
-	"math"
 	"sync"
 
 	"github.com/ethereum/go-ethereum/common"
@@ -52,8 +51,7 @@ func NewTempLockView(manager *stateLockManager) *TempLockView {
 // TryLock 尝试为交易获取临时读/写锁。
 // 无优先级判断，等价于 TryLockWithPriority 但总是返回 wounded=false。
 func (v *TempLockView) TryLock(txHash common.Hash, reads []api.LockKey, writes []api.LockKey) bool {
-	// 使用最低优先级（FirstSimBlock=MaxUint64），确保后续 retry tx 的 TryLockWithPriority 可将其 Wound
-	locked, _ := v.TryLockWithPriority(txHash, api.Priority{FirstSimBlock: math.MaxUint64, TxHash: txHash}, reads, writes)
+	locked, _ := v.TryLockWithPriority(txHash, api.Priority{}, reads, writes)
 	return locked
 }
 

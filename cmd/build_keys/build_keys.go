@@ -285,7 +285,7 @@ func buildConfig(config ShardConfig) {
 			Sp1:               config.delay,
 			PoolTimeout:       100000,
 			MaxOnChainRetries: 5,
-			ForceSimulation:   false,
+			ForceSimulation:   true,
 		}
 		for j := 0; j < config.validator; j++ {
 			v := shard2validators[i][j]

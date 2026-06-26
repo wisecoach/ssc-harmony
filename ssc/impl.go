@@ -271,9 +271,6 @@ func newBaseService(ctx context.Context, config *api.Config, cm *CommitteeMechan
 			CallForRetry: func(tx *api.RetryTx) {
 				service.retryScheduler.CallForRetry(tx)
 			},
-			TempLockTryLock: func(txHash common.Hash, reads, writes []api.LockKey) bool {
-				return service.retryScheduler.tempLockView.TryLock(txHash, reads, writes)
-			},
 		},
 		service,
 		simComm,
@@ -473,12 +470,7 @@ func newRWSet() *api.RWSet {
 }
 
 func (s *sscService) sendCXTCommitVote(shardId uint32, vote *api.CXTCommitVote) {
-	var signer api.BLSSigner
-	if vote.Type == api.Recall {
-		signer = s.BLSSignerMgr.GetSSCSigner()
-	} else {
-		signer = s.BLSSignerMgr.GetValidatorSigner()
-	}
+	signer := s.BLSSignerMgr.GetValidatorSigner()
 	sign, err := signer.Sign(vote)
 	if err != nil {
 		utils.SSCLogger().Error().Str("txHash", vote.TxHash.Hex()).
@@ -582,15 +574,8 @@ func (s *sscService) SignCXTSimulation(simulation *api.CXTSimulation) []byte {
 //	3. if threshold votes are received, send the vote to origin-shard's ssc leader
 func (s *sscService) HandleCommitVote(vote *api.CXTCommitVote) {
 	// 1
-	var threshold int
-	sscOrValidator := true
-	if vote.Type == api.Recall {
-		threshold = s.GetCommittee(vote.Epochs[vote.ShardId], vote.ShardId).Threshold
-		sscOrValidator = true
-	} else {
-		threshold = s.GetCommittee(vote.Epochs[vote.ShardId], vote.ShardId).ValidatorThreshold
-		sscOrValidator = false
-	}
+	threshold := s.GetCommittee(vote.Epochs[vote.ShardId], vote.ShardId).ValidatorThreshold
+	sscOrValidator := false
 	if vote.ShardId != s.SelfShard && vote.Type == api.Rollback && vote.Reason == api.ReasonInvalidSimulation {
 		utils.SSCLogger().Warn().Str("txHash", vote.TxHash.Hex()).
 			Msgf("received invalid simulation rollback vote from shard %d, ignore", vote.OriginShardId)
@@ -720,15 +705,6 @@ func (s *sscService) aggregateSSCCommitVote(votes []*api.CXTCommitVote, sscOrVal
 	return sscResult
 }
 
-// HandleCXTRecallProof
-//
-//	@Description: handle the recall proof from other shard's ssc member
-//	1. start new simulation number
-//	2. get the smallest callIndex as lockedCallIndex
-func (s *sscService) HandleCXTRecallProof(proof *api.CXTCommitProof) {
-	s.Simulator.HandleCXTRecallProof(proof)
-}
-
 func (s *sscService) CommitSimulation(commit *api.SimulationCommit) {
 	txHash := commit.TxHash
 	utils.SSCLogger().Info().Str("txHash", txHash.Hex()).
@@ -815,20 +791,6 @@ func (s *sscService) CommitSimulation(commit *api.SimulationCommit) {
 
 	// v5 Wound-Wait: 在提交 SimTx 前锁死 Patch（不可再被 Wound）
 	s.retryScheduler.patchPool.Finalize(txHash)
-
-	// v5 Wound-Wait: 二次验证锁仍然持有
-	if s.retryScheduler.tempLockView.IsWounded(txHash) {
-		utils.SSCLogger().Info().Str("txHash", txHash.Hex()).
-			Msg("commit simulation: tx was wounded, aborting submission")
-		// Finalize 了也要 Release，确保其他 retryTx 能拿到
-		s.retryScheduler.patchPool.Release(txHash)
-		// 清理 TempLockTryLock 残留的锁（空 Priority 极难被 Wound，必须手动清理）
-		s.retryScheduler.tempLockView.GarbageCollect(txHash)
-		// 不清除交易状态（不调 closeTransaction）：
-		// 被 Wound 的交易应放回 retryPool，等待 OnBlockCommitted 清理 wounded 标记后重新竞争。
-		// 调 closeTransaction 会 delete txStates + 标记 finishedTxs，导致交易永久终结且链上锁泄漏。
-		return
-	}
 
 	s.buildSignaturesForSimulation(tx.Ctx, simulation)
 
@@ -1013,18 +975,12 @@ func (s *sscService) HandleCXTCommitSSCVote(vote *api.CXTCommitSSCVote) {
 		commitType := api.Commit
 		commitReason := api.ReasonSuccess
 		sscVoteList := make([]*api.CXTCommitSSCVote, 0)
-		recallShards := make([]uint32, 0)
 		for _, v := range sscVotes {
 			if v.Type == api.Rollback {
 				commitType = api.Rollback
 				commitReason = v.Reason
 				sscVoteList = append(make([]*api.CXTCommitSSCVote, 0), v)
 				break
-			}
-			if v.Type == api.Recall && commitType != api.Rollback {
-				commitType = api.Recall
-				commitReason = v.Reason
-				recallShards = append(recallShards, v.ShardId)
 			}
 			sscVoteList = append(sscVoteList, v)
 		}
@@ -1071,23 +1027,6 @@ func (s *sscService) HandleCXTCommitSSCVote(vote *api.CXTCommitSSCVote) {
 				},
 			}
 			_ = s.Comm.Multicast(ctx, members, api.Method_HandleCXTCommitProof, proof)
-		case api.Recall:
-			proof := &api.CXTCommitProof{
-				TxHash:        txHash,
-				SimulationNum: vote.SimulationNum,
-				Type:          commitType,
-				Reason:        commitReason,
-				Votes:         sscVoteList,
-				OriginShard:   vote.OriginShardId,
-				RelatedShards: relatedShards,
-				BaseSSCMessage: api.BaseSSCMessage{
-					Epochs: vote.Epochs,
-				},
-			}
-			_ = s.Comm.Multicast(ctx, members, api.Method_HandleCXTCommitProof, proof)
-			go func() {
-				s.Simulator.StartReSimulation(proof.TxHash, proof.SimulationNum+1)
-			}()
 		default:
 			utils.SSCLogger().Error().Str("txHash", txHash.Hex()).Msgf("unsupportted vote type: %s", vote.Type)
 		}
@@ -1129,13 +1068,6 @@ func (s *sscService) HandleCXTCommitProof(proof *api.CXTCommitProof) {
 			tx.Status = api.CXT_ROLLBACKING
 		}
 		s.stateLock.Unlock()
-	}
-
-	if proof.Type == api.Recall {
-		committee := s.GetCommittee(proof.Epochs[s.SelfShard], s.SelfShard)
-		ctx, cancel := context.WithTimeout(s.ctx, s.Config.CallTimeout)
-		defer cancel()
-		_ = s.Comm.Multicast(ctx, committee.Members, api.Method_HandleCXTRecallProof, proof)
 	}
 }
 

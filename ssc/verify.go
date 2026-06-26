@@ -40,13 +40,7 @@ func NewVerifyCommunicator(comm *Comm, signerMgr api.BLSSignerMgr, committee *Co
 
 func (vc *VerifyCommunicator) SendCommitVote(shardId uint32, vote *api.CXTCommitVote) {
 	txHash := vote.TxHash
-
-	var signer api.BLSSigner
-	if vote.Type == api.Recall {
-		signer = vc.signerMgr.GetSSCSigner()
-	} else {
-		signer = vc.signerMgr.GetValidatorSigner()
-	}
+	signer := vc.signerMgr.GetValidatorSigner()
 
 	sign, err := signer.Sign(vote)
 	if err != nil {
@@ -434,20 +428,26 @@ CallStates:
 			v.sendRollbackVoteForRetry(txHash, simulation.SimulationNum, simulation.Epochs, simulation.OriginShardId, lockedSimNum)
 			return
 		}
-		payload := &api.CXTConflictRWSetPayload{
-			ConflictCallIndex: simulation.CallStates[conflictCallStateIndex].CallIndex,
+		// Recall 已废弃，由 RetryScheduler.CallForRetry 替代
+		// 清理 VerifySimulation 阶段获取的链下锁
+		stateDB.RollbackTx(txHash)
+		if v.committee.IsLeader(simulation.Epochs[v.committee.SelfShard]) {
+			retryTx := &api.RetryTx{
+				TxHash:        txHash,
+				Epochs:        simulation.Epochs,
+				Sender:        simulation.Sender,
+				Nonce:         simulation.Nonce,
+				OriginShardID: simulation.OriginShardId,
+				RelatedShards: simulation.RelatedShards,
+				SimulationNum: simulation.SimulationNum + 1,
+				Condition:     api.Verify,
+			}
+			utils.SSCLogger().Info().Str("txHash", txHash.Hex()).
+				Int("simulationNum", retryTx.SimulationNum).
+				Msg("VerifySimulation: conflict detected, calling retry via CallForRetry")
+			v.state.SetWaitingForResimu(txHash)
+			v.retrySchd.CallForRetry(retryTx)
 		}
-		payloadBytes, _ := json.Marshal(payload)
-		vote := &api.CXTCommitVote{
-			TxHash:         txHash,
-			ShardId:        v.committee.SelfShard,
-			Type:           api.Recall,
-			OriginShardId:  simulation.OriginShardId,
-			Reason:         api.ReasonConflictRWSetRecall,
-			Payload:        payloadBytes,
-			BaseSSCMessage: api.BaseSSCMessage{Epochs: simulation.Epochs},
-		}
-		v.communicator.SendCommitVote(v.committee.SelfShard, vote)
 		return
 	}
 
@@ -470,6 +470,9 @@ CallStates:
 			v.sendRollbackVoteForRetry(txHash, simulation.SimulationNum, simulation.Epochs, simulation.OriginShardId, lockedSimNum)
 			return
 		}
+
+		// 清理 VerifySimulation 阶段获取的链下锁
+		stateDB.RollbackTx(txHash)
 
 		if v.committee.IsLeader(simulation.Epochs[v.committee.SelfShard]) {
 			retryTx := &api.RetryTx{

@@ -239,19 +239,6 @@ func (rs *retryScheduler) CallForRetry(tx *api.RetryTx) {
 		return
 	}
 
-	// 如果 FirstSimBlock 未设置，从 retryPool 中已有的 RetryTx 继承
-	if tx.FirstSimBlock == 0 {
-		rs.mu.RLock()
-		if existing, ok := rs.retryPool[tx.TxHash]; ok && existing.FirstSimBlock > 0 {
-			tx.FirstSimBlock = existing.FirstSimBlock
-		}
-		rs.mu.RUnlock()
-	}
-	// 如果仍然未设置（首次 CallForRetry），用当前区块高度
-	if tx.FirstSimBlock == 0 {
-		tx.FirstSimBlock = rs.bc.CurrentHeader().NumberU64()
-	}
-
 	utils.SSCLogger().Info().
 		Str("txHash", tx.TxHash.Hex()).
 		Uint32("originShardID", tx.OriginShardID).
@@ -274,6 +261,9 @@ func (rs *retryScheduler) AddToRetry(tx *api.RetryTx) {
 	if !rs.state.IsLeader(tx.Epochs[rs.selfShard]) {
 		return
 	}
+
+	// 清理该交易在首次模拟中通过 GetState/SetState 获取的 TempLockView 锁
+	rs.tempLockView.GarbageCollect(tx.TxHash)
 
 	// 从 SimulationCallStates 提取 RWSet
 	readSet := make([]api.LockKey, 0)
@@ -383,15 +373,15 @@ func (rs *retryScheduler) OnBlockCommitted(block *types.Block) {
 		signals.Signals = append(signals.Signals, signal)
 	}
 
-	// 提交 promoted 交易到下一轮模拟 — 暂不启用正常 retry 路径
-	// 由 HotKey chain 接管 retry 信号的触发
+	// 提交 promoted 交易到下一轮模拟
 	for _, epoch2Signals := range shard2Epoch2RetrySignals {
 		for _, signals := range epoch2Signals {
 			if len(signals.Signals) > 0 {
-				utils.SSCLogger().Debug().
+				utils.SSCLogger().Info().
 					Int("num", len(signals.Signals)).
 					Uint32("shard", signals.OriginShard).
-					Msg("normal retry signals blocked (hot key chain only)")
+					Msg("promoted txs to next round")
+				go rs.sendReSimulationSignals(signals)
 			}
 		}
 	}
@@ -644,7 +634,6 @@ func (rs *retryScheduler) tryToReSimulation(retryTx *api.RetryTx) {
 		first := true
 		for txh, tx := range rs.retryPool {
 			pri := api.Priority{
-				FirstSimBlock: tx.FirstSimBlock,
 				Nonce:         tx.Nonce,
 				OriginShardID: tx.OriginShardID,
 				TxHash:        txh,
@@ -659,7 +648,6 @@ func (rs *retryScheduler) tryToReSimulation(retryTx *api.RetryTx) {
 			Int("retryPoolSize", len(rs.retryPool)).
 			Str("txHash", txHash.Hex()[:20]).
 			Str("bestTx", bestTx.Hex()[:20]).
-			Uint64("bestFirstSimBlock", bestPri.FirstSimBlock).
 			Uint64("bestNonce", bestPri.Nonce).
 			Uint32("bestOriginShardID", bestPri.OriginShardID).
 			Msg("tryToReSimulation: retry pool stats")
@@ -736,7 +724,6 @@ func (rs *retryScheduler) tryToReSimulation(retryTx *api.RetryTx) {
 		rs.state.RetrySuccessCount()
 		chainRetryStats.SigRetryCommitLocked.Add(1)
 		utils.SSCLogger().Info().Str("txHash", txHash.Hex()).
-			Uint64("firstSimBlock", retryTx.FirstSimBlock).
 			Uint64("nonce", retryTx.Nonce).
 			Uint32("originShardId", retryTx.OriginShardID).
 			Int("simulationNum", retryTx.SimulationNum).
@@ -843,7 +830,6 @@ func (rs *retryScheduler) RetryCommit(txHash common.Hash) *api.RetryCommitResp {
 	priority := api.Priority{
 		Nonce:         retryTx.Nonce,
 		OriginShardID: retryTx.OriginShardID,
-		FirstSimBlock: retryTx.FirstSimBlock,
 		TxHash:        txHash,
 	}
 
@@ -921,15 +907,7 @@ func (rs *retryScheduler) RetryCommit(txHash common.Hash) *api.RetryCommitResp {
 }
 
 func (rs *retryScheduler) getStateDB(txHash common.Hash) (api.StateDB, error) {
-	blockHash, exists := rs.state.GetBlockHash(txHash)
-	if !exists {
-		return nil, errors.New("blockHash is not confirmed")
-	}
-	header := rs.bc.GetHeaderByHash(blockHash)
-	if header == nil {
-		return nil, errors.New("header is not found")
-	}
-	stateAt, err := rs.bc.StateAt(header.Root())
+	stateAt, err := rs.bc.State()
 	if err != nil {
 		return nil, err
 	}
@@ -1181,7 +1159,6 @@ func (rs *retryScheduler) OnPatchPoolUpdated() {
 			priority := api.Priority{
 				Nonce:         retryTx.Nonce,
 				OriginShardID: retryTx.OriginShardID,
-				FirstSimBlock: retryTx.FirstSimBlock,
 				TxHash:        txHash,
 			}
 			// Temporary exclusive: mark Consumed to prevent other retryTxs from taking it

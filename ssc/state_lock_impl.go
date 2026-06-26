@@ -166,6 +166,7 @@ func (s *lockedStates) deleteLockedState(txHash common.Hash, callIndexStr string
 		return common.Hash{}
 	}
 	s.lockedStates[key].lockedBy = common.Hash{}
+	delete(s.lockedStates, key)
 	value := s.callIndex2lockedState[txHash][callIndexStr][key]
 	delete(s.callIndex2lockedState[txHash][callIndexStr], key)
 	if len(s.callIndex2lockedState[txHash][callIndexStr]) == 0 {
@@ -182,6 +183,7 @@ func (s *lockedStates) deleteRLockedState(txHash common.Hash, callIndexStr strin
 	if s.rlockedStates[key] == nil {
 		return
 	}
+	delete(s.rlockedStates, key)
 	delete(s.callIndex2rlockedState[txHash][callIndexStr], key)
 	if len(s.callIndex2rlockedState[txHash][callIndexStr]) == 0 {
 		delete(s.callIndex2rlockedState[txHash], callIndexStr)

@@ -2,7 +2,6 @@ package ssc
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"math/big"
@@ -40,8 +39,6 @@ type SimulatorStateAccessor struct {
 
 	// CallForRetry 调度重试（原 s.retryScheduler.CallForRetry）
 	CallForRetry func(tx *api.RetryTx)
-	// TempLockTryLock 预检查锁冲突（原 s.retryScheduler.tempLockView.TryLock）
-	TempLockTryLock func(txHash common.Hash, reads, writes []api.LockKey) bool
 }
 
 // Simulator 负责跨分片交易的模拟执行。
@@ -203,42 +200,6 @@ func (sim *Simulator) Cleanup(txHash common.Hash) {
 	sim.syncLock.Lock()
 	delete(sim.callStatesInWaiting, txHash)
 	sim.syncLock.Unlock()
-}
-
-// HandleCXTRecallProof 处理来自其他分片 SSC 成员的 recall proof。
-//
-//	@Description: handle the recall proof from other shard's ssc member
-//	1. start new simulation number
-//	2. get the smallest callIndex as lockedCallIndex
-func (sim *Simulator) HandleCXTRecallProof(proof *api.CXTCommitProof) {
-	txHash := proof.TxHash
-
-	// 获取 SimulationState
-	simState, ok := sim.GetSimState(txHash)
-	if !ok || simState == nil {
-		utils.SSCLogger().Error().Str("txHash", proof.TxHash.Hex()).Msg("handle cxt recall proof failed: no sim state")
-		return
-	}
-
-	// 1. start new simulation number
-	sim.state.SetSimulationNum(txHash, proof.SimulationNum+1)
-	if simState.SimulationCallStates[proof.SimulationNum+1] == nil {
-		simState.SimulationCallStates[proof.SimulationNum+1] = make(api.SimulationCallStates, 0)
-	}
-
-	// 2. get the smallest callIndex as lockedCallIndex
-	conflictCallIndexes := make([]api.CallIndex, 0)
-	for _, vote := range proof.Votes {
-		if vote.Type == api.Recall {
-			payload := &api.CXTConflictRWSetPayload{}
-			_ = json.Unmarshal(vote.Payload, payload)
-			conflictCallIndexes = append(conflictCallIndexes, payload.ConflictCallIndex)
-		}
-	}
-	sort.Slice(conflictCallIndexes, func(i, j int) bool {
-		return conflictCallIndexes[i].Compare(conflictCallIndexes[j]) < 0
-	})
-	simState.LockedCallIndex = conflictCallIndexes[0]
 }
 
 // ===== callStatesInWaiting 存储访问 =====
