@@ -105,8 +105,8 @@ func (t *TxBlockTrace) Log() string {
 
 // recordTraceBlock 记录某个阶段对应的块高度，线程安全
 func (s *sscService) recordTraceBlock(txHash common.Hash, stage TraceStage, blockNum uint64) {
-	s.simuLock.Lock()
-	defer s.simuLock.Unlock()
+	s.traceLock.Lock()
+	defer s.traceLock.Unlock()
 
 	trace, exists := s.txTraces[txHash]
 	if !exists {

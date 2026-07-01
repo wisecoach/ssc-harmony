@@ -15,6 +15,7 @@ import (
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/crypto"
 	"github.com/harmony-one/harmony/core/types"
+	"github.com/harmony-one/harmony/internal/utils"
 )
 
 const (
@@ -310,6 +311,7 @@ type TimeoutConfig struct {
 	Sp1               uint64 `json:"sp1" yaml:"sp1"`                                   // source phase 1, used to notify origin shard to rollback cxt for timeout
 	PoolTimeout       uint64 `json:"pool_timeout" yaml:"pool_timeout"`                 // the timeout to remove cxt from pool
 	MaxOnChainRetries uint64 `json:"max_on_chain_retries" yaml:"max_on_chain_retries"` // max retries for on-chain verification
+	MaxRetriesTotal   uint64 `json:"max_retries_total" yaml:"max_retries_total"`       // max total retries before giving up
 	ForceSimulation   bool   `json:"force_simulation" yaml:"force_simulation"`         // continue execution on lock conflict, get full RWSet
 }
 
@@ -1219,6 +1221,7 @@ func (pp *PatchPool) IsFinalized(txHash common.Hash) bool {
 
 // Remove removes a Patch from the pool and cleans up keyIndex.
 func (pp *PatchPool) Remove(txHash common.Hash) {
+	t0 := time.Now()
 	pp.mu.Lock()
 	defer pp.mu.Unlock()
 
@@ -1241,6 +1244,10 @@ func (pp *PatchPool) Remove(txHash common.Hash) {
 	}
 
 	delete(pp.Patches, txHash)
+
+	utils.SSCLogger().Info().Str("txHash", txHash.Hex()).
+		Str("duration", time.Since(t0).String()).
+		Msg("PatchPool.Remove timing")
 }
 
 func NewCallStack(txHash common.Hash, simulationNum int) *CallStack {
@@ -1313,6 +1320,8 @@ func (c *CallStack) String() string {
 // 所有模块（Verifier/Committer/CommitVote/Retry）通过 sscService 的方法访问，
 // 不直接依赖 Simulator。
 type TxState struct {
+	Mu            sync.Mutex // per-tx 锁，替代全局 stateLock
+	Closed        bool       // 替代 finishedTxs[txHash]
 	TxHash        common.Hash
 	Nonce         uint64
 	TxSender      common.Address
@@ -1547,9 +1556,11 @@ type RetryTx struct {
 	RelatedShards RelatedShards
 	SimulationNum int
 	Condition     ConflictCondition
+	ChainDepth    int // 链式依赖深度：0=无上游依赖，1=依赖1跳，2=依赖2跳...
 }
 
 type RetryCommitResp struct {
-	TxHash common.Hash
-	Locked bool
+	TxHash              common.Hash
+	Locked              bool
+	OnChainLockConflict bool // 锁定失败的原因是链上锁冲突（用于 v2 被动池决策）
 }

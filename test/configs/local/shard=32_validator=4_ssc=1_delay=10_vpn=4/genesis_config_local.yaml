@@ -929,10 +929,11 @@ ssc_config:
     memberindex: {}
     validatorindex: {}
   timeout:
-    sp1: 10
-    pool_timeout: 100000
-    max_on_chain_retries: 5
-    force_simulation: false
+    sp1: 5
+    pool_timeout: 5
+    max_on_chain_retries: 1
+    max_retries_total: 3
+    force_simulation: true
   chain: null
   reputation:
     sl_file_size: 1000

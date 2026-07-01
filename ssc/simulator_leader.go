@@ -45,9 +45,9 @@ import (
 // s.retryScheduler.tempLockView.TryLock → sim.state.TempLockTryLock
 // s.IsLeader → sim.committee.IsLeader
 // s.GetLeader → sim.committee.GetLeader
-// s.simuLock → sim.simuLock
-// s.simuWaitingChs → sim.simuWaitingChs
-// s.simuResultCh → sim.simuResultCh
+// s.simuLock → sim.simuChMap (per-tx sync.Map)
+// s.simuWaitingChs → sim.simuChMap + simuChannels
+// s.simuResultCh → sim.simuChMap + simuChannels
 func (sim *Simulator) StartSimulateCXTransaction(req *api.CXTSimulationRequest) *api.CXTSimulationSSCResult {
 	var waitingCh chan *api.CXTSimulationSSCResult
 	txHash := req.Tx.Hash()
@@ -59,17 +59,18 @@ func (sim *Simulator) StartSimulateCXTransaction(req *api.CXTSimulationRequest) 
 	}()
 
 	func() {
-		sim.simuLock.Lock()
-		defer sim.simuLock.Unlock()
-		if sim.simuWaitingChs[txHash] == nil {
-			sim.simuWaitingChs[txHash] = make([]chan *api.CXTSimulationSSCResult, 0)
-		} else {
+		ch := sim.getOrCreateChannels(txHash)
+		ch.mu.Lock()
+		if len(ch.waitingChs) > 0 || ch.resultCh != nil {
+			// 已有等待者或已设置结果通道 → 加入等待队列
 			waitingCh = make(chan *api.CXTSimulationSSCResult)
-			sim.simuWaitingChs[txHash] = append(sim.simuWaitingChs[txHash], waitingCh)
+			ch.waitingChs = append(ch.waitingChs, waitingCh)
 		}
-		if sim.simuResultCh[txHash] == nil {
-			sim.simuResultCh[txHash] = make(chan *api.CXTSimulationSSCResult, 1)
+		// else: 首次，不创建 waitingCh → 该 goroutine 自己跑模拟
+		if ch.resultCh == nil {
+			ch.resultCh = make(chan *api.CXTSimulationSSCResult, 1)
 		}
+		ch.mu.Unlock()
 	}()
 
 	if waitingCh != nil {
@@ -77,9 +78,11 @@ func (sim *Simulator) StartSimulateCXTransaction(req *api.CXTSimulationRequest) 
 	}
 
 	defer func() {
-		sim.simuLock.Lock()
-		delete(sim.simuWaitingChs, txHash)
-		sim.simuLock.Unlock()
+		if ch := sim.getChannels(txHash); ch != nil {
+			ch.mu.Lock()
+			ch.waitingChs = nil
+			ch.mu.Unlock()
+		}
 	}()
 
 	header := sim.bc.CurrentHeader()
@@ -260,14 +263,17 @@ func (sim *Simulator) StartSimulateCXTransaction(req *api.CXTSimulationRequest) 
 	var chs []chan *api.CXTSimulationSSCResult
 
 	func() {
-		sim.simuLock.Lock()
-		defer sim.simuLock.Unlock()
 		simState, _ := sim.GetSimState(txHash)
 		if simState != nil {
 			simState.SimulationCallStates[state.SimulationNum][0].TopSSCResult = sscResult
 			simState.SimulationResult = sscResult
 		}
-		chs = sim.simuWaitingChs[txHash]
+		if ch := sim.getChannels(txHash); ch != nil {
+			ch.mu.Lock()
+			chs = ch.waitingChs
+			ch.waitingChs = nil
+			ch.mu.Unlock()
+		}
 	}()
 
 	for _, ch := range chs {
@@ -306,12 +312,14 @@ func (sim *Simulator) StartSimulateCXTransaction(req *api.CXTSimulationRequest) 
 
 	var resultCh chan *api.CXTSimulationSSCResult
 	func() {
-		sim.simuLock.Lock()
-		defer sim.simuLock.Unlock()
-		if sim.simuResultCh[txHash] != nil {
-			resultCh = sim.simuResultCh[txHash]
-			close(sim.simuResultCh[txHash])
-			delete(sim.simuResultCh, txHash)
+		if ch := sim.getChannels(txHash); ch != nil {
+			ch.mu.Lock()
+			if ch.resultCh != nil {
+				resultCh = ch.resultCh
+				close(ch.resultCh)
+				ch.resultCh = nil
+			}
+			ch.mu.Unlock()
 		}
 	}()
 	if resultCh != nil {

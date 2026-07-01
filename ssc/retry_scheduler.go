@@ -57,11 +57,23 @@ var chainRetryStats struct {
 	ChainLengthMu  sync.Mutex
 	ChainLengthCnt map[int]int64 // simNum → 计数
 	ChainCommitCnt map[int]int64 // simNum → 成功提交计数
+
+	// 链式深度分布：按 ChainDepth 分桶统计
+	ChainDepthMu        sync.Mutex
+	ChainDepthCnt       map[int]int64
+	ChainDepthCommitCnt map[int]int64
+
+	// 被动池统计
+	SigPassiveAdd     atomic.Int64 // 进入被动池次数
+	SigPassiveWaken   atomic.Int64 // 被动池唤醒次数
+	SigPassiveTimeout atomic.Int64 // 被动池超时 close 数
 }
 
 func initChainRetryStats() {
 	chainRetryStats.ChainLengthCnt = make(map[int]int64)
 	chainRetryStats.ChainCommitCnt = make(map[int]int64)
+	chainRetryStats.ChainDepthCnt = make(map[int]int64)
+	chainRetryStats.ChainDepthCommitCnt = make(map[int]int64)
 }
 
 // dumpChainRetryStats 输出链式 Retry 统计到日志。
@@ -79,6 +91,19 @@ func dumpChainRetryStats() {
 	chainRetryStats.ChainLengthCnt = make(map[int]int64)
 	chainRetryStats.ChainCommitCnt = make(map[int]int64)
 	chainRetryStats.ChainLengthMu.Unlock()
+
+	chainRetryStats.ChainDepthMu.Lock()
+	depthCnt := make(map[int]int64, len(chainRetryStats.ChainDepthCnt))
+	for k, v := range chainRetryStats.ChainDepthCnt {
+		depthCnt[k] = v
+	}
+	depthCommitCnt := make(map[int]int64, len(chainRetryStats.ChainDepthCommitCnt))
+	for k, v := range chainRetryStats.ChainDepthCommitCnt {
+		depthCommitCnt[k] = v
+	}
+	chainRetryStats.ChainDepthCnt = make(map[int]int64)
+	chainRetryStats.ChainDepthCommitCnt = make(map[int]int64)
+	chainRetryStats.ChainDepthMu.Unlock()
 
 	utils.SSCLogger().Info().
 		Int64("chainNextScan", chainRetryStats.SigChainNextScan.Swap(0)).
@@ -105,6 +130,8 @@ func dumpChainRetryStats() {
 		Int64("retryCommitTryLockWounded", chainRetryStats.SigRetryCommitTryLockWounded.Swap(0)).
 		Interface("chainLengthDist", lenCnt).
 		Interface("chainCommitDist", commitCnt).
+		Interface("chainDepthDist", depthCnt).
+		Interface("chainDepthCommitDist", depthCommitCnt).
 		Msg("=== CHAIN_RETRY_STATS ===")
 }
 
@@ -132,21 +159,30 @@ type RetrySchedulerStateAccessor struct {
 	GetSimState func(txHash common.Hash) (*api.SimulationState, bool)
 
 	// 触发重试模拟
+	// 触发重试模拟
 	TriggerReSimulation func(txHash common.Hash, simulationNum int)
+
+	// 链上状态查询
+	IsOnChain func(txHash common.Hash) bool // 交易是否有活跃的链上 SimTx
+
+	// 直接关闭交易（用于重试超限时替代 PoolTimeout 兜底）
+	CloseTransaction func(txHash common.Hash, commitOrRollback bool, reason string)
 }
 
 func NewRetryScheduler(ctx context.Context, bc core.BlockChain, state *RetrySchedulerStateAccessor, comm *Comm, selfShard uint32, tempLockView *TempLockView) *retryScheduler {
 	rs := &retryScheduler{
-		ctx:          ctx,
-		tempLockView: tempLockView,
-		bc:           bc,
-		state:        state,
-		comm:         comm,
-		selfShard:    selfShard,
-		retryPool:    make(map[common.Hash]*api.RetryTx),
-		staleTxs:     make(map[common.Hash]struct{}),
-		signals:      make(map[common.Hash]map[int]map[uint32]*api.RetrySignal),
-		patches:      make(map[common.Hash]map[int]*api.ChainNode),
+		ctx:                   ctx,
+		tempLockView:          tempLockView,
+		bc:                    bc,
+		state:                 state,
+		comm:                  comm,
+		selfShard:             selfShard,
+		retryPool:             make(map[common.Hash]*api.RetryTx),
+		passivePool:           make(map[common.Hash]struct{}),
+		passivePoolEnterBlock: make(map[common.Hash]uint64),
+		staleTxs:              make(map[common.Hash]struct{}),
+		signals:               make(map[common.Hash]map[int]map[uint32]*api.RetrySignal),
+		patches:               make(map[common.Hash]map[int]*api.ChainNode),
 		patchPool: &api.PatchPool{
 			Patches:  make(map[common.Hash]*api.ChainPatchNode),
 			KeyIndex: make(map[api.LockKey]map[common.Hash]struct{}),
@@ -171,9 +207,11 @@ type retryScheduler struct {
 	mu sync.RWMutex
 
 	// 待重试交易池：txHash → RetryTx
-	retryPool map[common.Hash]*api.RetryTx
-	staleTxs  map[common.Hash]struct{}
-	signals   map[common.Hash]map[int]map[uint32]*api.RetrySignal // txHash -> simulationNum -> relatedShards -> signal
+	retryPool             map[common.Hash]*api.RetryTx
+	passivePool           map[common.Hash]struct{} // 被动池：标记"别 poll 了"
+	passivePoolEnterBlock map[common.Hash]uint64   // 进入被动池的区块号（用于超时）
+	staleTxs              map[common.Hash]struct{}
+	signals               map[common.Hash]map[int]map[uint32]*api.RetrySignal // txHash -> simulationNum -> relatedShards -> signal
 
 	// 链式 Patch 存储
 	// patches[txHash][simulationNum] = ChainNode
@@ -201,9 +239,42 @@ type retryScheduler struct {
 	ctx          context.Context
 	bc           core.BlockChain
 	tempLockView *TempLockView
-	state        *RetrySchedulerStateAccessor
-	comm         *Comm
-	selfShard    uint32
+	// 重试限制
+	maxRetriesTotal int // 从 TimeoutConfig 传入，AddToRetry 时检查
+	state           *RetrySchedulerStateAccessor
+	comm            *Comm
+	selfShard       uint32
+}
+
+// ─── 被动池接口 ────────────────────────────────────────────────
+
+func (rs *retryScheduler) AddToPassivePool(txHash common.Hash) {
+	rs.mu.Lock()
+	defer rs.mu.Unlock()
+	rs.passivePool[txHash] = struct{}{}
+	rs.passivePoolEnterBlock[txHash] = rs.bc.CurrentHeader().NumberU64()
+	chainRetryStats.SigPassiveAdd.Add(1)
+	utils.SSCLogger().Info().Str("txHash", txHash.Hex()).
+		Uint64("enterBlock", rs.passivePoolEnterBlock[txHash]).
+		Msg("AddToPassivePool: entered passive pool")
+}
+
+func (rs *retryScheduler) RemoveFromPassivePool(txHash common.Hash) {
+	t0 := time.Now()
+	rs.mu.Lock()
+	defer rs.mu.Unlock()
+	delete(rs.passivePool, txHash)
+	delete(rs.passivePoolEnterBlock, txHash)
+	utils.SSCLogger().Info().Str("txHash", txHash.Hex()).
+		Str("duration", time.Since(t0).String()).
+		Msg("RemoveFromPassivePool timing")
+}
+
+func (rs *retryScheduler) IsInPassivePool(txHash common.Hash) bool {
+	rs.mu.RLock()
+	defer rs.mu.RUnlock()
+	_, exists := rs.passivePool[txHash]
+	return exists
 }
 
 func (rs *retryScheduler) cycle() {
@@ -346,6 +417,10 @@ func (rs *retryScheduler) OnBlockCommitted(block *types.Block) {
 
 	// 判断交易是否可以重新模拟，并加入到signals中
 	for txHash, tx := range rs.retryPool {
+		// v2: 被动池中的 tx 不参与 poll（等 O 的 RetryCommit 唤醒）
+		if _, inPassive := rs.passivePool[txHash]; inPassive {
+			continue
+		}
 		signal := &api.RetrySignal{
 			TxHash:        tx.TxHash,
 			Epoch:         tx.Epochs[tx.OriginShardID],
@@ -386,9 +461,31 @@ func (rs *retryScheduler) OnBlockCommitted(block *types.Block) {
 		}
 	}
 
+	// v2: 扫描被动池超时
+	currentBlock := block.NumberU64()
+	var expiredPassive []common.Hash
+	for txHash, enterBlock := range rs.passivePoolEnterBlock {
+		if rs.maxRetriesTotal > 0 && currentBlock >= enterBlock+uint64(rs.maxRetriesTotal) {
+			expiredPassive = append(expiredPassive, txHash)
+		}
+	}
+	for _, txHash := range expiredPassive {
+		chainRetryStats.SigPassiveTimeout.Add(1)
+		delete(rs.passivePool, txHash)
+		delete(rs.passivePoolEnterBlock, txHash)
+	}
+	// 在锁外调用 closeTransaction
+	for _, txHash := range expiredPassive {
+		if rs.state.CloseTransaction != nil {
+			rs.state.CloseTransaction(txHash, false, api.PoolTimeout.String())
+		}
+	}
+
 	utils.SSCLogger().Info().
 		Int("poolSize", len(rs.retryPool)).
-		Uint64("blockNum", block.NumberU64()).
+		Int("passivePoolSize", len(rs.passivePool)).
+		Int("passiveExpired", len(expiredPassive)).
+		Uint64("blockNum", currentBlock).
 		Int("staleNum", staleNum).
 		Int("readyNum", shard2SignalReadyNum[rs.selfShard]).
 		Msg("retryScheduler onBlockCommitted")
@@ -739,6 +836,39 @@ func (rs *retryScheduler) tryToReSimulation(retryTx *api.RetryTx) {
 		rs.state.RetryFailCount()
 		chainRetryStats.SigRetryCommitFailed.Add(1)
 		utils.SSCLogger().Info().Str("txHash", txHash.Hex()).Msg("retry commit failed")
+
+		// v2: 如果失败原因是链上锁冲突，O 通知已 Locked=true 的分片进被动池
+		var hasOnChainConflict bool
+		var lockedShards []uint32
+		for shardId, resp := range resps {
+			if resp.OnChainLockConflict {
+				hasOnChainConflict = true
+			}
+			if resp.Locked {
+				lockedShards = append(lockedShards, shardId)
+			}
+		}
+		if hasOnChainConflict && len(lockedShards) > 0 {
+			for _, shardId := range lockedShards {
+				leader := rs.state.GetLeader(retryTx.Epochs[shardId], shardId)
+				if leader == nil {
+					continue
+				}
+				if shardId == rs.selfShard {
+					// 本地调用
+					rs.AddToPassivePool(txHash)
+				} else {
+					// RPC 调用
+					go func(leader *api.Member) {
+						if err := rs.comm.Call(rs.ctx, nil, leader, api.Method_AddToPassivePool, txHash); err != nil {
+							utils.SSCLogger().Error().Err(err).Str("txHash", txHash.Hex()).
+								Msg("tryToReSimulation: failed to notify passive pool")
+						}
+					}(leader)
+				}
+			}
+		}
+
 		// v4: Release consumed PatchPool entry so other retryTxs can use it
 		rs.mu.Lock()
 		if consumedSimTx, exists := rs.consumedPatches[txHash]; exists {
@@ -798,16 +928,29 @@ func (rs *retryScheduler) isStale(tx *api.RetryTx) bool {
 }
 
 func (rs *retryScheduler) StaleTx(txHash common.Hash) {
+	t0 := time.Now()
 	rs.tempLockView.GarbageCollect(txHash)
 
 	rs.mu.Lock()
 	defer rs.mu.Unlock()
 
 	rs.staleTxs[txHash] = struct{}{}
+	utils.SSCLogger().Info().Str("txHash", txHash.Hex()).
+		Str("duration", time.Since(t0).String()).
+		Msg("retryScheduler.StaleTx timing")
 }
 
 func (rs *retryScheduler) RetryCommit(txHash common.Hash) *api.RetryCommitResp {
 	chainRetryStats.SigRetryCommitCalled.Add(1)
+
+	// v2: 如果在被动池中，移出（被 O 的 RetrySignal 唤醒）
+	if _, inPassive := rs.passivePool[txHash]; inPassive {
+		delete(rs.passivePool, txHash)
+		delete(rs.passivePoolEnterBlock, txHash)
+		chainRetryStats.SigPassiveWaken.Add(1)
+		utils.SSCLogger().Info().Str("txHash", txHash.Hex()).
+			Msg("retryCommit: woken from passive pool")
+	}
 
 	// Check if this tx has been Wounded — if so, return failure immediately
 	if rs.tempLockView.IsWounded(txHash) {
@@ -886,7 +1029,12 @@ func (rs *retryScheduler) RetryCommit(txHash common.Hash) *api.RetryCommitResp {
 			utils.SSCLogger().Info().Str("txHash", txHash.Hex()).
 				Str("key", string(key)).Err(err).
 				Msg("retryCommit failed: stateDB lock conflict")
-			return &api.RetryCommitResp{Locked: false, TxHash: txHash}
+			// v2: 标记 on-chain 锁冲突，让 O 决定是否进被动池
+			return &api.RetryCommitResp{
+				Locked:              false,
+				TxHash:              txHash,
+				OnChainLockConflict: errors.Is(err, api.ErrLockConflict_OnChain),
+			}
 		}
 	}
 	for _, key := range retryTx.ReadSet {
@@ -895,7 +1043,12 @@ func (rs *retryScheduler) RetryCommit(txHash common.Hash) *api.RetryCommitResp {
 			utils.SSCLogger().Info().Str("txHash", txHash.Hex()).
 				Str("key", string(key)).Err(err).
 				Msg("retryCommit failed: stateDB lock conflict (read)")
-			return &api.RetryCommitResp{Locked: false, TxHash: txHash}
+			// v2: 标记 on-chain 锁冲突，让 O 决定是否进被动池
+			return &api.RetryCommitResp{
+				Locked:              false,
+				TxHash:              txHash,
+				OnChainLockConflict: errors.Is(err, api.ErrLockConflict_OnChain),
+			}
 		}
 	}
 
@@ -1069,11 +1222,13 @@ func (rs *retryScheduler) GetOnChainPatch(txHash common.Hash, simNum int) *api.C
 // RemoveOnChainPatch 从 onChainPatches 删除指定交易的 ChainNode。
 // 在 Committer.CommitOrRollbackWithProof 中调用（CR 完成后链上清理）。
 func (rs *retryScheduler) RemoveOnChainPatch(txHash common.Hash) {
+	t0 := time.Now()
 	rs.mu.Lock()
 	defer rs.mu.Unlock()
 	delete(rs.onChainPatches, txHash)
 	utils.SSCLogger().Info().Str("txHash", txHash.Hex()).
-		Msg("RemoveOnChainPatch: cleaned after CR")
+		Str("duration", time.Since(t0).String()).
+		Msg("RemoveOnChainPatch timing")
 }
 
 // ReadOnChainPatch 从 onChainPatches 递归读取指定 SimTx 的某 key 期望值。

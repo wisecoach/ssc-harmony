@@ -157,10 +157,14 @@ func (v *Verifier) deleteLockedSimNum(txHash common.Hash) {
 // Cleanup 清理某个 tx 的全部验证上下文。
 // 供 sscService.closeTransaction 调用。
 func (v *Verifier) Cleanup(txHash common.Hash) {
+	t0 := time.Now()
 	v.verifyCtxLock.Lock()
 	delete(v.executionVerifyContexts, txHash)
 	v.verifyCtxLock.Unlock()
 	delete(v.txLockedSimNum, txHash)
+	utils.SSCLogger().Info().Str("txHash", txHash.Hex()).
+		Str("duration", time.Since(t0).String()).
+		Msg("Verifier.Cleanup timing")
 }
 
 // GetResult 读取验证结果。实现 api.Service 中的 CXTStateSimulationDB 接口。
@@ -530,9 +534,17 @@ CallStates:
 // checkRetryLimitExceeded 检查链上重试次数是否超限
 func (v *Verifier) checkRetryLimitExceeded(txHash common.Hash, simulation *api.CXTSimulation) (bool, int) {
 	lockedSimNum, lockedExists := v.txLockedSimNum[txHash]
-	exceeded := lockedExists &&
-		simulation.SimulationNum >= lockedSimNum+int(v.timerMgr.GetTimeoutConfig().MaxOnChainRetries)
-	return exceeded, lockedSimNum
+	config := v.timerMgr.GetTimeoutConfig()
+
+	// 链上专用上限：从首次上锁到现在的重试次数
+	chainExceeded := lockedExists &&
+		simulation.SimulationNum >= lockedSimNum+int(config.MaxOnChainRetries)
+
+	// 总上限：全链路重试次数
+	totalExceeded := config.MaxRetriesTotal > 0 &&
+		simulation.SimulationNum >= int(config.MaxRetriesTotal)
+
+	return chainExceeded || totalExceeded, lockedSimNum
 }
 
 // sendRollbackVoteForRetry 发送 retry 超限的回滚投票
@@ -692,6 +704,14 @@ func (v *Verifier) checkLockConflict(simulation *api.CXTSimulation, stateDB api.
 	}
 
 	return len(conflictLockKeys) > 0
+}
+
+// HasOnChainSimTx 检查交易是否已有活跃的链上 SimTx（即之前上过链）
+func (v *Verifier) HasOnChainSimTx(txHash common.Hash) bool {
+	v.verifyCtxLock.RLock()
+	defer v.verifyCtxLock.RUnlock()
+	_, exists := v.txLockedSimNum[txHash]
+	return exists
 }
 
 // lockStateWithExecution 对某个 call state 执行上锁并重执行

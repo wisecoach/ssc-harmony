@@ -347,12 +347,10 @@ func (sim *Simulator) handlePendingRequest(
 
 	waitingCh := make(chan *api.CXTCallSSCResult, 1)
 
-	sim.pendingLock.Lock()
-	sim.pendingRequests[txHash] = append(sim.pendingRequests[txHash], &pendingCXTRequest{
+	sim.AddPendingRequest(txHash, &pendingCXTRequest{
 		req:       req,
 		waitingCh: waitingCh,
 	})
-	sim.pendingLock.Unlock()
 
 	utils.SSCLogger().Debug().
 		Str("txHash", txHash.Hex()).
@@ -365,16 +363,17 @@ func (sim *Simulator) handlePendingRequest(
 		return result
 	case <-cxtCtx.Done():
 		// 超时，从 pending 队列移除
-		sim.pendingLock.Lock()
-		pendingList := sim.pendingRequests[txHash]
-		newList := make([]*pendingCXTRequest, 0, len(pendingList))
-		for _, p := range pendingList {
-			if p.waitingCh != waitingCh {
-				newList = append(newList, p)
+		if l := sim.getPendingReqs(txHash); l != nil {
+			l.mu.Lock()
+			newList := make([]*pendingCXTRequest, 0, len(l.reqs))
+			for _, p := range l.reqs {
+				if p.waitingCh != waitingCh {
+					newList = append(newList, p)
+				}
 			}
+			l.reqs = newList
+			l.mu.Unlock()
 		}
-		sim.pendingRequests[txHash] = newList
-		sim.pendingLock.Unlock()
 		return &api.CXTCallSSCResult{
 			BaseBLSSignedMessage: api.BaseBLSSignedMessage{
 				Epochs: req.Epochs,
@@ -675,31 +674,33 @@ func (sim *Simulator) startCall(req *api.CXTCallSSCRequest) (*api.SimulationCall
 		}
 
 		// 处理 pending requests
-		sim.pendingLock.Lock()
 		utils.SSCLogger().Info().Str("txHash", txHash.Hex()).Str("callIndex", req.CallIndex.ToString()).Msgf("add callState, simulationNum=%d, callIndex=%s", tx.SimulationNum, req.CallIndex.ToString())
-		pendingList := sim.pendingRequests[txHash]
-		sim.pendingRequests[txHash] = make([]*pendingCXTRequest, 0)
-		if len(pendingList) > 0 {
-			for _, p := range pendingList {
-				if p.req.CallIndex[:len(p.req.CallIndex)-1].ToString() == callState.CallIndex.ToString() {
-					utils.SSCLogger().Info().
-						Str("txHash", txHash.Hex()).
-						Str("callIndex", req.CallIndex.ToString()).
-						Msg("processing pending CXT request")
-					go func(req *api.CXTCallRequest, ch chan *api.CXTCallSSCResult) {
-						result := sim.RequestCallCXT(req) // 递归调用，此时状态已存在
+		if l := sim.getPendingReqs(txHash); l != nil {
+			l.mu.Lock()
+			pendingList := l.reqs
+			l.reqs = make([]*pendingCXTRequest, 0)
+			if len(pendingList) > 0 {
+				for _, p := range pendingList {
+					if p.req.CallIndex[:len(p.req.CallIndex)-1].ToString() == callState.CallIndex.ToString() {
 						utils.SSCLogger().Info().
 							Str("txHash", txHash.Hex()).
 							Str("callIndex", req.CallIndex.ToString()).
-							Msg("finished processing pending CXT request")
-						ch <- result
-					}(p.req, p.waitingCh)
-				} else {
-					sim.pendingRequests[txHash] = append(sim.pendingRequests[txHash], p)
+							Msg("processing pending CXT request")
+						go func(req *api.CXTCallRequest, ch chan *api.CXTCallSSCResult) {
+							result := sim.RequestCallCXT(req) // 递归调用，此时状态已存在
+							utils.SSCLogger().Info().
+								Str("txHash", txHash.Hex()).
+								Str("callIndex", req.CallIndex.ToString()).
+								Msg("finished processing pending CXT request")
+							ch <- result
+						}(p.req, p.waitingCh)
+					} else {
+						l.reqs = append(l.reqs, p)
+					}
 				}
 			}
+			l.mu.Unlock()
 		}
-		sim.pendingLock.Unlock()
 	}
 	return callState, nil
 }
@@ -1074,7 +1075,7 @@ func (sim *Simulator) HandleSimulateRequest(ctx context.Context, req *api.CXTSim
 				if callState.LockedByOtherTx != nil && len(callState.LockedKeys) > 0 {
 					ret.ConflictKeys = callState.LockedKeys
 				}
-				ret.Err = "" // don't report error — we have full RWSet
+				ret.Err = api.ErrLockConflict_OnChain.Error()
 			} else {
 				ret.Err = result.VMErr.Error()
 			}

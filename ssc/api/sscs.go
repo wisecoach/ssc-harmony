@@ -31,6 +31,7 @@ const (
 	Method_HandleRetrySignal          = "ssc_handleRetrySignal"
 	Method_SLTest                     = "ssc_sLTest"
 	Method_HandleNewEpoch             = "ssc_handleNewEpoch"
+	Method_AddToPassivePool           = "ssc_addToPassivePool"
 )
 
 type ShardLocator interface {
@@ -222,6 +223,8 @@ type ShardService interface {
 	RetryCommit(txHash common.Hash) *RetryCommitResp
 
 	RetryCancel(txHash common.Hash)
+
+	AddToPassivePool(txHash common.Hash)
 
 	HandleNewEpoch(newEpoch *NewEpoch, blockNum uint64) error
 }

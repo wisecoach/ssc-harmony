@@ -1,6 +1,8 @@
 package ssc
 
 import (
+	"time"
+
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/harmony-one/harmony/internal/utils"
 	"github.com/harmony-one/harmony/ssc/api"
@@ -156,6 +158,7 @@ func (c *CXTTimerManager) GetTimeoutConfig() *api.TimeoutConfig {
 }
 
 func (c *CXTTimerManager) RemoveTx(txHash common.Hash) {
+	t0 := time.Now()
 	c.lock.Lock()
 	defer c.lock.Unlock()
 
@@ -171,4 +174,8 @@ func (c *CXTTimerManager) RemoveTx(txHash common.Hash) {
 		}
 	}
 	delete(c.txs, txHash)
+
+	utils.SSCLogger().Info().Str("txHash", txHash.Hex()).
+		Str("duration", time.Since(t0).String()).
+		Msg("CXTTimerManager.RemoveTx timing")
 }

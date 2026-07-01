@@ -41,27 +41,36 @@ type SimulatorStateAccessor struct {
 	CallForRetry func(tx *api.RetryTx)
 }
 
+// simuChannels 每笔交易独立的模拟结果通知通道，替代全局 simuLock 保护
+type simuChannels struct {
+	mu         sync.Mutex
+	waitingChs []chan *api.CXTSimulationSSCResult
+	resultCh   chan *api.CXTSimulationSSCResult
+}
+
+// pendingRequestList 每笔交易独立的 pending 请求列表，替代全局 pendingLock 保护
+type pendingRequestList struct {
+	mu   sync.Mutex
+	reqs []*pendingCXTRequest
+}
+
 // Simulator 负责跨分片交易的模拟执行。
 // 自管理 SimulationState、callStatesInWaiting、worker pool 等存储。
 type Simulator struct {
 	state SimulatorStateAccessor
 
-	// 自管理存储：SimulationState
-	simStates map[common.Hash]*api.SimulationState
-	simLock   lm.RWMutex
+	// 自管理存储：SimulationState（per-tx sync.Map 替代全局 lm.RWMutex）
+	simStates sync.Map // key: common.Hash, value: *api.SimulationState
 
 	// 自管理存储：call 同步
 	syncLock            lm.Mutex
 	callStatesInWaiting map[common.Hash][]*api.SimulationCallState
 
-	// 自管理存储：simulation 结果通知
-	simuLock       lm.Mutex
-	simuWaitingChs map[common.Hash][]chan *api.CXTSimulationSSCResult
-	simuResultCh   map[common.Hash]chan *api.CXTSimulationSSCResult
+	// 自管理存储：simulation 结果通知（per-tx sync.Map）
+	simuChMap sync.Map // key: common.Hash, value: *simuChannels
 
-	// 自管理存储：pending requests
-	pendingLock     sync.Mutex
-	pendingRequests map[common.Hash][]*pendingCXTRequest
+	// 自管理存储：pending requests（per-tx sync.Map）
+	pendingReqsMap sync.Map // key: common.Hash, value: *pendingRequestList
 
 	// worker pool
 	simulateSemaphore chan struct{}
@@ -120,11 +129,7 @@ func NewSimulator(
 	return &Simulator{
 		state:               state,
 		sscService:          sscService,
-		simStates:           make(map[common.Hash]*api.SimulationState),
 		callStatesInWaiting: make(map[common.Hash][]*api.SimulationCallState),
-		simuWaitingChs:      make(map[common.Hash][]chan *api.CXTSimulationSSCResult),
-		simuResultCh:        make(map[common.Hash]chan *api.CXTSimulationSSCResult),
-		pendingRequests:     make(map[common.Hash][]*pendingCXTRequest),
 		simulateSemaphore:   make(chan struct{}, numWorkers),
 		simulateTaskPQ:      newSimulationReqPriorityQueue(),
 		numWorkers:          numWorkers,
@@ -140,32 +145,34 @@ func NewSimulator(
 
 // ===== SimulationState 存储访问 =====
 
-// GetSimState 读取 SimulationState（带锁）
+// GetSimState 读取 SimulationState（sync.Map 原子读）
 func (sim *Simulator) GetSimState(txHash common.Hash) (*api.SimulationState, bool) {
-	sim.simLock.RLock()
-	defer sim.simLock.RUnlock()
-	state, ok := sim.simStates[txHash]
-	return state, ok
+	val, ok := sim.simStates.Load(txHash)
+	if !ok {
+		return nil, false
+	}
+	return val.(*api.SimulationState), true
 }
 
-// SetSimState 写入 SimulationState（带锁）
+// SetSimState 写入 SimulationState（sync.Map 原子写）
 func (sim *Simulator) SetSimState(txHash common.Hash, state *api.SimulationState) {
-	sim.simLock.Lock()
-	defer sim.simLock.Unlock()
-	sim.simStates[txHash] = state
+	sim.simStates.Store(txHash, state)
 }
 
-// DeleteSimState 删除 SimulationState（带锁）
+// SetChainPatch 为指定交易设置 ChainPatch（原子读 + 字段写，指针稳定）
+func (sim *Simulator) SetChainPatch(txHash common.Hash, patch *api.RWSet) {
+	if state, ok := sim.GetSimState(txHash); ok && state != nil {
+		state.ChainPatch = patch
+	}
+}
+
+// DeleteSimState 删除 SimulationState（sync.Map 原子删）
 func (sim *Simulator) DeleteSimState(txHash common.Hash) {
-	sim.simLock.Lock()
-	defer sim.simLock.Unlock()
-	delete(sim.simStates, txHash)
+	sim.simStates.Delete(txHash)
 }
 
 func (sim *Simulator) GetBlockHash(txHash common.Hash) (common.Hash, bool) {
-	sim.simLock.RLock()
-	defer sim.simLock.RUnlock()
-	state, ok := sim.simStates[txHash]
+	state, ok := sim.GetSimState(txHash)
 	if !ok {
 		return common.Hash{}, false
 	}
@@ -183,23 +190,26 @@ func (sim *Simulator) GetBlockHash(txHash common.Hash) (common.Hash, bool) {
 // Cleanup 清理 Simulator 中该交易的所有资源。
 // 由 sscService.closeTransaction 调用。
 func (sim *Simulator) Cleanup(txHash common.Hash) {
+	t0 := time.Now()
 	sim.DeleteSimState(txHash)
+	tDelSim := time.Since(t0)
 
-	// 清理 pending requests
-	sim.pendingLock.Lock()
-	delete(sim.pendingRequests, txHash)
-	sim.pendingLock.Unlock()
+	// 清理 pending requests（原子删除，无需 per-entry lock）
+	sim.pendingReqsMap.Delete(txHash)
+	tPending := time.Since(t0)
 
-	// 清理 simulation 结果 channel
-	sim.simuLock.Lock()
-	delete(sim.simuResultCh, txHash)
-	delete(sim.simuWaitingChs, txHash)
-	sim.simuLock.Unlock()
+	// 清理 simulation 结果 channel（原子删除，无需 per-entry lock）
+	sim.simuChMap.Delete(txHash)
 
 	// 清理 call states in waiting
 	sim.syncLock.Lock()
 	delete(sim.callStatesInWaiting, txHash)
 	sim.syncLock.Unlock()
+
+	utils.SSCLogger().Info().Str("txHash", txHash.Hex()).
+		Str("delSimState", tDelSim.String()).
+		Str("pendingLock", tPending.String()).
+		Msg("Simulator.Cleanup timing")
 }
 
 // ===== callStatesInWaiting 存储访问 =====
@@ -260,61 +270,110 @@ func (sim *Simulator) AddCallStatesInWaiting(txHash common.Hash, callState *api.
 	sim.callStatesInWaiting[txHash] = append(sim.callStatesInWaiting[txHash], callState)
 }
 
-// ===== simuResultCh 存储访问 =====
+// ===== simuChannels 存储访问（per-tx sync.Map） =====
+
+// getOrCreateChannels 获取或创建 per-tx 的 simuChannels
+func (sim *Simulator) getOrCreateChannels(txHash common.Hash) *simuChannels {
+	val, _ := sim.simuChMap.LoadOrStore(txHash, &simuChannels{})
+	return val.(*simuChannels)
+}
+
+// getChannels 只读获取（不创建）
+func (sim *Simulator) getChannels(txHash common.Hash) *simuChannels {
+	val, ok := sim.simuChMap.Load(txHash)
+	if !ok {
+		return nil
+	}
+	return val.(*simuChannels)
+}
 
 // GetSimuResultCh 获取 simulation 结果 channel
 func (sim *Simulator) GetSimuResultCh(txHash common.Hash) chan *api.CXTSimulationSSCResult {
-	sim.simuLock.Lock()
-	defer sim.simuLock.Unlock()
-	return sim.simuResultCh[txHash]
+	ch := sim.getChannels(txHash)
+	if ch == nil {
+		return nil
+	}
+	ch.mu.Lock()
+	ret := ch.resultCh
+	ch.mu.Unlock()
+	return ret
 }
 
 // SetSimuResultCh 设置 simulation 结果 channel
 func (sim *Simulator) SetSimuResultCh(txHash common.Hash, ch chan *api.CXTSimulationSSCResult) {
-	sim.simuLock.Lock()
-	defer sim.simuLock.Unlock()
-	sim.simuResultCh[txHash] = ch
+	c := sim.getOrCreateChannels(txHash)
+	c.mu.Lock()
+	c.resultCh = ch
+	c.mu.Unlock()
 }
 
 // DeleteSimuResultCh 删除 simulation 结果 channel
 func (sim *Simulator) DeleteSimuResultCh(txHash common.Hash) {
-	sim.simuLock.Lock()
-	defer sim.simuLock.Unlock()
-	delete(sim.simuResultCh, txHash)
+	if ch := sim.getChannels(txHash); ch != nil {
+		ch.mu.Lock()
+		ch.resultCh = nil
+		ch.mu.Unlock()
+	}
 }
 
 // AddSimuWaitingCh 添加等待通知的 channel
 func (sim *Simulator) AddSimuWaitingCh(txHash common.Hash, ch chan *api.CXTSimulationSSCResult) {
-	sim.simuLock.Lock()
-	defer sim.simuLock.Unlock()
-	sim.simuWaitingChs[txHash] = append(sim.simuWaitingChs[txHash], ch)
+	c := sim.getOrCreateChannels(txHash)
+	c.mu.Lock()
+	c.waitingChs = append(c.waitingChs, ch)
+	c.mu.Unlock()
 }
 
 // PopSimuWaitingChs 取出并删除所有等待的 channel
 func (sim *Simulator) PopSimuWaitingChs(txHash common.Hash) []chan *api.CXTSimulationSSCResult {
-	sim.simuLock.Lock()
-	defer sim.simuLock.Unlock()
-	chs := sim.simuWaitingChs[txHash]
-	delete(sim.simuWaitingChs, txHash)
+	c := sim.getChannels(txHash)
+	if c == nil {
+		return nil
+	}
+	c.mu.Lock()
+	chs := c.waitingChs
+	c.waitingChs = nil
+	c.mu.Unlock()
 	return chs
 }
 
-// ===== pendingRequests 存储访问 =====
+// ===== pendingRequests 存储访问（per-tx sync.Map） =====
+
+// getOrCreatePendingReqs 获取或创建 per-tx 的 pendingRequestList
+func (sim *Simulator) getOrCreatePendingReqs(txHash common.Hash) *pendingRequestList {
+	val, _ := sim.pendingReqsMap.LoadOrStore(txHash, &pendingRequestList{})
+	return val.(*pendingRequestList)
+}
+
+// getPendingReqs 只读获取（不创建）
+func (sim *Simulator) getPendingReqs(txHash common.Hash) *pendingRequestList {
+	val, ok := sim.pendingReqsMap.Load(txHash)
+	if !ok {
+		return nil
+	}
+	return val.(*pendingRequestList)
+}
 
 // PopPendingRequests 取出并删除 pending requests
 func (sim *Simulator) PopPendingRequests(txHash common.Hash) []*pendingCXTRequest {
-	sim.pendingLock.Lock()
-	defer sim.pendingLock.Unlock()
-	reqs := sim.pendingRequests[txHash]
-	delete(sim.pendingRequests, txHash)
+	val, ok := sim.pendingReqsMap.LoadAndDelete(txHash)
+	if !ok {
+		return nil
+	}
+	l := val.(*pendingRequestList)
+	l.mu.Lock()
+	reqs := l.reqs
+	l.reqs = nil
+	l.mu.Unlock()
 	return reqs
 }
 
 // AddPendingRequest 添加 pending request
 func (sim *Simulator) AddPendingRequest(txHash common.Hash, req *pendingCXTRequest) {
-	sim.pendingLock.Lock()
-	defer sim.pendingLock.Unlock()
-	sim.pendingRequests[txHash] = append(sim.pendingRequests[txHash], req)
+	l := sim.getOrCreatePendingReqs(txHash)
+	l.mu.Lock()
+	l.reqs = append(l.reqs, req)
+	l.mu.Unlock()
 }
 
 // ===== Worker Pool =====
@@ -860,7 +919,7 @@ func (sim *Simulator) GetState(db api.StateDB, txHash common.Hash, address commo
 	if value, exists := rwset.CurrentState.State[address][key]; !exists {
 		val, err := db.GetState(txHash, address, key)
 		if err != nil {
-			if errors.Is(err, api.ErrLockConflict_OnChain) {
+			if api.IsLockConflictDBErr(err) {
 				callState.LockedByOtherTx = err
 				callState.LockedKeys = append(callState.LockedKeys, api.FormKey(address, key))
 			} else {
@@ -935,7 +994,7 @@ func (sim *Simulator) SetState(db api.StateDB, txHash common.Hash, address commo
 			if err != nil {
 				utils.SSCLogger().Error().Err(err).Str("txHash", txHash.Hex()).
 					Msgf("failed to set state: get conflict state [%s:%s]", address.Hex(), key.Hex())
-				if errors.Is(err, api.ErrLockConflict_OnChain) {
+				if api.IsLockConflictDBErr(err) {
 					callState.LockedByOtherTx = err
 					callState.LockedKeys = append(callState.LockedKeys, api.FormKey(address, key))
 					// ForceSimulation: return the stale value from stateDB to continue execution

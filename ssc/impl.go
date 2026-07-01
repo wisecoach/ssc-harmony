@@ -129,9 +129,7 @@ type sscService struct {
 	Config *api.Config
 	bc     core.BlockChain
 
-	stateLock   lm.RWMutex // cmLock for txStates, finishedTxs
-	txStates    map[common.Hash]*api.TxState
-	finishedTxs map[common.Hash]bool
+	txStates sync.Map // key: common.Hash, value: *api.TxState, 带 per-tx mu
 
 	// 验证上下文 now managed by Verifier
 	// verifyCtxLock           lm.RWMutex
@@ -147,7 +145,8 @@ type sscService struct {
 	stats        *SimulationStats // experiment statistics
 
 	// tx block trace: 记录各阶段块高度用于分析延迟
-	txTraces map[common.Hash]*TxBlockTrace
+	txTraces  map[common.Hash]*TxBlockTrace
+	traceLock sync.Mutex // 保护 txTraces，不借用 Simulator.simuLock
 }
 
 func (s *sscService) GetShardID(address common.Address) uint32 {
@@ -168,11 +167,8 @@ func newBaseService(ctx context.Context, config *api.Config, cm *CommitteeMechan
 		Config:             config,
 		bc:                 bc,
 		stats:              newSimulationStats(),
-		stateLock:          lm.NewRWMutex(),
 		commitLock:         lm.NewRWMutex(),
-		txStates:           make(map[common.Hash]*api.TxState),
 		commitStates:       make(map[common.Hash]*api.CommitState),
-		finishedTxs:        make(map[common.Hash]bool),
 		ctx:                ctx,
 		chainHeadCh:        make(chan core.ChainHeadEvent, 10),
 		chainHeadSub:       nil,
@@ -198,15 +194,7 @@ func newBaseService(ctx context.Context, config *api.Config, cm *CommitteeMechan
 		RetrySuccessCount:   func() { service.stats.RetrySuccessCount.Add(1) },
 		RetryFailCount:      func() { service.stats.RetryFailCount.Add(1) },
 		SetChainPatch: func(txHash common.Hash, patch *api.RWSet) {
-			service.stateLock.Lock()
-			defer service.stateLock.Unlock()
-			if tx := service.txStates[txHash]; tx != nil {
-				// ChainPatch 存储在 Simulator 中
-				sim, ok := service.Simulator.GetSimState(txHash)
-				if ok && sim != nil {
-					sim.ChainPatch = patch
-				}
-			}
+			service.Simulator.SetChainPatch(txHash, patch)
 		},
 		GetSimState: func(txHash common.Hash) (*api.SimulationState, bool) {
 			return service.Simulator.GetSimState(txHash)
@@ -214,50 +202,63 @@ func newBaseService(ctx context.Context, config *api.Config, cm *CommitteeMechan
 		TriggerReSimulation: func(txHash common.Hash, simulationNum int) {
 			service.Simulator.StartReSimulation(txHash, simulationNum)
 		},
+		IsOnChain: func(txHash common.Hash) bool {
+			return service.Verifier != nil && service.Verifier.HasOnChainSimTx(txHash)
+		},
+		CloseTransaction: func(txHash common.Hash, commitOrRollback bool, reason string) {
+			service.closeTransaction(txHash, commitOrRollback, reason)
+		},
 	}, comm, service.SelfShard, service.tempLockView)
+	// 从 TimeoutConfig 传入重试限制
+	if sscConfig.Timeout != nil && sscConfig.Timeout.MaxRetriesTotal > 0 {
+		service.retryScheduler.maxRetriesTotal = int(sscConfig.Timeout.MaxRetriesTotal)
+	}
 
 	// 创建 Simulator（自管理 SimulationState + callStatesInWaiting + worker pool）
 	simComm := NewSimulatorCommunicator(comm, signerMgr, service.CommitteeMechanism, config, ctx)
 	service.Simulator = NewSimulator(
 		SimulatorStateAccessor{
 			GetTxState: func(txHash common.Hash) (*api.TxState, error) {
-				service.stateLock.RLock()
-				defer service.stateLock.RUnlock()
-				if tx := service.txStates[txHash]; tx != nil {
+				if val, ok := service.txStates.Load(txHash); ok {
+					tx := val.(*api.TxState)
+					tx.Mu.Lock()
+					defer tx.Mu.Unlock()
+					if tx.Closed {
+						return nil, api.ErrTxHasBeenClosed
+					}
 					return tx, nil
-				}
-				if _, exists := service.finishedTxs[txHash]; exists {
-					return nil, api.ErrTxHasBeenClosed
 				}
 				return nil, api.ErrTxNotExist
 			},
 			SetTxStatus: func(txHash common.Hash, status api.CXTStatus) {
-				service.stateLock.Lock()
-				defer service.stateLock.Unlock()
-				if tx := service.txStates[txHash]; tx != nil {
+				if val, ok := service.txStates.Load(txHash); ok {
+					tx := val.(*api.TxState)
+					tx.Mu.Lock()
 					tx.Status = status
+					tx.Mu.Unlock()
 				}
 			},
 			MergeRelatedShards: func(txHash common.Hash, newShards api.RelatedShards) api.RelatedShards {
-				service.stateLock.Lock()
-				defer service.stateLock.Unlock()
-				if tx := service.txStates[txHash]; tx != nil {
+				if val, ok := service.txStates.Load(txHash); ok {
+					tx := val.(*api.TxState)
+					tx.Mu.Lock()
 					tx.RelatedShards = tx.RelatedShards.Merge(newShards)
-					return tx.RelatedShards
+					ret := tx.RelatedShards
+					tx.Mu.Unlock()
+					return ret
 				}
 				return newShards
 			},
 			SetSimulationNum: func(txHash common.Hash, num int) {
-				service.stateLock.Lock()
-				defer service.stateLock.Unlock()
-				if tx := service.txStates[txHash]; tx != nil {
+				if val, ok := service.txStates.Load(txHash); ok {
+					tx := val.(*api.TxState)
+					tx.Mu.Lock()
 					tx.SimulationNum = num
+					tx.Mu.Unlock()
 				}
 			},
 			CreateTxState: func(txHash common.Hash, txState *api.TxState) {
-				service.stateLock.Lock()
-				defer service.stateLock.Unlock()
-				service.txStates[txHash] = txState
+				service.txStates.Store(txHash, txState)
 			},
 			GetCommitStates: func() map[common.Hash]*api.CommitState {
 				return service.commitStates
@@ -266,7 +267,7 @@ func newBaseService(ctx context.Context, config *api.Config, cm *CommitteeMechan
 				return &service.commitLock
 			},
 			GetFinishedTxs: func() map[common.Hash]bool {
-				return service.finishedTxs
+				return nil
 			},
 			CallForRetry: func(tx *api.RetryTx) {
 				service.retryScheduler.CallForRetry(tx)
@@ -295,23 +296,29 @@ func newBaseService(ctx context.Context, config *api.Config, cm *CommitteeMechan
 		service.retryScheduler,
 		VerifierStateAccessor{
 			SetStatus: func(txHash common.Hash, status api.CXTStatus) {
-				service.stateLock.Lock()
-				defer service.stateLock.Unlock()
-				if tx := service.txStates[txHash]; tx != nil {
+				if val, ok := service.txStates.Load(txHash); ok {
+					tx := val.(*api.TxState)
+					tx.Mu.Lock()
 					tx.Status = status
+					tx.Mu.Unlock()
 				}
 			},
 			IsTxFinished: func(txHash common.Hash) bool {
-				service.stateLock.RLock()
-				defer service.stateLock.RUnlock()
-				_, finished := service.finishedTxs[txHash]
-				return finished
+				if val, ok := service.txStates.Load(txHash); ok {
+					tx := val.(*api.TxState)
+					tx.Mu.Lock()
+					closed := tx.Closed
+					tx.Mu.Unlock()
+					return closed
+				}
+				return false
 			},
 			SetWaitingForResimu: func(txHash common.Hash) {
-				service.stateLock.Lock()
-				defer service.stateLock.Unlock()
-				if tx := service.txStates[txHash]; tx != nil {
+				if val, ok := service.txStates.Load(txHash); ok {
+					tx := val.(*api.TxState)
+					tx.Mu.Lock()
 					tx.Status = api.WAITING_FOR_RESIMULATING_ON_CHAIN
+					tx.Mu.Unlock()
 				}
 			},
 		},
@@ -322,16 +329,21 @@ func newBaseService(ctx context.Context, config *api.Config, cm *CommitteeMechan
 		service.stats,
 		CommitterStateAccessor{
 			IsTxFinished: func(txHash common.Hash) bool {
-				service.stateLock.RLock()
-				defer service.stateLock.RUnlock()
-				_, finished := service.finishedTxs[txHash]
-				return finished
+				if val, ok := service.txStates.Load(txHash); ok {
+					tx := val.(*api.TxState)
+					tx.Mu.Lock()
+					closed := tx.Closed
+					tx.Mu.Unlock()
+					return closed
+				}
+				return false
 			},
 			SetStatus: func(txHash common.Hash, status api.CXTStatus) {
-				service.stateLock.Lock()
-				defer service.stateLock.Unlock()
-				if tx := service.txStates[txHash]; tx != nil {
+				if val, ok := service.txStates.Load(txHash); ok {
+					tx := val.(*api.TxState)
+					tx.Mu.Lock()
 					tx.Status = status
+					tx.Mu.Unlock()
 				}
 			},
 			CloseTx: func(txHash common.Hash, success bool, reason string) {
@@ -438,10 +450,15 @@ func (s *sscService) handleTxSp1Timeout(info txInfo) {
 func (s *sscService) handleTxPoolTimeout(info txInfo) {
 	txHash := info.txHash
 	existsOnChain := s.Verifier.HasVerifyContext(txHash)
-	s.stateLock.RLock()
-	_, exists := s.txStates[txHash]
-	s.stateLock.RUnlock()
-	if !exists {
+	if val, ok := s.txStates.Load(txHash); ok {
+		tx := val.(*api.TxState)
+		tx.Mu.Lock()
+		exists := !tx.Closed
+		tx.Mu.Unlock()
+		if !exists {
+			return
+		}
+	} else {
 		return
 	}
 	if existsOnChain {
@@ -553,11 +570,12 @@ func (s *sscService) SignCXTSimulation(simulation *api.CXTSimulation) []byte {
 	txHash := simulation.TxHash
 	// stop pool timer
 	s.timerMgr.removePoolTx(txHash)
-	s.stateLock.Lock()
-	if tx := s.txStates[txHash]; tx != nil {
+	if val, ok := s.txStates.Load(txHash); ok {
+		tx := val.(*api.TxState)
+		tx.Mu.Lock()
 		tx.RelatedShards = simulation.RelatedShards
+		tx.Mu.Unlock()
 	}
-	s.stateLock.Unlock()
 	signature, err := s.BLSSignerMgr.GetSSCSigner().Sign(simulation)
 	if err != nil {
 		utils.SSCLogger().Error().Err(err).Str("txHash", simulation.TxHash.Hex()).Msgf("failed to sign simulation commit, txHash: %s", simulation.TxHash.Hex())
@@ -585,11 +603,12 @@ func (s *sscService) HandleCommitVote(vote *api.CXTCommitVote) {
 	reachThreshold := false
 	var sscVote *api.CXTCommitSSCVote
 	txHash := vote.TxHash
-	s.stateLock.Lock()
-	if tx := s.txStates[txHash]; tx != nil {
+	if val, ok := s.txStates.Load(txHash); ok {
+		tx := val.(*api.TxState)
+		tx.Mu.Lock()
 		tx.Status = api.BUILDING_COMMIT_PROOF
+		tx.Mu.Unlock()
 	}
-	s.stateLock.Unlock()
 
 	func() {
 		s.commitLock.Lock()
@@ -727,16 +746,17 @@ func (s *sscService) CommitSimulation(commit *api.SimulationCommit) {
 		return
 	}
 
+	var tx *api.TxState
 	// update related shards
-	s.stateLock.Lock()
-	tx, err := s.getTxStateLocked(txHash)
-	if err != nil {
-		s.stateLock.Unlock()
-		utils.SSCLogger().Error().Str("txHash", txHash.Hex()).Err(err).Msg("commit simulation failed")
+	if val, ok := s.txStates.Load(txHash); ok {
+		tx = val.(*api.TxState)
+		tx.Mu.Lock()
+		tx.RelatedShards = tx.RelatedShards.Merge(commit.RelatedShards)
+		tx.Mu.Unlock()
+	} else {
+		utils.SSCLogger().Error().Str("txHash", txHash.Hex()).Err(api.ErrTxNotExist).Msg("commit simulation failed")
 		return
 	}
-	tx.RelatedShards = tx.RelatedShards.Merge(commit.RelatedShards)
-	s.stateLock.Unlock()
 
 	// build commit simulation — 从 Simulator 获取 callStates
 	callStates, err := s.Simulator.BuildCallStates(txHash, commit.SimulationNum)
@@ -807,10 +827,15 @@ func (s *sscService) CommitSimulation(commit *api.SimulationCommit) {
 
 	// SimTx 提交成功后，统计链式深度
 	if upstreamTxHash != (common.Hash{}) {
-		// 是链式交易，记录提交深度
+		// 是链式交易，记录提交深度（simNum=链深度）
 		chainRetryStats.ChainLengthMu.Lock()
 		chainRetryStats.ChainCommitCnt[commit.SimulationNum]++
 		chainRetryStats.ChainLengthMu.Unlock()
+
+		// 记录链式依赖深度
+		chainRetryStats.ChainDepthMu.Lock()
+		chainRetryStats.ChainDepthCommitCnt[commit.SimulationNum]++
+		chainRetryStats.ChainDepthMu.Unlock()
 	}
 
 	// SimTx 提交成功后，检查是否可以链式触发依赖它的 retry tx（DAG chaining）
@@ -821,17 +846,16 @@ func (s *sscService) CommitSimulation(commit *api.SimulationCommit) {
 		// Trigger matching for retryPool entries
 		s.retryScheduler.OnPatchPoolUpdated()
 	}
-
 	s.stats.setCxtStage(txHash, 2)
-	s.stateLock.Lock()
-	tx, err = s.getTxStateLocked(txHash)
-	if err != nil {
-		s.stateLock.Unlock()
-		utils.SSCLogger().Error().Str("txHash", txHash.Hex()).Err(err).Msg("commit simulation failed")
+	if val, ok := s.txStates.Load(txHash); ok {
+		tx := val.(*api.TxState)
+		tx.Mu.Lock()
+		tx.Status = api.SIMULATION_COMMMITTING
+		tx.Mu.Unlock()
+	} else {
+		utils.SSCLogger().Error().Str("txHash", txHash.Hex()).Err(api.ErrTxNotExist).Msg("commit simulation failed")
 		return
 	}
-	tx.Status = api.SIMULATION_COMMMITTING
-	s.stateLock.Unlock()
 	utils.SSCLogger().Info().Str("txHash", txHash.Hex()).Msgf("simulation committed")
 }
 
@@ -929,19 +953,22 @@ func (s *sscService) HandleCXTCommitSSCVote(vote *api.CXTCommitSSCVote) {
 		return
 	}
 	txHash := vote.TxHash
-	s.stateLock.RLock()
-	tx, err := s.getTxStateLocked(txHash)
-	if err != nil {
-		s.stateLock.RUnlock()
-		if errors.Is(err, api.ErrTxHasBeenClosed) {
+	var tx *api.TxState
+	var relatedShards api.RelatedShards
+	if val, ok := s.txStates.Load(txHash); ok {
+		tx = val.(*api.TxState)
+		tx.Mu.Lock()
+		if tx.Closed {
+			tx.Mu.Unlock()
 			utils.SSCLogger().Info().Str("txHash", txHash.Hex()).Msg("handle commit ssc vote: tx already closed, drop vote")
-		} else {
-			utils.SSCLogger().Error().Str("txHash", txHash.Hex()).Err(err).Msg("handle commit ssc vote failed: state not found")
+			return
 		}
+		relatedShards = tx.RelatedShards
+		tx.Mu.Unlock()
+	} else {
+		utils.SSCLogger().Error().Str("txHash", txHash.Hex()).Err(api.ErrTxNotExist).Msg("handle commit ssc vote failed: state not found")
 		return
 	}
-	relatedShards := tx.RelatedShards
-	s.stateLock.RUnlock()
 
 	if !relatedShards.Contains(vote.ShardId) {
 		utils.SSCLogger().Error().Msgf("shard %d is not related to tx %s", vote.ShardId, txHash.String())
@@ -1055,138 +1082,53 @@ func (s *sscService) HandleCXTCommitProof(proof *api.CXTCommitProof) {
 		if proof.TxHash[0] == 0 {
 			s.txSubmitter.SubmitCommitOrRollbackTx(proof)
 		}
-		s.stateLock.Lock()
-		tx, err := s.getTxStateLocked(proof.TxHash)
-		if err != nil {
-			utils.SSCLogger().Error().Err(err).Msg("failed to get state")
-			s.stateLock.Unlock()
+		if val, ok := s.txStates.Load(proof.TxHash); ok {
+			tx := val.(*api.TxState)
+			tx.Mu.Lock()
+			if proof.Type == api.Commit {
+				tx.Status = api.CXT_COMMITTING
+			} else {
+				tx.Status = api.CXT_ROLLBACKING
+			}
+			tx.Mu.Unlock()
+		} else {
+			utils.SSCLogger().Error().Err(api.ErrTxNotExist).Msg("failed to get state")
 			return
 		}
-		if proof.Type == api.Commit {
-			tx.Status = api.CXT_COMMITTING
-		} else {
-			tx.Status = api.CXT_ROLLBACKING
-		}
-		s.stateLock.Unlock()
 	}
-}
-
-// getTxState 读取交易公共状态（自动加锁）
-func (s *sscService) getTxState(txHash common.Hash) (*api.TxState, error) {
-	s.stateLock.RLock()
-	defer s.stateLock.RUnlock()
-	return s.getTxStateLocked(txHash)
-}
-
-// getTxStateLocked 读取交易公共状态（调用方需持有 stateLock）
-func (s *sscService) getTxStateLocked(txHash common.Hash) (*api.TxState, error) {
-	if tx := s.txStates[txHash]; tx != nil {
-		return tx, nil
-	}
-	if _, exists := s.finishedTxs[txHash]; exists {
-		return nil, api.ErrTxHasBeenClosed
-	}
-	return nil, api.ErrTxNotExist
-}
-
-// getState 兼容旧代码：从 TxState + SimulationState 构造 CXTSimulationState 返回。
-// TODO: 逐步迁移后删除此函数。
-func (s *sscService) getState(txHash common.Hash) (*api.CXTSimulationState, error) {
-	tx, err := s.getTxStateLocked(txHash)
-	if err != nil {
-		return nil, err
-	}
-	sim, _ := s.Simulator.GetSimState(txHash)
-	return &api.CXTSimulationState{
-		Nonce:         tx.Nonce,
-		TxSender:      tx.TxSender,
-		Epochs:        tx.Epochs,
-		Status:        tx.Status,
-		SimulationNum: tx.SimulationNum,
-		OriginShardId: tx.OriginShardId,
-		RelatedShards: tx.RelatedShards,
-		RetrySignals:  tx.RetrySignals,
-		Ctx:           tx.Ctx,
-		CtxCancel:     tx.CtxCancel,
-		// SimulationState 字段（可能为 nil）
-		CurrentCallFrame: func() *api.CallFrame {
-			if sim != nil {
-				return sim.CurrentCallFrame
-			}
-			return nil
-		}(),
-		CallStack: func() *api.CallStack {
-			if sim != nil {
-				return sim.CallStack
-			}
-			return nil
-		}(),
-		SimulationRequest: func() *api.CXTSimulationRequest {
-			if sim != nil {
-				return sim.SimulationRequest
-			}
-			return nil
-		}(),
-		SimulationResult: func() *api.CXTSimulationSSCResult {
-			if sim != nil {
-				return sim.SimulationResult
-			}
-			return nil
-		}(),
-		SimulationCallStates: func() map[int]api.SimulationCallStates {
-			if sim != nil {
-				return sim.SimulationCallStates
-			}
-			return nil
-		}(),
-		LockedCallIndex: func() api.CallIndex {
-			if sim != nil {
-				return sim.LockedCallIndex
-			}
-			return nil
-		}(),
-		CallForest: func() *api.CallForest {
-			if sim != nil {
-				return sim.CallForest
-			}
-			return nil
-		}(),
-		ChainPatch: func() *api.RWSet {
-			if sim != nil {
-				return sim.ChainPatch
-			}
-			return nil
-		}(),
-		SimulateCh: func() chan struct{} {
-			if sim != nil {
-				return sim.SimulateCh
-			}
-			return nil
-		}(),
-	}, nil
 }
 
 func (s *sscService) closeTransaction(txHash common.Hash, commitOrRollback bool, reason string) {
-	s.stateLock.Lock()
-	tx, _ := s.getTxStateLocked(txHash)
+	t0close := time.Now()
+
+	var tx *api.TxState
+	if val, ok := s.txStates.Load(txHash); ok {
+		tx = val.(*api.TxState)
+		tx.Mu.Lock()
+		tx.Closed = true
+		tx.Mu.Unlock()
+		s.txStates.Delete(txHash)
+	}
+
 	if tx != nil {
 		tx.CtxCancel()
 		if s.IsLeader(tx.Epochs[s.SelfShard]) {
 			utils.SSCLogger().Info().Str("txHash", txHash.Hex()).Uint32("shardId", s.SelfShard).Interface("relatedShards", tx.RelatedShards).Msgf("leader close transaction, commit: %v, status: %s, reason: %s", commitOrRollback, tx.Status, reason)
 		}
 	}
-	delete(s.txStates, txHash)
-	s.finishedTxs[txHash] = commitOrRollback
-	s.stateLock.Unlock()
+
+	tStateLock := time.Since(t0close)
 
 	// 清除 Simulator 的资源（SimulationState + pending + channels）
 	s.Simulator.Cleanup(txHash)
+	tSimCleanup := time.Since(t0close)
 
 	s.commitLock.Lock()
 	delete(s.commitStates, txHash)
 	s.commitLock.Unlock()
 
 	s.Verifier.Cleanup(txHash)
+	tVerCleanup := time.Since(t0close)
 
 	// 清除定时器：无论提交还是回滚，不再需要 sp1/pool 定时器
 	s.timerMgr.RemoveTx(txHash)
@@ -1195,20 +1137,39 @@ func (s *sscService) closeTransaction(txHash common.Hash, commitOrRollback bool,
 
 	// v4: Clean up PatchPool
 	s.retryScheduler.patchPool.Remove(txHash)
+
+	// A09: Clean up passive pool
+	s.retryScheduler.RemoveFromPassivePool(txHash)
+
+	totalClose := time.Since(t0close)
+
+	utils.SSCLogger().Info().Str("txHash", txHash.Hex()).
+		Bool("commit", commitOrRollback).
+		Str("stateLock", tStateLock.String()).
+		Str("simCleanup", tSimCleanup.String()).
+		Str("verCleanup", tVerCleanup.String()).
+		Str("totalClose", totalClose.String()).
+		Msg("closeTransaction timing breakdown")
 }
 
 func (s *sscService) closeTransactions(txs map[common.Hash]bool) {
 	utils.SSCLogger().Info().Interface("txs", txs).Msgf("close transactions, num=%d", len(txs))
-	s.stateLock.Lock()
-	for txHash, commitOrRollback := range txs {
-		if tx := s.txStates[txHash]; tx != nil {
-			tx.CtxCancel()
-			s.Simulator.Cleanup(txHash)
-			s.finishedTxs[txHash] = commitOrRollback
-			delete(s.txStates, txHash)
+	var closedTxs []*api.TxState
+	s.txStates.Range(func(key, val any) bool {
+		txHash := key.(common.Hash)
+		if _, ok := txs[txHash]; ok {
+			tx := val.(*api.TxState)
+			tx.Mu.Lock()
+			tx.Closed = txs[txHash]
+			closedTxs = append(closedTxs, tx)
+			tx.Mu.Unlock()
+			s.txStates.Delete(txHash)
 		}
+		return true
+	})
+	for _, tx := range closedTxs {
+		tx.CtxCancel()
 	}
-	s.stateLock.Unlock()
 	s.commitLock.Lock()
 	for txHash := range txs {
 		delete(s.commitStates, txHash)
@@ -1226,6 +1187,10 @@ func (s *sscService) StateLockManager() api.StateLockManager {
 
 func (s *sscService) AddRetryTx(tx *api.RetryTx) {
 	s.retryScheduler.AddToRetry(tx)
+}
+
+func (s *sscService) AddToPassivePool(txHash common.Hash) {
+	s.retryScheduler.AddToPassivePool(txHash)
 }
 
 func (s *sscService) RetryCommit(txHash common.Hash) *api.RetryCommitResp {

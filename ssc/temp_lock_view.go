@@ -25,26 +25,22 @@ type RWKeySet struct {
 // TempLockView — 临时锁视图（委员会 leader 维护）
 // ... 省略重复的注释，结构不变 ...
 type TempLockView struct {
-	mu                  sync.RWMutex
-	committedWriteLocks map[api.LockKey]*lockedState
-	committedReadLocks  map[api.LockKey]*rlockedState
-	tempWriteLocks      map[api.LockKey]tempLockEntry // LockKey → holder+priority
-	tempReadLocks       map[api.LockKey][]common.Hash
-	txReadWriteSets     map[common.Hash]*RWKeySet
-	woundedTxs          map[common.Hash]struct{} // txs that have been Wounded
-	stateLockManager    *stateLockManager
+	mu               sync.RWMutex
+	tempWriteLocks   map[api.LockKey]tempLockEntry // LockKey → holder+priority
+	tempReadLocks    map[api.LockKey][]common.Hash
+	txReadWriteSets  map[common.Hash]*RWKeySet
+	woundedTxs       map[common.Hash]struct{} // txs that have been Wounded
+	stateLockManager *stateLockManager
 }
 
 func NewTempLockView(manager *stateLockManager) *TempLockView {
 	return &TempLockView{
-		mu:                  sync.RWMutex{},
-		committedWriteLocks: make(map[api.LockKey]*lockedState),
-		committedReadLocks:  make(map[api.LockKey]*rlockedState),
-		tempReadLocks:       make(map[api.LockKey][]common.Hash),
-		tempWriteLocks:      make(map[api.LockKey]tempLockEntry),
-		txReadWriteSets:     make(map[common.Hash]*RWKeySet),
-		woundedTxs:          make(map[common.Hash]struct{}),
-		stateLockManager:    manager,
+		mu:               sync.RWMutex{},
+		tempReadLocks:    make(map[api.LockKey][]common.Hash),
+		tempWriteLocks:   make(map[api.LockKey]tempLockEntry),
+		txReadWriteSets:  make(map[common.Hash]*RWKeySet),
+		woundedTxs:       make(map[common.Hash]struct{}),
+		stateLockManager: manager,
 	}
 }
 
@@ -79,14 +75,9 @@ func (v *TempLockView) TryLockWithPriority(txHash common.Hash, priority api.Prio
 	}
 
 	// Step 1: 检查写集 — 支持 Wound-Wait
+	// committedWriteLocks 不在这里检查——它们是 stateDB 锁的过期缓存，
+	// 由调用方（RetryCommit）中的 stateDB.CheckLock 和模拟中的 GetState/SetState 兜底。
 	for _, key := range rwSet.Writes {
-		// 写-写冲突：已提交锁
-		if holder, held := v.committedWriteLocks[key]; held {
-			if bytes.Compare(holder.lockedBy.Bytes(), txHash.Bytes()) != 0 {
-				v.stateLockManager.sscService.stats.TempLockTryFail.Add(1)
-				return false, false
-			}
-		}
 		// 写-写冲突：临时锁 — 支持 Wound
 		if entry, held := v.tempWriteLocks[key]; held {
 			if bytes.Compare(entry.Holder.Bytes(), txHash.Bytes()) != 0 {
@@ -105,6 +96,10 @@ func (v *TempLockView) TryLockWithPriority(txHash common.Hash, priority api.Prio
 				} else {
 					// 被高优先级占着（或 Finalized）→ 失败
 					v.stateLockManager.sscService.stats.TempLockTryFail.Add(1)
+					utils.SSCLogger().Info().Str("txHash", txHash.Hex()).
+						Str("holder", entry.Holder.Hex()).
+						Str("key", string(key)).
+						Msg("TryLockWithPriority: tempWriteLock conflict, cannot wound")
 					return false, false
 				}
 			}
@@ -128,6 +123,10 @@ func (v *TempLockView) TryLockWithPriority(txHash common.Hash, priority api.Prio
 						Msg("Wound (readset): high priority tx took read lock from low priority")
 				} else {
 					v.stateLockManager.sscService.stats.TempLockTryFail.Add(1)
+					utils.SSCLogger().Info().Str("txHash", txHash.Hex()).
+						Str("holder", entry.Holder.Hex()).
+						Str("key", string(key)).
+						Msg("TryLockWithPriority: read-tempWriteLock conflict, cannot wound")
 					return false, false
 				}
 			}
@@ -183,11 +182,6 @@ func (v *TempLockView) CanLock(txHash common.Hash, reads []api.LockKey, writes [
 	defer v.mu.RUnlock()
 
 	for _, key := range writes {
-		if holder, held := v.committedWriteLocks[key]; held {
-			if bytes.Compare(holder.lockedBy.Bytes(), txHash.Bytes()) != 0 {
-				return false
-			}
-		}
 		if entry, held := v.tempWriteLocks[key]; held {
 			if bytes.Compare(entry.Holder.Bytes(), txHash.Bytes()) != 0 {
 				return false
@@ -215,7 +209,6 @@ func (v *TempLockView) OnBlockCommitted(block *types.Block) {
 	utils.SSCLogger().Info().Uint64("blockNum", block.NumberU64()).
 		Int("tempWriteLocks", len(v.tempWriteLocks)).
 		Int("tempReadLocks", len(v.tempReadLocks)).
-		Int("committedWriteLocks", len(v.committedWriteLocks)).
 		Int("woundedTxs", len(v.woundedTxs)).
 		Msg("TempLockView on block committed")
 
@@ -249,8 +242,6 @@ func (v *TempLockView) OnBlockCommitted(block *types.Block) {
 		// 清理 wounded 标记
 		delete(v.woundedTxs, txHash)
 	}
-
-	v.committedWriteLocks, v.committedReadLocks = v.stateLockManager.GetRWLockStates()
 }
 
 // GarbageCollect 清理 stale 交易（如 nonce 过期）。

@@ -183,6 +183,10 @@ func (s *PublicSSCShardService) AddRetryTx(ctx context.Context, tx *api.RetryTx)
 	s.internalService.AddRetryTx(tx)
 	return nil
 }
+func (s *PublicSSCShardService) AddToPassivePool(ctx context.Context, txHash common.Hash) error {
+	s.internalService.AddToPassivePool(txHash)
+	return nil
+}
 func (s *PublicSSCShardService) RetryCommit(ctx context.Context, txHash common.Hash) (*api.RetryCommitResp, error) {
 	return s.internalService.RetryCommit(txHash), nil
 }

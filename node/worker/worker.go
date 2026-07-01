@@ -147,9 +147,20 @@ func (w *Worker) CommitSSCTransactions(
 			continue
 		}
 
+		txStart := time.Now()
 		w.current.state.Prepare(tx.Hash(), common.Hash{}, len(w.current.txs))
 		err := w.commitTransaction(tx, coinbase)
 		sender := from.Hex()
+		txDur := time.Since(txStart)
+
+		utils.SSCLogger().Info().
+			Str("txHash", tx.Hash().Hex()).
+			Str("sender", sender).
+			Uint64("nonce", tx.Nonce()).
+			Str("duration", txDur.String()).
+			Int("count", count).
+			Str("loop", "CommitSSCTransactions").
+			Msg("SSC tx commit timing")
 
 		switch err {
 		case core.ErrGasLimitReached:
@@ -227,10 +238,22 @@ func (w *Worker) CommitSortedTransactions(
 		}
 
 		// Start executing the transaction
+		txStart := time.Now()
 		w.current.state.Prepare(tx.Hash(), common.Hash{}, len(w.current.txs))
 		err := w.commitTransaction(tx, coinbase)
 
 		sender, _ := common2.AddressToBech32(from)
+		txDur := time.Since(txStart)
+
+		utils.SSCLogger().Info().
+			Str("txHash", tx.Hash().Hex()).
+			Str("sender", sender).
+			Uint64("nonce", tx.Nonce()).
+			Str("duration", txDur.String()).
+			Int("count", count).
+			Str("loop", "CommitSortedTransactions").
+			Msg("Normal tx commit timing")
+
 		switch err {
 		case core.ErrGasLimitReached:
 			// Pop the current out-of-gas transaction without shifting in the next from the account

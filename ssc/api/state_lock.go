@@ -1,11 +1,17 @@
 package api
 
 import (
+	"errors"
 	"strings"
 
 	"github.com/ethereum/go-ethereum/common"
-	"github.com/pkg/errors"
 )
+
+// IsLockConflictDBErr checks if an error wraps either OnChain or OffChain lock conflict error.
+// Used in simulator.go GetState/SetState where errors.Is matching on wrapped sentinels is needed.
+func IsLockConflictDBErr(err error) bool {
+	return errors.Is(err, ErrLockConflict_OnChain) || errors.Is(err, ErrLockConflict_OffChain)
+}
 
 var (
 	ErrLockConflict_OnChain  = errors.New("state is locked by other tx on chain")
