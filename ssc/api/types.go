@@ -308,11 +308,12 @@ type ShardSimulateCommittee struct {
 }
 
 type TimeoutConfig struct {
-	Sp1               uint64 `json:"sp1" yaml:"sp1"`                                   // source phase 1, used to notify origin shard to rollback cxt for timeout
-	PoolTimeout       uint64 `json:"pool_timeout" yaml:"pool_timeout"`                 // the timeout to remove cxt from pool
-	MaxOnChainRetries uint64 `json:"max_on_chain_retries" yaml:"max_on_chain_retries"` // max retries for on-chain verification
-	MaxRetriesTotal   uint64 `json:"max_retries_total" yaml:"max_retries_total"`       // max total retries before giving up
-	ForceSimulation   bool   `json:"force_simulation" yaml:"force_simulation"`         // continue execution on lock conflict, get full RWSet
+	Sp1                  uint64 `json:"sp1" yaml:"sp1"`                                         // source phase 1, used to notify origin shard to rollback cxt for timeout
+	PoolTimeout          uint64 `json:"pool_timeout" yaml:"pool_timeout"`                       // the timeout to remove cxt from pool
+	MaxOnChainRetries    uint64 `json:"max_on_chain_retries" yaml:"max_on_chain_retries"`       // max retries for on-chain verification
+	MaxRetriesTotal      uint64 `json:"max_retries_total" yaml:"max_retries_total"`             // max total retries before giving up
+	ForceSimulation      bool   `json:"force_simulation" yaml:"force_simulation"`               // continue execution on lock conflict, get full RWSet
+	EnableLockOnConflict bool   `json:"enable_lock_on_conflict" yaml:"enable_lock_on_conflict"` // lock conflict callState via lockStateWithExecution before CallForRetry
 }
 
 type ReputationConfig struct {
@@ -1248,6 +1249,13 @@ func (pp *PatchPool) Remove(txHash common.Hash) {
 	utils.SSCLogger().Info().Str("txHash", txHash.Hex()).
 		Str("duration", time.Since(t0).String()).
 		Msg("PatchPool.Remove timing")
+}
+
+// Stats returns snapshot of PatchPool size metrics.
+func (pp *PatchPool) Stats() (patchCount int, keyCount int) {
+	pp.mu.RLock()
+	defer pp.mu.RUnlock()
+	return len(pp.Patches), len(pp.KeyIndex)
 }
 
 func NewCallStack(txHash common.Hash, simulationNum int) *CallStack {

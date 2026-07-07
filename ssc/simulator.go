@@ -443,6 +443,7 @@ func (sim *Simulator) processSimulationTask(task *simulateTask, workerId int) {
 	req := task.req
 	leader := sim.committee.GetLeader(req.Epochs[sim.committee.SelfShard], sim.committee.SelfShard)
 
+	var queueWaitDur, p2pCallDur time.Duration
 	defer func() {
 		// decrement simulating count and update statistics
 		atomic.AddInt64(&sim.simulatingCount, -1)
@@ -465,7 +466,18 @@ func (sim *Simulator) processSimulationTask(task *simulateTask, workerId int) {
 			Int64("currentCount", currentCount).
 			Int64("totalCount", sim.totalSimulations).
 			Msg("simulate cx transaction, end")
+
+		// timing breakdown
+		utils.SSCLogger().Info().
+			Str("txHash", req.Tx.Hash().String()).
+			Str("queueWait", queueWaitDur.String()).
+			Str("p2pCall", p2pCallDur.String()).
+			Str("total", time.Since(startTime).String()).
+			Msg("processSimulationTask timing breakdown")
 	}()
+
+	// queueWait: pushTime → now
+	queueWaitDur = time.Since(task.pushTime)
 
 	ctx, cancel := context.WithTimeout(sim.ctx, sim.config.CallTimeout)
 	defer cancel()
@@ -473,7 +485,8 @@ func (sim *Simulator) processSimulationTask(task *simulateTask, workerId int) {
 	ret := new(api.CXTSimulationSSCResult)
 	p2pStart := time.Now()
 	err := sim.communicator.comm.Call(ctx, ret, leader, api.Method_StartSimulateCXTransaction, req)
-	sim.stats.P2pCallTotalNs.Add(time.Since(p2pStart).Nanoseconds())
+	p2pCallDur = time.Since(p2pStart)
+	sim.stats.P2pCallTotalNs.Add(p2pCallDur.Nanoseconds())
 	sim.stats.P2pCallCount.Add(1)
 
 	if err != nil {

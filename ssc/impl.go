@@ -158,6 +158,7 @@ func newBaseService(ctx context.Context, config *api.Config, cm *CommitteeMechan
 	signerMgr api.BLSSignerMgr, bc core.BlockChain, txSigner api.TxSigner, comm *Comm) *sscService {
 	// 设置 worker 数量和信号量上限
 	numWorkers := config.SimulationLimit // worker 数量
+	numWorkers = 30
 
 	service := &sscService{
 		CommitteeMechanism: cm,
@@ -178,7 +179,7 @@ func newBaseService(ctx context.Context, config *api.Config, cm *CommitteeMechan
 	service.lockStateMgr = lockStateMgr
 	service.tempLockView = lockStateMgr.GetTempLockView()
 	service.timerMgr = NewTimerManager(sscConfig.Timeout, service)
-	service.retryScheduler = NewRetryScheduler(ctx, bc, &RetrySchedulerStateAccessor{
+	service.retryScheduler = newRetryScheduler(ctx, bc, &RetrySchedulerStateAccessor{
 		IsLeader: func(epoch api.Epoch) bool { return service.CommitteeMechanism.IsLeader(epoch) },
 		GetLeader: func(epoch api.Epoch, shardId uint32) *api.Member {
 			return service.CommitteeMechanism.GetLeader(epoch, shardId)
@@ -208,11 +209,7 @@ func newBaseService(ctx context.Context, config *api.Config, cm *CommitteeMechan
 		CloseTransaction: func(txHash common.Hash, commitOrRollback bool, reason string) {
 			service.closeTransaction(txHash, commitOrRollback, reason)
 		},
-	}, comm, service.SelfShard, service.tempLockView)
-	// 从 TimeoutConfig 传入重试限制
-	if sscConfig.Timeout != nil && sscConfig.Timeout.MaxRetriesTotal > 0 {
-		service.retryScheduler.maxRetriesTotal = int(sscConfig.Timeout.MaxRetriesTotal)
-	}
+	}, comm, service.SelfShard, service.tempLockView, sscConfig.Timeout)
 
 	// 创建 Simulator（自管理 SimulationState + callStatesInWaiting + worker pool）
 	simComm := NewSimulatorCommunicator(comm, signerMgr, service.CommitteeMechanism, config, ctx)
@@ -391,7 +388,9 @@ func (s *sscService) loop() {
 		select {
 		case <-s.ctx.Done():
 			statsTicker.Stop()
+			s.traceLock.Lock()
 			s.stats.SetBlockTraces(s.txTraces)
+			s.traceLock.Unlock()
 			s.stats.Dump(s.lockStateMgr)
 			utils.SSCLogger().Info().Msg("ssc service stop...")
 			s.Simulator.StopWorkers()
@@ -420,7 +419,9 @@ func (s *sscService) loop() {
 			}
 		case <-statsTicker.C:
 			s.stats.sampleQueueLen(s.stats.QueuePushCount.Load(), s.stats.QueuePopCount.Load())
+			s.traceLock.Lock()
 			s.stats.SetBlockTraces(s.txTraces)
+			s.traceLock.Unlock()
 			s.stats.Dump(s.lockStateMgr)
 		}
 	}
@@ -599,6 +600,18 @@ func (s *sscService) HandleCommitVote(vote *api.CXTCommitVote) {
 			Msgf("received invalid simulation rollback vote from shard %d, ignore", vote.OriginShardId)
 		return
 	}
+
+	t0 := time.Now()
+	var tVoteTracking, tAggregate, tSendVote time.Duration
+	defer func() {
+		utils.SSCLogger().Info().Str("txHash", vote.TxHash.Hex()).
+			Str("voteTracking", tVoteTracking.String()).
+			Str("aggregate", tAggregate.String()).
+			Str("sendVote", tSendVote.String()).
+			Str("total", time.Since(t0).String()).
+			Msg("HandleCommitVote timing breakdown")
+	}()
+
 	// 2
 	reachThreshold := false
 	var sscVote *api.CXTCommitSSCVote
@@ -640,6 +653,7 @@ func (s *sscService) HandleCommitVote(vote *api.CXTCommitVote) {
 			if reachThreshold {
 				utils.SSCLogger().Info().Str("txHash", txHash.Hex()).Msgf("reach threshold for commit votes from shard %d, begin to aggregate ssc commit vote", vote.ShardId)
 				sscVote = s.aggregateSSCCommitVote(s.commitStates[txHash].CommitVotes[vote.SimulationNum][vote.ShardId], sscOrValidator)
+				tAggregate = time.Since(t0)
 			}
 		}
 		if vote.Type == api.Rollback {
@@ -657,9 +671,11 @@ func (s *sscService) HandleCommitVote(vote *api.CXTCommitVote) {
 			reachThreshold = len(s.commitStates[txHash].RollbackVotes[vote.ShardId]) == threshold
 			if reachThreshold {
 				sscVote = s.aggregateSSCCommitVote(s.commitStates[txHash].RollbackVotes[vote.ShardId], sscOrValidator)
+				tAggregate = time.Since(t0)
 			}
 		}
 	}()
+	tVoteTracking = time.Since(t0)
 
 	if reachThreshold {
 		if sscVote == nil {
@@ -675,6 +691,7 @@ func (s *sscService) HandleCommitVote(vote *api.CXTCommitVote) {
 
 		utils.SSCLogger().Info().Str("txHash", txHash.Hex()).Msgf("send SSC commit vote to leader: %s, shard=%d, originShard=%d, type=%s", leader.Endpoint, vote.ShardId, vote.OriginShardId, vote.Type.String())
 		err := s.Comm.Call(ctx, nil, leader, api.Method_HandleCXTCommitSSCVote, sscVote)
+		tSendVote = time.Since(t0)
 		if err != nil {
 			utils.SSCLogger().Error().Err(err).Msg("failed to send commit vote")
 			return
@@ -746,6 +763,18 @@ func (s *sscService) CommitSimulation(commit *api.SimulationCommit) {
 		return
 	}
 
+	t0 := time.Now()
+	var tBuildCallStates, tBuildSignatures, tOnChainPatch, tSubmitTx time.Duration
+	defer func() {
+		utils.SSCLogger().Info().Str("txHash", txHash.Hex()).
+			Str("buildCallStates", tBuildCallStates.String()).
+			Str("buildSignatures", tBuildSignatures.String()).
+			Str("onChainPatch", tOnChainPatch.String()).
+			Str("submitTx", tSubmitTx.String()).
+			Str("total", time.Since(t0).String()).
+			Msg("CommitSimulation timing breakdown")
+	}()
+
 	var tx *api.TxState
 	// update related shards
 	if val, ok := s.txStates.Load(txHash); ok {
@@ -808,17 +837,21 @@ func (s *sscService) CommitSimulation(commit *api.SimulationCommit) {
 	}
 
 	utils.SSCLogger().Info().Str("txHash", txHash.Hex()).Msgf("build commit simulation completed")
+	tBuildCallStates = time.Since(t0)
 
 	// v5 Wound-Wait: 在提交 SimTx 前锁死 Patch（不可再被 Wound）
 	s.retryScheduler.patchPool.Finalize(txHash)
 
 	s.buildSignaturesForSimulation(tx.Ctx, simulation)
+	tBuildSignatures = time.Since(t0)
 
 	// 提交 SimTx 后，所有节点收到后入 onChainPatches
 	// Leader 在提交前先入，确保本地即刻可用
 	s.retryScheduler.AddOnChainPatch(txHash, commit.SimulationNum, simulation.ChainPatch, upstreamTxHash, upstreamSimNum)
+	tOnChainPatch = time.Since(t0)
 
 	err = s.txSubmitter.SubmitSimulationTx(simulation)
+	tSubmitTx = time.Since(t0)
 	s.recordTraceBlock(txHash, StageSimulationTxSubmit, s.bc.CurrentHeader().NumberU64())
 	if err != nil {
 		utils.SSCLogger().Error().Err(err).Msg("failed to submit simulation tx")
@@ -848,7 +881,7 @@ func (s *sscService) CommitSimulation(commit *api.SimulationCommit) {
 	}
 	s.stats.setCxtStage(txHash, 2)
 	if val, ok := s.txStates.Load(txHash); ok {
-		tx := val.(*api.TxState)
+		tx = val.(*api.TxState)
 		tx.Mu.Lock()
 		tx.Status = api.SIMULATION_COMMMITTING
 		tx.Mu.Unlock()
@@ -1113,7 +1146,11 @@ func (s *sscService) closeTransaction(txHash common.Hash, commitOrRollback bool,
 	if tx != nil {
 		tx.CtxCancel()
 		if s.IsLeader(tx.Epochs[s.SelfShard]) {
-			utils.SSCLogger().Info().Str("txHash", txHash.Hex()).Uint32("shardId", s.SelfShard).Interface("relatedShards", tx.RelatedShards).Msgf("leader close transaction, commit: %v, status: %s, reason: %s", commitOrRollback, tx.Status, reason)
+			utils.SSCLogger().Info().Str("txHash", txHash.Hex()).
+				Uint32("shardId", s.SelfShard).
+				Interface("relatedShards", tx.RelatedShards).
+				Int("simulationNum", tx.SimulationNum).
+				Msgf("leader close transaction, commit: %v, status: %s, reason: %s", commitOrRollback, tx.Status, reason)
 		}
 	}
 

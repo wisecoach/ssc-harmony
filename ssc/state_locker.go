@@ -185,7 +185,8 @@ func (s *stateLocker) Lockable(key api.LockKey, txHash common.Hash) error {
 				Str("root", s.root.Hex()).
 				Str("lockedBy", ls.lockedBy.Hex()).
 				Msgf("[TempLockView] key is locked by other tx %s in pending states", ls.lockedBy.Hex())
-			return errors.Wrap(api.ErrLockConflict_OffChain, fmt.Sprintf("[TempLockView] locked by tx %s", ls.lockedBy.Hex()))
+			// pendingStates 和 baseSnapshot 都是链上锁，统一报 OnChain
+			return errors.Wrap(api.ErrLockConflict_OnChain, fmt.Sprintf("[TempLockView] locked by tx %s", ls.lockedBy.Hex()))
 		}
 	}
 
@@ -198,7 +199,8 @@ func (s *stateLocker) Lockable(key api.LockKey, txHash common.Hash) error {
 	// 检查 pending states 的读锁
 	if ls, exists := s.pendingStates.rlockedStates[key]; exists {
 		s.sscService.stats.LockableFailRlock.Add(1)
-		return errors.Wrap(api.ErrLockConflict_OffChain, fmt.Sprintf("[TempLockView] rlocked by tx %s", ls.lockedBy))
+		// pendingStates 和 baseSnapshot 都是链上锁，统一报 OnChain
+		return errors.Wrap(api.ErrLockConflict_OnChain, fmt.Sprintf("[TempLockView] rlocked by tx %s", ls.lockedBy))
 	}
 
 	return nil

@@ -3,6 +3,7 @@ package ssc
 import (
 	"bytes"
 	"sync"
+	"time"
 
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/harmony-one/harmony/core/types"
@@ -201,10 +202,12 @@ func (v *TempLockView) CanLock(txHash common.Hash, reads []api.LockKey, writes [
 
 // OnBlockCommitted 清理区块中所有交易的临时锁。
 func (v *TempLockView) OnBlockCommitted(block *types.Block) {
+	t0 := time.Now()
 	blockTxHashes := make([]common.Hash, 0, len(block.Transactions()))
 	for _, tx := range block.Transactions() {
 		blockTxHashes = append(blockTxHashes, tx.Hash())
 	}
+	tBuildList := time.Since(t0)
 
 	utils.SSCLogger().Info().Uint64("blockNum", block.NumberU64()).
 		Int("tempWriteLocks", len(v.tempWriteLocks)).
@@ -242,6 +245,14 @@ func (v *TempLockView) OnBlockCommitted(block *types.Block) {
 		// 清理 wounded 标记
 		delete(v.woundedTxs, txHash)
 	}
+	tCleanupLoop := time.Since(t0)
+	utils.SSCLogger().Info().
+		Uint64("blockNum", block.NumberU64()).
+		Int("txCount", len(blockTxHashes)).
+		Dur("buildList", tBuildList).
+		Dur("cleanupLoop", tCleanupLoop).
+		Dur("total", time.Since(t0)).
+		Msg("TempLockView.OnBlockCommitted timing breakdown")
 }
 
 // GarbageCollect 清理 stale 交易（如 nonce 过期）。

@@ -169,28 +169,29 @@ type RetrySchedulerStateAccessor struct {
 	CloseTransaction func(txHash common.Hash, commitOrRollback bool, reason string)
 }
 
-func NewRetryScheduler(ctx context.Context, bc core.BlockChain, state *RetrySchedulerStateAccessor, comm *Comm, selfShard uint32, tempLockView *TempLockView) *retryScheduler {
+func newRetryScheduler(ctx context.Context, bc core.BlockChain, state *RetrySchedulerStateAccessor, comm *Comm, selfShard uint32, tempLockView *TempLockView, config *api.TimeoutConfig) *retryScheduler {
 	rs := &retryScheduler{
-		ctx:                   ctx,
-		tempLockView:          tempLockView,
-		bc:                    bc,
-		state:                 state,
-		comm:                  comm,
-		selfShard:             selfShard,
+		mu:                    sync.RWMutex{},
 		retryPool:             make(map[common.Hash]*api.RetryTx),
 		passivePool:           make(map[common.Hash]struct{}),
 		passivePoolEnterBlock: make(map[common.Hash]uint64),
 		staleTxs:              make(map[common.Hash]struct{}),
 		signals:               make(map[common.Hash]map[int]map[uint32]*api.RetrySignal),
 		patches:               make(map[common.Hash]map[int]*api.ChainNode),
+		onChainPatches:        make(map[common.Hash]map[int]*api.ChainNode),
 		patchPool: &api.PatchPool{
 			Patches:  make(map[common.Hash]*api.ChainPatchNode),
 			KeyIndex: make(map[api.LockKey]map[common.Hash]struct{}),
 		},
 		consumedPatches: make(map[common.Hash]common.Hash),
 		reSimInFlight:   make(map[common.Hash]struct{}),
-		onChainPatches:  make(map[common.Hash]map[int]*api.ChainNode),
-		mu:              sync.RWMutex{},
+		ctx:             ctx,
+		bc:              bc,
+		tempLockView:    tempLockView,
+		maxRetriesTotal: int(config.MaxRetriesTotal),
+		state:           state,
+		comm:            comm,
+		selfShard:       selfShard,
 	}
 
 	dumpChainRetryStats()
@@ -408,6 +409,14 @@ func (rs *retryScheduler) OnBlockCommitted(block *types.Block) {
 
 	rs.state.SampleRetryPool(len(rs.retryPool))
 
+	// 缓存当前区块的 stateDB，用于信号聚合时预检本分片 stateDB 锁状态
+	var currentStateDB api.StateDB
+	if rs.bc != nil {
+		if stateAt, err := rs.bc.State(); err == nil {
+			currentStateDB = stateAt
+		}
+	}
+
 	shard2SignalReadyNum := make(map[uint32]int)
 	shard2Epoch2RetrySignals := make(map[uint32]map[api.Epoch]*api.RetrySignals)
 	for i := uint32(0); i < rs.state.ShardNum(); i++ {
@@ -428,9 +437,33 @@ func (rs *retryScheduler) OnBlockCommitted(block *types.Block) {
 			Condition:     tx.Condition,
 		}
 		if rs.tempLockView.CanLock(txHash, tx.ReadSet, tx.WriteSet) {
-			signal.Ready = true
-			rs.state.RetryReadySignal()
-			shard2SignalReadyNum[tx.OriginShardID]++
+			signal.Ready = false
+			// 预检本分片 stateDB 锁：如果本 shard stateDB 锁冲突，不标记 Ready，
+			// 避免浪费跨 shard RPC（tryToReSimulation → RetryCommit）
+			if currentStateDB != nil {
+				dbOK := true
+				for _, key := range tx.WriteSet {
+					if err := currentStateDB.CheckLock(key, txHash); err != nil {
+						dbOK = false
+						break
+					}
+				}
+				if dbOK {
+					for _, key := range tx.ReadSet {
+						if err := currentStateDB.CheckLock(key, txHash); err != nil {
+							dbOK = false
+							break
+						}
+					}
+				}
+				signal.Ready = dbOK
+			}
+			if signal.Ready {
+				rs.state.RetryReadySignal()
+				shard2SignalReadyNum[tx.OriginShardID]++
+			} else {
+				rs.state.RetryNotReadySignal()
+			}
 		} else {
 			signal.Ready = false
 			rs.state.RetryNotReadySignal()
@@ -481,6 +514,35 @@ func (rs *retryScheduler) OnBlockCommitted(block *types.Block) {
 		}
 	}
 
+	// 统计本区块 retryPool 的热 key 重复度：每个 key 被多少笔 tx 写
+	hotKeyStats := make(map[api.LockKey]int)
+	hotKeyReadStats := make(map[api.LockKey]int)
+	for _, tx := range rs.retryPool {
+		for _, lockKey := range tx.WriteSet {
+			hotKeyStats[lockKey]++
+		}
+		for _, lockKey := range tx.ReadSet {
+			hotKeyReadStats[lockKey]++
+		}
+	}
+	var maxWriteContention, maxReadContention int
+	for _, cnt := range hotKeyStats {
+		if cnt > maxWriteContention {
+			maxWriteContention = cnt
+		}
+	}
+	for _, cnt := range hotKeyReadStats {
+		if cnt > maxReadContention {
+			maxReadContention = cnt
+		}
+	}
+	hotWriteKeys := 0
+	for _, cnt := range hotKeyStats {
+		if cnt >= 2 {
+			hotWriteKeys++
+		}
+	}
+
 	utils.SSCLogger().Info().
 		Int("poolSize", len(rs.retryPool)).
 		Int("passivePoolSize", len(rs.passivePool)).
@@ -488,6 +550,9 @@ func (rs *retryScheduler) OnBlockCommitted(block *types.Block) {
 		Uint64("blockNum", currentBlock).
 		Int("staleNum", staleNum).
 		Int("readyNum", shard2SignalReadyNum[rs.selfShard]).
+		Int("hotWriteKeys", hotWriteKeys).
+		Int("maxWriteContention", maxWriteContention).
+		Int("maxReadContention", maxReadContention).
 		Msg("retryScheduler onBlockCommitted")
 }
 
@@ -581,10 +646,26 @@ func (rs *retryScheduler) chainNextSim(upstreamTxHash common.Hash, upstreamSimNu
 		}
 	}
 
+	// 统计 key overlap：匹配到的 retryTx 中，与 upstream WriteSet 共享的 key 数
+	keyOverlap := 0
+	for _, m := range allMatched {
+		for _, lockKey := range m.retryTx.ReadSet {
+			if _, exists := keySet[lockKey]; exists {
+				keyOverlap++
+			}
+		}
+		for _, lockKey := range m.retryTx.WriteSet {
+			if _, exists := keySet[lockKey]; exists {
+				keyOverlap++
+			}
+		}
+	}
 	utils.SSCLogger().Info().Str("txHash", upstreamTxHash.Hex()).
 		Int("totalMatched", len(allMatched)).
 		Int("selected", len(selected)).
 		Int("reservedKeys", len(reservedKeys)).
+		Int("keyOverlap", keyOverlap).
+		Int("upstreamWriteKeys", len(keySet)).
 		Msg("chainNextSim: reservation completed")
 
 	// 3. 逐个发送 chain signal（不在 RLock 内做 RPC）
@@ -1307,10 +1388,16 @@ func (rs *retryScheduler) OnPatchPoolUpdated() {
 	}
 	rs.mu.RUnlock()
 
+	// 统计 PatchPool 状态
+	patchCount, keyIndexSize := pool.Stats()
+
+	matchedCount := 0
+	consumedCount := 0
 	for _, txHash := range retryKeys {
 		retryTx := retryTxs[txHash]
 		matched, node := pool.HasConflict(retryTx)
 		if matched {
+			matchedCount++
 			priority := api.Priority{
 				Nonce:         retryTx.Nonce,
 				OriginShardID: retryTx.OriginShardID,
@@ -1319,6 +1406,7 @@ func (rs *retryScheduler) OnPatchPoolUpdated() {
 			// Temporary exclusive: mark Consumed to prevent other retryTxs from taking it
 			patch := pool.TryConsume(node.TxHash, txHash, priority)
 			if patch != nil {
+				consumedCount++
 				rs.mu.Lock()
 				rs.consumedPatches[txHash] = node.TxHash
 				rs.mu.Unlock()
@@ -1327,4 +1415,11 @@ func (rs *retryScheduler) OnPatchPoolUpdated() {
 			}
 		}
 	}
+	utils.SSCLogger().Info().
+		Int("patchCount", patchCount).
+		Int("keyIndexSize", keyIndexSize).
+		Int("retryPoolSize", len(retryKeys)).
+		Int("matchedCount", matchedCount).
+		Int("consumedCount", consumedCount).
+		Msg("OnPatchPoolUpdated: stats")
 }

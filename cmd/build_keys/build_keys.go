@@ -282,11 +282,12 @@ func buildConfig(config ShardConfig) {
 		localSSCMembers := make([]*api.Member, 0)
 		devSSCMembers := make([]*api.Member, 0)
 		timeout := &api.TimeoutConfig{
-			Sp1:               5,
-			PoolTimeout:       5,
-			MaxOnChainRetries: 1,
-			MaxRetriesTotal:   3,
-			ForceSimulation:   true,
+			Sp1:                  9999,
+			PoolTimeout:          9999,
+			MaxOnChainRetries:    9999,
+			MaxRetriesTotal:      9999,
+			ForceSimulation:      true,
+			EnableLockOnConflict: false,
 		}
 		for j := 0; j < config.validator; j++ {
 			v := shard2validators[i][j]

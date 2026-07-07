@@ -52,10 +52,19 @@ func (sim *Simulator) StartSimulateCXTransaction(req *api.CXTSimulationRequest) 
 	var waitingCh chan *api.CXTSimulationSSCResult
 	txHash := req.Tx.Hash()
 
+	t0 := time.Now()
+	var tCallMembers, tAggregate, tThresholdSign, tCommitSend time.Duration
 	startTime := time.Now()
 	utils.SSCLogger().Info().Int("simulationNum", req.SimulationNum).Str("txHash", txHash.String()).Msg("start simulate cx transaction, start")
 	defer func() {
 		utils.SSCLogger().Info().Int("simulationNum", req.SimulationNum).Str("txHash", txHash.String()).Dur("cost", time.Since(startTime)).Msg("start simulate cx transaction, end")
+		utils.SSCLogger().Info().Str("txHash", txHash.String()).
+			Str("callMembers", tCallMembers.String()).
+			Str("aggregate", tAggregate.String()).
+			Str("thresholdSign", tThresholdSign.String()).
+			Str("commitSend", tCommitSend.String()).
+			Str("total", time.Since(t0).String()).
+			Msg("StartSimulateCXTransaction timing breakdown")
 	}()
 
 	func() {
@@ -159,6 +168,7 @@ func (sim *Simulator) StartSimulateCXTransaction(req *api.CXTSimulationRequest) 
 		}(member, committee)
 	}
 	wg.Wait()
+	tCallMembers = time.Since(t0)
 
 	var (
 		sscResult *api.CXTSimulationSSCResult
@@ -281,6 +291,8 @@ func (sim *Simulator) StartSimulateCXTransaction(req *api.CXTSimulationRequest) 
 	}
 
 	sim.thresholdSignSimulationCommit(simulationCommit)
+	tAggregate = time.Since(t0)
+	tThresholdSign = time.Since(t0)
 
 	leaders := make([]*api.Member, 0)
 	selfAddr := sim.communicator.signerMgr.GetSSCSigner().Address()
@@ -327,6 +339,7 @@ func (sim *Simulator) StartSimulateCXTransaction(req *api.CXTSimulationRequest) 
 	}
 
 	sim.stats.setCxtStage(txHash, 1)
+	tCommitSend = time.Since(t0)
 	return sscResult
 }
 
@@ -642,6 +655,19 @@ func (sim *Simulator) buildSignaturesForSimulation(state *api.CXTSimulationState
 // s.thresholdSignSimulationCommit → sim.thresholdSignSimulationCommit
 // s.retryScheduler.CallForRetry → sim.state.CallForRetry
 func (sim *Simulator) StartReSimulation(txHash common.Hash, simulationNum int) {
+	t0 := time.Now()
+	var tGetState, tCallMembers, tAggregate, tThresholdSign, tCommitSend time.Duration
+	defer func() {
+		utils.SSCLogger().Info().Str("txHash", txHash.Hex()).
+			Str("getState", tGetState.String()).
+			Str("callMembers", tCallMembers.String()).
+			Str("aggregate", tAggregate.String()).
+			Str("thresholdSign", tThresholdSign.String()).
+			Str("commitSend", tCommitSend.String()).
+			Str("total", time.Since(t0).String()).
+			Msg("StartReSimulation timing breakdown")
+	}()
+
 	txState, err := sim.state.GetTxState(txHash)
 	if err != nil {
 		utils.SSCLogger().Error().Err(err).Str("txHash", txHash.Hex()).Msg("resimulation failed")
@@ -673,6 +699,7 @@ func (sim *Simulator) StartReSimulation(txHash common.Hash, simulationNum int) {
 		From:          lastReq.From,
 		GasPool:       0,
 	}
+	tGetState = time.Since(t0)
 
 	startTime := time.Now()
 	utils.SSCLogger().Info().Str("txHash", txHash.Hex()).Msgf("recall simulation, simulationNum: %d, start", simulationNum)
@@ -741,6 +768,7 @@ func (sim *Simulator) StartReSimulation(txHash common.Hash, simulationNum int) {
 		}(member)
 	}
 	wg.Wait()
+	tCallMembers = time.Since(t0)
 
 	var (
 		sscResult *api.CXTSimulationSSCResult
@@ -855,7 +883,9 @@ func (sim *Simulator) StartReSimulation(txHash common.Hash, simulationNum int) {
 
 	utils.SSCLogger().Info().Str("txHash", txHash.Hex()).
 		Msg("startReSimulation: calling thresholdSignSimulationCommit")
+	tAggregate = time.Since(t0)
 	sim.thresholdSignSimulationCommit(simulationCommit)
+	tThresholdSign = time.Since(t0)
 	utils.SSCLogger().Info().Str("txHash", txHash.Hex()).
 		Msg("startReSimulation: after thresholdSignSimulationCommit")
 
@@ -891,6 +921,7 @@ func (sim *Simulator) StartReSimulation(txHash common.Hash, simulationNum int) {
 	utils.SSCLogger().Info().Str("txHash", txHash.Hex()).
 		Int("members", len(members)).
 		Msg("startReSimulation: after Multicast")
+	tCommitSend = time.Since(t0)
 }
 
 // =============================================================================

@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"math/big"
+	"sync"
 	"time"
 
 	"github.com/ethereum/go-ethereum/common"
@@ -78,6 +79,13 @@ type VerifierStateAccessor struct {
 
 // Verifier 负责验证 SimulationTx 的链上执行。
 // 所有区块链节点都会部署此模块。自管理 executionVerifyContexts 和 txLockedSimNum 存储。
+
+// lockedSimNumEntry 用于 txLockedSimNum 的 per-tx 存储。
+// num 在创建时写入，后续只读，无需 per-entry mutex。
+type lockedSimNumEntry struct {
+	num int
+}
+
 type Verifier struct {
 	communicator *VerifyCommunicator
 	timerMgr     *CXTTimerManager
@@ -91,7 +99,7 @@ type Verifier struct {
 	// 自管理的独立存储
 	verifyCtxLock           lm.RWMutex
 	executionVerifyContexts map[common.Hash]*api.ExecutionVerifyContext
-	txLockedSimNum          map[common.Hash]int
+	txLockedSimNum          sync.Map // key: common.Hash, value: *lockedSimNumEntry (num 创建后不可变)
 }
 
 func NewVerifier(
@@ -115,7 +123,6 @@ func NewVerifier(
 		state:                   state,
 		verifyCtxLock:           lm.RWMutex{},
 		executionVerifyContexts: make(map[common.Hash]*api.ExecutionVerifyContext),
-		txLockedSimNum:          make(map[common.Hash]int),
 	}
 }
 
@@ -142,16 +149,15 @@ func (v *Verifier) HasVerifyContext(txHash common.Hash) bool {
 }
 
 // getOrCreateLockedSimNum 获取或创建首次锁冲突 simulationNum。
+// sync.Map + 不可变 entry 设计：num 创建后只读，无需每 entry 加锁。
 func (v *Verifier) getOrCreateLockedSimNum(txHash common.Hash, simulationNum int) int {
-	if _, exists := v.txLockedSimNum[txHash]; !exists {
-		v.txLockedSimNum[txHash] = simulationNum
-	}
-	return v.txLockedSimNum[txHash]
+	actual, _ := v.txLockedSimNum.LoadOrStore(txHash, &lockedSimNumEntry{num: simulationNum})
+	return actual.(*lockedSimNumEntry).num
 }
 
 // deleteLockedSimNum 删除首次锁冲突 simulationNum 记录。
 func (v *Verifier) deleteLockedSimNum(txHash common.Hash) {
-	delete(v.txLockedSimNum, txHash)
+	v.txLockedSimNum.Delete(txHash)
 }
 
 // Cleanup 清理某个 tx 的全部验证上下文。
@@ -161,7 +167,7 @@ func (v *Verifier) Cleanup(txHash common.Hash) {
 	v.verifyCtxLock.Lock()
 	delete(v.executionVerifyContexts, txHash)
 	v.verifyCtxLock.Unlock()
-	delete(v.txLockedSimNum, txHash)
+	v.txLockedSimNum.Delete(txHash)
 	utils.SSCLogger().Info().Str("txHash", txHash.Hex()).
 		Str("duration", time.Since(t0).String()).
 		Msg("Verifier.Cleanup timing")
@@ -228,6 +234,9 @@ func (v *Verifier) VerifySimulation(simulationBytes []byte, stateDB api.StateDB,
 
 	txHash := simulation.TxHash
 
+	tVs0 := time.Now()
+	var tVsPatch, tVsLockCheck, tVsExec, tVsLockState time.Duration
+
 	// v6: 所有节点收到 SimTx 后，将 ChainPatch 存入 onChainPatches
 	if simulation.ChainPatch != nil {
 		v.retrySchd.AddOnChainPatch(txHash, simulation.SimulationNum, simulation.ChainPatch,
@@ -237,6 +246,7 @@ func (v *Verifier) VerifySimulation(simulationBytes []byte, stateDB api.StateDB,
 	if v.committee.SelfShard == simulation.OriginShardId {
 		v.timerMgr.StartSp1Timer(txHash, simulation.Epochs, header.NumberU64(), v.committee.SelfShard)
 	}
+	tVsPatch = time.Since(tVs0)
 
 	// 更新 simulationState 状态
 	v.state.SetStatus(txHash, api.VERIFYING_SIMULATION)
@@ -253,11 +263,14 @@ func (v *Verifier) VerifySimulation(simulationBytes []byte, stateDB api.StateDB,
 		v.stats.setCxtStage(txHash, 3)
 	}
 
-	startTime := time.Now()
 	defer func() {
 		utils.SSCLogger().Info().Str("txHash", txHash.String()).
-			Dur("cost", time.Since(startTime)).
-			Msg("verify simulation finished")
+			Dur("total", time.Since(tVs0)).
+			Dur("chainPatch", tVsPatch).
+			Dur("lockCheck", tVsLockCheck).
+			Dur("execVerify", tVsExec).
+			Dur("lockState", tVsLockState).
+			Msg("VerifySimulation timing breakdown")
 	}()
 
 	conflictLockCallIndexes := make([]api.CallIndex, 0)
@@ -348,6 +361,7 @@ CallStates:
 				}
 			}
 		}
+		tVsLockCheck = time.Since(tVs0)
 
 		// 链式交易：Patch vs stateDB 一致性检查
 		// 如果上游失败，stateDB 值与 patch 期望值不匹配，自己也失败
@@ -382,9 +396,13 @@ CallStates:
 		}
 	}
 
+	tVsExec = time.Since(tVs0)
 	if execErr != nil {
 		utils.SSCLogger().Error().Str("txHash", txHash.Hex()).
 			Err(execErr).Msg("failed to verify execution for call state")
+		// sscvm.Call() 在 verifyExecuteForCallState 内通过 SetAndLockState 获取了 locker 锁，
+		// 必须清理 locker.pendingStates，否则残留锁会在 Commit 时合并到 lockedStates → LOCK_STALE
+		stateDB.RollbackTx(txHash)
 		payload := &api.CXTInvalidSimulationPayload{Type: api.InvalidExecution}
 		payloadBytes, _ := json.Marshal(payload)
 		vote := &api.CXTCommitVote{
@@ -401,57 +419,51 @@ CallStates:
 	}
 
 	if conflictCallStateIndex >= 0 {
-		snapshot := stateDB.Snapshot()
-		utils.SSCLogger().Debug().Str("txHash", txHash.Hex()).
-			Str("callIndex", simulation.CallStates[conflictCallStateIndex].CallIndex.ToString()).
-			Msgf("try to mu state with execution")
-		err := v.lockStateWithExecution(simulation.Epochs, simulation.CallStates[conflictCallStateIndex], stateDB.(*corestate.DB))
-		if err != nil {
-			stateDB.RevertToSnapshot(snapshot)
-			utils.SSCLogger().Error().Str("txHash", txHash.Hex()).
-				Err(err).Msg("failed to mu state with execution")
-			payload := &api.CXTInvalidSimulationPayload{Type: api.InvalidExecution}
-			payloadBytes, _ := json.Marshal(payload)
-			vote := &api.CXTCommitVote{
-				TxHash:         txHash,
-				Type:           api.Rollback,
-				ShardId:        v.committee.SelfShard,
-				OriginShardId:  simulation.OriginShardId,
-				Reason:         api.ReasonConflictRWSetFailedLock,
-				Payload:        payloadBytes,
-				BaseSSCMessage: api.BaseSSCMessage{Epochs: simulation.Epochs},
-			}
-			v.communicator.SendCommitVote(v.committee.SelfShard, vote)
-			return
-		}
-		if v.committee.SelfShard == simulation.OriginShardId && v.committee.IsLeader(simulation.Epochs[v.committee.SelfShard]) {
-			v.stats.setCxtStage(txHash, 4)
-		}
-		// 先检查 retry 上限，超限则直接回滚
+		// [冲突] 第一步：先检查超限，避免不必要的 lockStateWithExecution
 		if exceeded, lockedSimNum := v.checkRetryLimitExceeded(txHash, simulation); exceeded {
+			// 超限：直接发回滚投票
+			stateDB.RollbackTx(txHash)
 			v.sendRollbackVoteForRetry(txHash, simulation.SimulationNum, simulation.Epochs, simulation.OriginShardId, lockedSimNum)
 			return
 		}
-		// Recall 已废弃，由 RetryScheduler.CallForRetry 替代
-		// 清理 VerifySimulation 阶段获取的链下锁
-		stateDB.RollbackTx(txHash)
-		if v.committee.IsLeader(simulation.Epochs[v.committee.SelfShard]) {
-			retryTx := &api.RetryTx{
-				TxHash:        txHash,
-				Epochs:        simulation.Epochs,
-				Sender:        simulation.Sender,
-				Nonce:         simulation.Nonce,
-				OriginShardID: simulation.OriginShardId,
-				RelatedShards: simulation.RelatedShards,
-				SimulationNum: simulation.SimulationNum + 1,
-				Condition:     api.Verify,
+
+		// [冲突] 第二步：按 EnableLockOnConflict 配置决定是否上局部锁
+		config := v.timerMgr.GetTimeoutConfig()
+		if config != nil && config.EnableLockOnConflict {
+			snapshot := stateDB.Snapshot()
+			utils.SSCLogger().Debug().Str("txHash", txHash.Hex()).
+				Str("callIndex", simulation.CallStates[conflictCallStateIndex].CallIndex.ToString()).
+				Msgf("try to mu state with execution")
+			err := v.lockStateWithExecution(simulation.Epochs, simulation.CallStates[conflictCallStateIndex], stateDB.(*corestate.DB))
+			if err != nil {
+				stateDB.RevertToSnapshot(snapshot)
+				// lockStateWithExecution 通过 sscvm.Call() 调用了 SetAndLockState，
+				// RevertToSnapshot 只回退 state 数据，不清 locker.pendingStates
+				stateDB.RollbackTx(txHash)
+				utils.SSCLogger().Error().Str("txHash", txHash.Hex()).
+					Err(err).Msg("failed to mu state with execution")
+				payload := &api.CXTInvalidSimulationPayload{Type: api.InvalidExecution}
+				payloadBytes, _ := json.Marshal(payload)
+				vote := &api.CXTCommitVote{
+					TxHash:         txHash,
+					Type:           api.Rollback,
+					ShardId:        v.committee.SelfShard,
+					OriginShardId:  simulation.OriginShardId,
+					Reason:         api.ReasonConflictRWSetFailedLock,
+					Payload:        payloadBytes,
+					BaseSSCMessage: api.BaseSSCMessage{Epochs: simulation.Epochs},
+				}
+				v.communicator.SendCommitVote(v.committee.SelfShard, vote)
+				return
 			}
-			utils.SSCLogger().Info().Str("txHash", txHash.Hex()).
-				Int("simulationNum", retryTx.SimulationNum).
-				Msg("VerifySimulation: conflict detected, calling retry via CallForRetry")
-			v.state.SetWaitingForResimu(txHash)
-			v.retrySchd.CallForRetry(retryTx)
+			if v.committee.SelfShard == simulation.OriginShardId && v.committee.IsLeader(simulation.Epochs[v.committee.SelfShard]) {
+				v.stats.setCxtStage(txHash, 4)
+			}
 		}
+
+		// [冲突] 第三步：解锁 + 调度重试
+		stateDB.RollbackTx(txHash)
+		v.callForRetry(txHash, simulation)
 		return
 	}
 
@@ -470,34 +482,13 @@ CallStates:
 			}
 		}
 
+		stateDB.RollbackTx(txHash)
 		if exceeded, lockedSimNum := v.checkRetryLimitExceeded(txHash, simulation); exceeded {
 			v.sendRollbackVoteForRetry(txHash, simulation.SimulationNum, simulation.Epochs, simulation.OriginShardId, lockedSimNum)
-			return
+		} else {
+			v.callForRetry(txHash, simulation)
 		}
-
-		// 清理 VerifySimulation 阶段获取的链下锁
-		stateDB.RollbackTx(txHash)
-
-		if v.committee.IsLeader(simulation.Epochs[v.committee.SelfShard]) {
-			retryTx := &api.RetryTx{
-				TxHash:        txHash,
-				Epochs:        simulation.Epochs,
-				Sender:        simulation.Sender,
-				Nonce:         simulation.Nonce,
-				OriginShardID: simulation.OriginShardId,
-				RelatedShards: simulation.RelatedShards,
-				SimulationNum: simulation.SimulationNum + 1,
-				Condition:     api.Verify,
-			}
-
-			utils.SSCLogger().Debug().Str("txHash", txHash.Hex()).
-				Int("simulationNum", retryTx.SimulationNum).
-				Int("ls", len(ls)).
-				Msg("subscribe mu States for re-simulation")
-
-			v.state.SetWaitingForResimu(txHash)
-			v.retrySchd.CallForRetry(retryTx)
-		}
+		return
 	} else {
 		utils.SSCLogger().Info().Str("txHash", txHash.Hex()).
 			Uint32("FromShard", simulation.OriginShardId).
@@ -506,6 +497,7 @@ CallStates:
 		for _, callState := range simulation.CallStates {
 			v.lockStateWithRWSet(txHash, callState, stateDB)
 		}
+		tVsLockState = time.Since(tVs0)
 		if v.committee.SelfShard == simulation.OriginShardId && v.committee.IsLeader(simulation.Epochs[v.committee.SelfShard]) {
 			v.stats.setCxtStage(txHash, 4)
 		}
@@ -533,16 +525,20 @@ CallStates:
 
 // checkRetryLimitExceeded 检查链上重试次数是否超限
 func (v *Verifier) checkRetryLimitExceeded(txHash common.Hash, simulation *api.CXTSimulation) (bool, int) {
-	lockedSimNum, lockedExists := v.txLockedSimNum[txHash]
+	lockedSimNum := 0
+	lockedExists := false
+	if actual, ok := v.txLockedSimNum.Load(txHash); ok {
+		lockedSimNum = actual.(*lockedSimNumEntry).num
+		lockedExists = true
+	}
 	config := v.timerMgr.GetTimeoutConfig()
 
 	// 链上专用上限：从首次上锁到现在的重试次数
 	chainExceeded := lockedExists &&
-		simulation.SimulationNum >= lockedSimNum+int(config.MaxOnChainRetries)
+		simulation.SimulationNum > lockedSimNum+int(config.MaxOnChainRetries)
 
 	// 总上限：全链路重试次数
-	totalExceeded := config.MaxRetriesTotal > 0 &&
-		simulation.SimulationNum >= int(config.MaxRetriesTotal)
+	totalExceeded := simulation.SimulationNum > int(config.MaxRetriesTotal)
 
 	return chainExceeded || totalExceeded, lockedSimNum
 }
@@ -565,6 +561,22 @@ func (v *Verifier) sendRollbackVoteForRetry(txHash common.Hash, simulationNum in
 		BaseSSCMessage: api.BaseSSCMessage{Epochs: epochs},
 	}
 	v.communicator.SendCommitVote(v.committee.SelfShard, vote)
+}
+
+// callForRetry 通过 retryScheduler 调度下一轮链下重试
+func (v *Verifier) callForRetry(txHash common.Hash, simulation *api.CXTSimulation) {
+	if !v.committee.IsLeader(simulation.Epochs[v.committee.SelfShard]) {
+		return
+	}
+	v.stats.setCxtStage(txHash, 4)
+	v.retrySchd.CallForRetry(&api.RetryTx{
+		TxHash:        txHash,
+		Epochs:        simulation.Epochs,
+		RelatedShards: simulation.RelatedShards,
+		SimulationNum: simulation.SimulationNum + 1,
+		Condition:     api.Verify,
+		OriginShardID: simulation.OriginShardId,
+	})
 }
 
 // verifyExecuteForCallState 验证单个 call state 的执行
@@ -708,14 +720,13 @@ func (v *Verifier) checkLockConflict(simulation *api.CXTSimulation, stateDB api.
 
 // HasOnChainSimTx 检查交易是否已有活跃的链上 SimTx（即之前上过链）
 func (v *Verifier) HasOnChainSimTx(txHash common.Hash) bool {
-	v.verifyCtxLock.RLock()
-	defer v.verifyCtxLock.RUnlock()
-	_, exists := v.txLockedSimNum[txHash]
+	_, exists := v.txLockedSimNum.Load(txHash)
 	return exists
 }
 
 // lockStateWithExecution 对某个 call state 执行上锁并重执行
 func (v *Verifier) lockStateWithExecution(epochs []api.Epoch, callState *api.CXTCallState, state *corestate.DB) error {
+	t0 := time.Now()
 	var (
 		topReq        *api.CXTSimulationRequest
 		callReq       *api.CXTCallSSCRequest
@@ -765,23 +776,31 @@ func (v *Verifier) lockStateWithExecution(epochs []api.Epoch, callState *api.CXT
 	_, leftOverGas, err := sscvm.Call(sender, addr, input, gas, value)
 	if err != nil {
 		utils.SSCLogger().Error().Err(err).Str("txHash", txHash.Hex()).
+			Dur("cost", time.Since(t0)).
 			Msgf("lockStateWithExecution: execution failed callIndex=%s, contract=%s", callIndex.ToString(), addr.Hex())
 		return err
 	}
 	_ = leftOverGas
+	utils.SSCLogger().Info().Str("txHash", txHash.Hex()).
+		Str("callIndex", callIndex.ToString()).
+		Dur("cost", time.Since(t0)).
+		Msg("lockStateWithExecution timing breakdown")
 	return nil
 }
-
-// lockStateWithRWSet 基于 RWSet 进行上锁
 func (v *Verifier) lockStateWithRWSet(txHash common.Hash, callState *api.CXTCallState, stateDB api.StateDB) {
+	t0 := time.Now()
+	keyCount := 0
 	for address, stateMap := range callState.RWSet.WriteState.State {
 		for key, value := range stateMap {
 			stateDB.SetAndLockState(txHash, callState.CallIndex, address, key, value)
+			keyCount++
 		}
 	}
-	utils.SSCLogger().Debug().Str("txHash", txHash.Hex()).
+	utils.SSCLogger().Info().Str("txHash", txHash.Hex()).
 		Str("callIndex", callState.CallIndex.ToString()).
-		Msgf("successed mu the rwset of state")
+		Int("keys", keyCount).
+		Dur("cost", time.Since(t0)).
+		Msg("lockStateWithRWSet timing breakdown")
 }
 
 // ========================================================================

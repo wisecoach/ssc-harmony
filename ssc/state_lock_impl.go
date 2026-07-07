@@ -406,6 +406,7 @@ type rlockedState struct {
 // 2. 清空未占用的锁（lockedBy 为零值的）
 // 3. 将快照关联到 newRoot
 func (s *stateLockManager) handleLockCommit(newRoot common.Hash) error {
+	t0 := time.Now()
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -449,6 +450,8 @@ func (s *stateLockManager) handleLockCommit(newRoot common.Hash) error {
 	oldRoot := s.currentRoot
 	s.currentRoot = newRoot
 
+	tDeepCopy := time.Since(t0)
+
 	// === 原始提交逻辑（不变）===
 	s.commitCnt++
 	s.lockedStates.clear()
@@ -474,7 +477,7 @@ func (s *stateLockManager) handleLockCommit(newRoot common.Hash) error {
 			s.lockStartBlock[key] = s.currentBlockNum
 		} else {
 			heldBlocks := s.currentBlockNum - startBlock
-			if heldBlocks > 10 {
+			if heldBlocks > 30 {
 				staleLocks = append(staleLocks, lockInfo{
 					txHash: state.lockedBy.Hex()[:16],
 					key:    string(key),
@@ -490,6 +493,7 @@ func (s *stateLockManager) handleLockCommit(newRoot common.Hash) error {
 		}
 	}
 
+	tStaleCheck := time.Since(t0)
 	utils.SSCLogger().Info().
 		Str("oldRoot", oldRoot.Hex()).
 		Str("newRoot", newRoot.Hex()).
@@ -498,6 +502,9 @@ func (s *stateLockManager) handleLockCommit(newRoot common.Hash) error {
 		Int("lockedStates", lockedStatesCount).
 		Int("lockedTx", lockedTxCount).
 		Int("staleLockCount", len(staleLocks)).
+		Dur("deepCopy", tDeepCopy).
+		Dur("staleCheck", tStaleCheck).
+		Dur("total", time.Since(t0)).
 		Msg("locker snapshot created")
 
 	for _, l := range staleLocks {
