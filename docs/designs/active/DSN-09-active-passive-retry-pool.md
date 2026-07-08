@@ -47,7 +47,8 @@
   1. A 发现 tx 的状态都解锁了 → RetrySignal → O
   2. O 广播 RetryCommit → A, B
   3. A: TryLock OK → Locked=true
-  4. B: TryLock OK → stateDB.CheckLock → 链上锁冲突 → Locked=false, reason=OnChain
+  4. B: Phase 1 TryLock → Phase 2 stateDB.CheckLock → 链上锁冲突
+     → Phase 2b FindCovering → 无 Patch 覆盖 → Locked=false, OnChainLockConflict=true
   5. O 收到 B 失败 → O 通知 A: 进被动池
   6. A 把 tx 移入 passivePool → 停止每块重试
   7. B 的链上锁释放（SimTx CR 完成 / chainNextSim 触发）
@@ -128,6 +129,10 @@ func (rs *retryScheduler) OnBlockCommitted(block *types.Block) {
 
 当 shard A 收到 O 广播的 `RetryCommit` 时，如果这笔 tx 在 `passivePool` 中：
 
+> **注意**：下方 `// ... 正常锁竞争逻辑 ...` 处已由 DSN-22 重写为三阶段流程：
+> Phase 1 TryLock → Phase 2 stateDB.CheckLock → Phase 2b PatchPool.FindCovering。
+> 详见 `DSN-22-retrycommit-lock-order-fix.md §2.2`。被动池唤醒逻辑（移出池）不变。
+
 ```go
 func (rs *retryScheduler) RetryCommit(txHash common.Hash) *api.RetryCommitResp {
     // 如果在被动池中，先移出
@@ -136,7 +141,8 @@ func (rs *retryScheduler) RetryCommit(txHash common.Hash) *api.RetryCommitResp {
         utils.SSCLogger().Info().Str("txHash", txHash.Hex()).
             Msg("retryCommit: woken from passive pool, attempting lock")
     }
-    // ... 正常锁竞争逻辑 ...
+    // DSB-22 三阶段：TryLock → stateDB.CheckLock → FindCovering(conflictKeys)
+    // ...
 }
 ```
 
@@ -145,8 +151,8 @@ func (rs *retryScheduler) RetryCommit(txHash common.Hash) *api.RetryCommitResp {
 当前 `RetryCommit` 已经区分 `ErrLockConflict_OnChain`。当 B 检测到时：
 
 ```
-B.RetryCommit → stateDB.CheckLock → OnChain
-  → B 返回 Locked=false, reason=OnChain
+B.RetryCommit → Phase 1 TryLock → Phase 2 stateDB.CheckLock → OnChain
+  → Phase 2b FindCovering → 无 Patch → B 返回 Locked=false, OnChainLockConflict=true
   → O 的 tryToReSimulation 收到
   → O 调用 A: AddToPassivePool(txHash)
   → A 把 tx 标记为被动

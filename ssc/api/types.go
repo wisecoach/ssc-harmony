@@ -1171,6 +1171,48 @@ func (pp *PatchPool) HasConflict(retryTx *RetryTx) (bool, *ChainPatchNode) {
 	return false, nil
 }
 
+// FindCovering checks if a single non-Finalized, non-Consumed Patch in the Pool
+// covers all given conflictKeys. Returns the matching node if found.
+// Unlike HasConflict which checks all keys of a retryTx, this only checks the
+// specific keys that already failed stateDB.CheckLock.
+func (pp *PatchPool) FindCovering(conflictKeys []LockKey) (bool, *ChainPatchNode) {
+	pp.mu.RLock()
+	defer pp.mu.RUnlock()
+
+	// For each conflictKey, find the set of Patches that own it
+	// Then find the intersection — a single Patch that owns all conflictKeys
+	candidates := make(map[common.Hash]int)
+	for _, key := range conflictKeys {
+		if owners, ok := pp.KeyIndex[key]; ok {
+			for txHash := range owners {
+				candidates[txHash]++
+			}
+		} else {
+			// This key has no Patch at all → impossible to cover
+			return false, nil
+		}
+	}
+
+	// Select the Patch that covers ALL conflictKeys
+	// Skip Finalized or Consumed patches
+	var best common.Hash
+	for txHash, cnt := range candidates {
+		if cnt != len(conflictKeys) {
+			continue
+		}
+		node, exists := pp.Patches[txHash]
+		if exists && node.Status != PatchFinalized && node.Status != PatchConsumed {
+			if best == (common.Hash{}) {
+				best = txHash
+			}
+		}
+	}
+	if best != (common.Hash{}) {
+		return true, pp.Patches[best]
+	}
+	return false, nil
+}
+
 // TryConsume attempts to take the Patch for the given txHash.
 // Returns the Patch if successful, nil if already consumed/finalized or not found.
 // Sets Status to PatchConsumed.

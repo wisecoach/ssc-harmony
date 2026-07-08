@@ -303,13 +303,21 @@ func (rs *retryScheduler) OnPatchPoolUpdated() {
 }
 ```
 
-### 6.3 Phase 3: RetryCommit — 取本地 Patch 跳过锁
+### 6.3 Phase 3: RetryCommit — 取本地 Patch 覆盖 stateDB 冲突 key
+
+> **⚠️ 已由 DSN-22 替代（2026-07-07）**。新的 `RetryCommit` 锁检查顺序改为三阶段：
+> Phase 1: TempLockView → Phase 2: stateDB.CheckLock → Phase 2b: PatchPool 补救。
+> PatchPool 不再无条件跳锁，仅在 stateDB 冲突且 `FindCovering(conflictKeys)` 能覆盖全部冲突 key 时介入。
+> 详见 `DSN-22-retrycommit-lock-order-fix.md §2.2`。
+>
+> 以下 v4 设计保留仅作历史对照。
 
 ```go
 func (s *sscService) RetryCommit(txHash common.Hash) *api.RetryCommitResp {
     // ... 现有逻辑 ...
 
-    // 新：检查本地 PatchPool 是否有该 tx 可用的 Patch
+    // 【v4 设计，已过时】新：检查本地 PatchPool 是否有该 tx 可用的 Patch
+    // DSN-22 改为：stateDB.CheckLock 冲突后 → FindCovering(conflictKeys) 补救
     if patch := s.retryScheduler.patchPool.TryConsume(txHash); patch != nil {
         // 有匹配的 Patch → 跳过 TempLockView + stateLocker 的锁冲突检查
         // 直接将 Patch 应用到 simState.ChainPatch
@@ -368,11 +376,9 @@ HandleRetrySignal → setSignal → readyCnt 聚合
   └─ readyCnt == len(RelatedShards)?
        ├─ Yes → tryToReSimulation(Tx2)
        │          ├─ RetryCommit on each shard:
-       │          │   ├─ shard A: 本地 PatchPool.TryConsume(Tx2) → nil (Patch 不在本 shard)
-       │          │   │   └─ 正常锁竞争
-       │          │   ├─ shard B: 本地 PatchPool (写 K 的 shard):
-       │          │   │   └─ TryConsume(Tx2) → 找到 SimTx1 的 Patch → 跳过锁 ✅
-       │          │   └─ shard C: 同 shard A, 正常锁竞争
+       │          │   ├─ shard A: Phase 1 TryLock → Phase 2 stateDB 无冲突 → Locked=true
+       │          │   ├─ shard B: Phase 1 TryLock → Phase 2 stateDB K冲突 → Phase 2b FindCovering([K]) → 找到 Patch → Locked=true
+       │          │   └─ shard C: 同 shard A, 无冲突 → Locked=true
        │          └─ 全部 locked:true → TriggerReSimulation
        └─ No → 等待
 
@@ -403,7 +409,7 @@ SimTx2 重试失败 → patchPool.Release(SimTx1) → 允许其他 retryTx 取�
 | D14 | Consumed 语义 | 临时独占，失败释放 | 防止多笔 retryTx 同时抢同一个 Patch |
 | D15 | 保留 chainNextSim | 保留 | 低延迟路径（实时匹配）和批量匹配路径（OnPatchPoolUpdated）共存 |
 | D16 | 匹配触发 | OnPatchPoolUpdated（Add 后触发） | 不需要定时扫描，事件驱动 |
-| D17 | RetryCommit 取 Patch | TryConsume 出本地 Patch | 成功取出就跳过锁冲突，取不到走正常路径 |
+| D17 | RetryCommit 取 Patch | FindCovering(conflictKeys) 补救 | 仅 stateDB.CheckLock 冲突后，用 Patch 覆盖冲突 key。找不到则 OnChainLockConflict=true（已由 DSN-22 修正） |
 | D18 | onChainPatches vs patches | 分离 | patches 仅 leader 链下缓存，onChainPatches 所有节点共享，职责不同 |
 | D19 | onChainPatches 写入时机 | 收到 SimTx 时 | 所有节点统一入池，不依赖 leader 侧流程 |
 | D20 | onChainPatches 清理 | Committer CR 完成时 | 链上清理与 CR 绑定，链下清理由 closeTransaction 负责 |

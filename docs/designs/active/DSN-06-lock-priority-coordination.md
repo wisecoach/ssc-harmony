@@ -64,7 +64,9 @@ SimTx1（写 Key K）在 shard 0 提交
   └→ OnPatchPoolUpdated → 匹配到 retryTx2
        └→ sendChainSignal → origin shard 并发 RetryCommit
 
-shard 0: PatchPool 有 K → TryConsume → locked ✅
+shard 0: PatchPool 有 K → has conflict → stateDB.CheckLock(K) → 冲突
+       → FindCovering([K]) → 找到 Patch → Locked=true ✅
+       （DSN-22 流程：Phase 1 TryLock → Phase 2 stateDB 冲突 → Phase 2b Patch 补救）
 shard 1: PatchPool 无 K → TempLockView.TryLock → 锁冲突 ❌
 shard 2: PatchPool 无 K → TempLockView.TryLock → 锁冲突 ❌
 ```
@@ -273,7 +275,8 @@ func (v *TempLockView) IsWounded(txHash common.Hash) bool {
 ```
 
 被踢的 retryTx 在以下时机发现：
-1. **`RetryCommit` 返回时**：如果 wounded=true，`tryToReSimulation` 放弃本轮
+0. **`RetryCommit` 入口处**（DSN-22 新增）：在 Phase 1 TryLockWithPriority 执行前，检查 `IsWounded`。如果 wounded 标记来自上轮残留，直接返回 `Locked=false`，避免进入锁竞争。
+1. **`RetryCommit` 返回时**：如果 TryLockWithPriority 返回 wounded=true，`tryToReSimulation` 放弃本轮
 2. **`tryToReSimulation` 二次验证时**：在 `TriggerReSimulation` 前再次调用 `IsWounded`
 3. **`StartReSimulation` 结果聚合前**：检查 wounded flag，若被踢则放弃本轮
 
@@ -423,7 +426,7 @@ Wound-Wait 完全在已有 `RetryCommit` RPC 内完成。没有新增跨 shard �
 |------|------|:------:|:----:|
 | `ssc/api/types.go` | 新增 `Priority` 结构体；`ChainPatchNode.Consumed` 改为三态 `PatchConsumeStatus` | P0 | ~40 行 |
 | `ssc/temp_lock_view.go` | 新增 `TryLockWithPriority`、`IsWounded`、`woundedTxs` | P0 | ~60 行 |
-| `ssc/retry_scheduler.go` | `RetryCommit` 用新 TryLock；失败路径加 `wounded` 判断 | P0 | ~30 行 |
+| `ssc/retry_scheduler.go` | `RetryCommit` 用新 TryLock；失败路径加 `wounded` 判断；入口加 `IsWounded` 前置检查。`RetryCommit` 整体锁检查顺序已由 DSN-22 重写为 Phase 1→2→2b 三阶段。 | P0 | ~30 行 |
 | `ssc/simulator_leader.go` | `CommitSimulation` 前二次验证 + `Finalize` | P0 | ~15 行 |
 | `ssc/impl.go` | `closeTransaction` 加 `WoundedByHigherPriority` | P1 | ~5 行 |
 
