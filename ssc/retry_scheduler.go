@@ -351,8 +351,8 @@ type retryScheduler struct {
 
 	// 缓存：OnBlockCommitted 时缓存的 stateDB 和 block hash
 	// 供 RetryCommit Phase 2 + StartReSimulation 共用，消除 CheckLock 与 Lockable 的 race
-	cachedState    atomic.Value // api.StateDB
-	cachedBlockNum uint64
+	cachedState     atomic.Value // api.StateDB
+	cachedBlockNum  uint64
 	cachedBlockHash common.Hash
 
 	// 依赖组件（通过接口解耦）
@@ -1232,7 +1232,6 @@ func (rs *retryScheduler) RetryCommit(txHash common.Hash) *api.RetryCommitResp {
 				chainRetryStats.SigRetryCommitPatchHit.Add(1)
 				rs.state.SetChainPatch(txHash, merged)
 				rs.consumedPatches.Store(txHash, consumedTxHashes)
-				rs.tempLockView.ClearWounded(txHash)
 				utils.SSCLogger().Info().Str("txHash", txHash.Hex()).
 					Int("patchCount", len(patches)).
 					Int("coveredKeys", len(retryTx.WriteSet)).
