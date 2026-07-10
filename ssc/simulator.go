@@ -858,10 +858,67 @@ func (sim *Simulator) GetBalance(db api.StateDB, txHash common.Hash, address com
 	return bal
 }
 
+// readChainPatch 统一查询交易消费的 ChainPatch 是否覆盖指定 key。
+// 先查 SimState.ChainPatch（SetChainPatch 写入的合并值），再查 patches（链式依赖链）。
+func (sim *Simulator) readChainPatch(txHash common.Hash, address common.Address, key common.Hash) (common.Hash, bool) {
+	// 查 SimState.ChainPatch
+	simState, ok := sim.GetSimState(txHash)
+	if ok && simState != nil && simState.ChainPatch != nil {
+		if addrState, ok := simState.ChainPatch.WriteState.State[address]; ok {
+			if val, exists := addrState[key]; exists {
+				return val, true
+			}
+		}
+	}
+	// 查 patches（链式依赖链）
+	rs := sim.sscService.retryScheduler
+	chainPatchRef := rs.GetChainPatchRef(txHash)
+	if chainPatchRef != nil {
+		return rs.readPatchChain(chainPatchRef.TxHash, chainPatchRef.SimulationNum, address, key)
+	}
+	return common.Hash{}, false
+}
+
+// IsKeyAvailable 三层仲裁：TLV 检查 → SLM 检查 → ChainPatch 补救。
+// 用于 GetState/SetState 中 stateDB 读取前的锁冲突预检。
+//
+// 返回：
+//
+//	available: key 是否可访问
+//	patchedVal: 非 nil 表示 ChainPatch 提供了值，调用方应使用此值
+//	err: 非 nil 表示锁冲突且无 Patch 覆盖
+func (sim *Simulator) IsKeyAvailable(txHash common.Hash, db api.StateDB, address common.Address, key common.Hash) (available bool, patchedVal *common.Hash, err error) {
+	lockKey := api.FormKey(address, key)
+	tlv := sim.sscService.retryScheduler.tempLockView
+
+	// Step 1: TLV 检查 — 是否有其他交易预约了这个 key
+	tlvLocked := tlv.HasConflict(txHash, lockKey)
+
+	// Step 2: SLM 检查 — stateLockManager 是否锁了这个 key
+	slmLocked := false
+	if err := db.CheckLock(lockKey, txHash); err != nil {
+		slmLocked = true
+	}
+
+	// 两者都未锁 → 可用
+	if !tlvLocked && !slmLocked {
+		return true, nil, nil
+	}
+
+	// Step 3: ChainPatch 补救 — 看该交易消费的 Patch 能否覆盖
+	val, found := sim.readChainPatch(txHash, address, key)
+	if found {
+		return true, &val, nil // Patch 覆盖 ✅
+	}
+
+	// Patch 未覆盖 → 冲突
+	return false, nil, api.ErrLockConflict_OnChain
+}
+
 // GetState 读取模拟执行中的状态值。
 // Step 0: 查 RetryScheduler patches（链式依赖路径）
 // Step 1: 查 SimulationState ChainPatch（直接 patch 路径）
-// Step 2: 查 callState RWSet
+// Step 2: 三层仲裁 IsKeyAvailable → 查 callState RWSet
 func (sim *Simulator) GetState(db api.StateDB, txHash common.Hash, address common.Address, key common.Hash) (common.Hash, error) {
 	// Step 0: 递归查 RetryScheduler patches（链式依赖路径）
 	rs := sim.sscService.retryScheduler
@@ -930,12 +987,24 @@ func (sim *Simulator) GetState(db api.StateDB, txHash common.Hash, address commo
 		rwset.CurrentState.State[address] = make(map[common.Hash]common.Hash)
 	}
 	if value, exists := rwset.CurrentState.State[address][key]; !exists {
-		val, err := db.GetState(txHash, address, key)
+		// Step 2a: 三层仲裁 — TLV → SLM → ChainPatch
+		_, patchVal, err := sim.IsKeyAvailable(txHash, db, address, key)
 		if err != nil {
-			if api.IsLockConflictDBErr(err) {
-				callState.LockedByOtherTx = err
-				callState.LockedKeys = append(callState.LockedKeys, api.FormKey(address, key))
-			} else {
+			// 锁冲突且无 Patch 覆盖
+			callState.LockedByOtherTx = err
+			callState.LockedKeys = append(callState.LockedKeys, api.FormKey(address, key))
+			return common.Hash{}, nil // ForceSimulation兼容：返回零值继续执行
+		}
+
+		var val common.Hash
+		if patchVal != nil {
+			// Step 2b: Patch 提供了值，不走 stateDB
+			val = *patchVal
+		} else {
+			// Step 2c: 无锁冲突，走 stateDB 正常读
+			val, err = db.GetState(txHash, address, key)
+			if err != nil {
+				// 非锁冲突的错误（如 state trie 不存在）
 				return common.Hash{}, err
 			}
 		}
@@ -1000,21 +1069,28 @@ func (sim *Simulator) SetState(db api.StateDB, txHash common.Hash, address commo
 				}
 			}
 		}
-		// Step 2: Patch 未命中，从 stateDB 读（可能触发 Lockable）
+		// Step 2: 三层仲裁 — TLV → SLM → ChainPatch
 		if !patchFound {
-			var err error
-			val, err = db.GetState(txHash, address, key)
+			_, patchVal, err := sim.IsKeyAvailable(txHash, db, address, key)
 			if err != nil {
-				utils.SSCLogger().Error().Err(err).Str("txHash", txHash.Hex()).
-					Msgf("failed to set state: get conflict state [%s:%s]", address.Hex(), key.Hex())
-				if api.IsLockConflictDBErr(err) {
-					callState.LockedByOtherTx = err
-					callState.LockedKeys = append(callState.LockedKeys, api.FormKey(address, key))
-					// ForceSimulation: return the stale value from stateDB to continue execution
-					rwset.CurrentState.State[address][key] = value
-					rwset.WriteState.State[address][key] = value
-					return nil
-				} else {
+				// 锁冲突且无 Patch 覆盖
+				callState.LockedByOtherTx = err
+				callState.LockedKeys = append(callState.LockedKeys, api.FormKey(address, key))
+				// ForceSimulation 兼容：用当前写入值继续执行
+				rwset.CurrentState.State[address][key] = value
+				rwset.WriteState.State[address][key] = value
+				return nil
+			}
+
+			if patchVal != nil {
+				// Patch 提供了值，不走 stateDB
+				val = *patchVal
+			} else {
+				// 无锁冲突，走 stateDB 正常读
+				val, err = db.GetState(txHash, address, key)
+				if err != nil {
+					utils.SSCLogger().Error().Err(err).Str("txHash", txHash.Hex()).
+						Msgf("failed to set state: get conflict state [%s:%s]", address.Hex(), key.Hex())
 					return err
 				}
 			}

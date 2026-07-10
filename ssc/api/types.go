@@ -559,9 +559,8 @@ type CXTSimulation struct {
 	OriginShardId  uint32
 	RelatedShards  RelatedShards
 	CallStates     []*CXTCallState // all cross-shard call of cxt related to this shard
-	ChainPatch     *RWSet          `json:"chain_patch,omitempty"`      // direct upstream WriteSet, populated for chained retries
-	UpstreamTxHash common.Hash     `json:"upstream_tx_hash,omitempty"` // upstream SimTx hash
-	UpstreamSimNum int             `json:"upstream_sim_num,omitempty"` // upstream SimTx simulationNum
+	ChainPatch     *RWSet        `json:"chain_patch,omitempty"`        // merged upstream WriteSet for chained retries
+	UpstreamTxList []TxSimKey    `json:"upstream_tx_list,omitempty"`   // all upstream SimTxs (DAG)
 	BaseBLSSignedMessage
 }
 
@@ -576,8 +575,7 @@ func (m *CXTSimulation) Bytes() []byte {
 		RelatedShards  RelatedShards
 		CallStates     []*CXTCallState
 		ChainPatch     *RWSet
-		UpstreamTxHash common.Hash
-		UpstreamSimNum int
+		UpstreamTxList []TxSimKey
 	}
 	msg := CXTSimulationWithoutSignature{
 		SimulationNum:  m.SimulationNum,
@@ -589,8 +587,7 @@ func (m *CXTSimulation) Bytes() []byte {
 		RelatedShards:  m.RelatedShards,
 		CallStates:     m.CallStates,
 		ChainPatch:     m.ChainPatch,
-		UpstreamTxHash: m.UpstreamTxHash,
-		UpstreamSimNum: m.UpstreamSimNum,
+		UpstreamTxList: m.UpstreamTxList,
 	}
 	bytes, err := json.Marshal(msg)
 	if err != nil {
@@ -1042,13 +1039,12 @@ type RetrySignal struct {
 }
 
 // ChainNode represents a node in the simulation dependency chain.
-// Each node stores its own WriteSet patch and a pointer to its upstream node.
+// Each node stores its own WriteSet patch, along with references to all upstream nodes (DAG).
 type ChainNode struct {
 	TxHash         common.Hash
 	SimulationNum  int
-	Patch          *RWSet      // 自己的 WriteSet
-	UpstreamTxHash common.Hash // 上游 txHash（零值=根节点）
-	UpstreamSimNum int         // 上游 simulationNum
+	Patch          *RWSet        // 自己的 WriteSet
+	UpstreamTxList []TxSimKey    // 所有上游 SimTx（空=根节点，DAG 支持多上游）
 }
 
 // TxSimKey identifies a specific simulation of a transaction.
@@ -1090,12 +1086,13 @@ const (
 // ChainPatchNode is a node in the PatchPool.
 // Each submitted SimTx corresponds to one node.
 type ChainPatchNode struct {
-	TxHash    common.Hash        // txHash of the SimTx
-	Patch     *RWSet             // WriteSet of the SimTx
-	Status    PatchConsumeStatus // Free → Consumed → Finalized
-	Consumer  common.Hash        // retryTx that consumed this Patch (zero if Free)
-	Priority  Priority           // priority of the consumer
-	CreatedAt time.Time          // time when added to pool
+	TxHash        common.Hash        // txHash of the SimTx
+	SimulationNum int                // simulationNum of the SimTx
+	Patch         *RWSet             // WriteSet of the SimTx
+	Status        PatchConsumeStatus // Free → Consumed → Finalized
+	Consumer      common.Hash        // retryTx that consumed this Patch (zero if Free)
+	Priority      Priority           // priority of the consumer
+	CreatedAt     time.Time          // time when added to pool
 }
 
 // PatchPool is a shard-local pool of chain patches maintained by the leader.
@@ -1108,15 +1105,16 @@ type PatchPool struct {
 
 // Add adds a submitted SimTx's WriteSet to the PatchPool.
 // Also updates the keyIndex inverted index.
-func (pp *PatchPool) Add(txHash common.Hash, writeSet *RWSet) {
+func (pp *PatchPool) Add(txHash common.Hash, simNum int, writeSet *RWSet) {
 	pp.mu.Lock()
 	defer pp.mu.Unlock()
 
 	pp.Patches[txHash] = &ChainPatchNode{
-		TxHash:    txHash,
-		Patch:     writeSet,
-		Status:    PatchFree,
-		CreatedAt: time.Now(),
+		TxHash:        txHash,
+		SimulationNum: simNum,
+		Patch:         writeSet,
+		Status:        PatchFree,
+		CreatedAt:     time.Now(),
 	}
 
 	// Update keyIndex
@@ -1211,6 +1209,82 @@ func (pp *PatchPool) FindCovering(conflictKeys []LockKey) (bool, *ChainPatchNode
 		return true, pp.Patches[best]
 	}
 	return false, nil
+}
+
+// FindCoveringSet 返回一组 Free Patch，联合覆盖全部 conflictKeys（DAG 多 Patch 覆盖）。
+// 贪心近似：每轮选覆盖最多「未覆盖 key」的 Free Patch。
+// 返回 nil = 无法覆盖全部 key。
+func (pp *PatchPool) FindCoveringSet(conflictKeys []LockKey) []*ChainPatchNode {
+	pp.mu.RLock()
+	defer pp.mu.RUnlock()
+
+	// 建可用 Patch 表
+	type patchEntry struct {
+		node *ChainPatchNode
+		keys map[int]struct{} // 该 Patch 覆盖的 conflictKeys 下标
+	}
+	var available []patchEntry
+	for i, key := range conflictKeys {
+		owners, ok := pp.KeyIndex[key]
+		if !ok {
+			return nil // 某个 key 完全无 Patch → 无法覆盖
+		}
+		for txHash := range owners {
+			node, exists := pp.Patches[txHash]
+			if !exists || node.Status != PatchFree {
+				continue
+			}
+			// Find or create entry
+			found := false
+			for j := range available {
+				if available[j].node.TxHash == txHash {
+					available[j].keys[i] = struct{}{}
+					found = true
+					break
+				}
+			}
+			if !found {
+				available = append(available, patchEntry{
+					node: node,
+					keys: map[int]struct{}{i: {}},
+				})
+			}
+		}
+	}
+
+	// 贪心选 Patch
+	covered := make(map[int]bool)
+	var result []*ChainPatchNode
+
+	for len(covered) < len(conflictKeys) {
+		// 找覆盖最多未覆盖 key 的 Patch
+		bestIdx := -1
+		bestCnt := 0
+		for idx, entry := range available {
+			cnt := 0
+			for k := range entry.keys {
+				if !covered[k] {
+					cnt++
+				}
+			}
+			if cnt > bestCnt {
+				bestCnt = cnt
+				bestIdx = idx
+			}
+		}
+		if bestIdx == -1 || bestCnt == 0 {
+			return nil // 无法继续覆盖
+		}
+		// 标记已覆盖的 key
+		for k := range available[bestIdx].keys {
+			covered[k] = true
+		}
+		result = append(result, available[bestIdx].node)
+		// Remove chosen entry from available
+		available = append(available[:bestIdx], available[bestIdx+1:]...)
+	}
+
+	return result
 }
 
 // TryConsume attempts to take the Patch for the given txHash.

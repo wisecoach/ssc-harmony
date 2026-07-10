@@ -38,6 +38,8 @@
 - [DSN-10 - Log Query Guide](designs/active/DSN-10-log-query-guide.md)
 - [DSN-11 - Log Lifecycle](designs/active/DSN-11-log-lifecycle.md)
 - [DSN-12 - Rollback v1 Passive Pool](designs/active/DSN-12-rollback-v1-passive-pool.md)
+- [DSN-22 - RetryCommit 锁检查顺序修正](designs/active/DSN-22-retrycommit-lock-order-fix.md)
+- [DSN-23 - PatchPool DAG 多 Patch 联合覆盖](designs/active/DSN-23-patchpool-dag-design.md)
 
 ### Designs (archived)
 

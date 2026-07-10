@@ -810,11 +810,9 @@ func (s *sscService) CommitSimulation(commit *api.SimulationCommit) {
 	}
 
 	// 检查当前 SimTx 是否有上游依赖（链式重试）
-	var upstreamTxHash common.Hash
-	var upstreamSimNum int
-	if upHash, upSim := s.retryScheduler.GetUpstreamTxRef(txHash); upHash != (common.Hash{}) {
-		upstreamTxHash = upHash
-		upstreamSimNum = upSim
+	var upstreamTxList []api.TxSimKey
+	if ul := s.retryScheduler.GetUpstreamTxRef(txHash); len(ul) > 0 {
+		upstreamTxList = ul
 		chainRetryStats.ChainLengthMu.Lock()
 		chainRetryStats.ChainCommitCnt[commit.SimulationNum]++
 		chainRetryStats.ChainLengthMu.Unlock()
@@ -829,8 +827,7 @@ func (s *sscService) CommitSimulation(commit *api.SimulationCommit) {
 		RelatedShards:  commit.RelatedShards,
 		CallStates:     callStates,
 		ChainPatch:     writeSet,
-		UpstreamTxHash: upstreamTxHash,
-		UpstreamSimNum: upstreamSimNum,
+		UpstreamTxList: upstreamTxList,
 		BaseBLSSignedMessage: api.BaseBLSSignedMessage{
 			Epochs: commit.Epochs,
 		},
@@ -847,7 +844,7 @@ func (s *sscService) CommitSimulation(commit *api.SimulationCommit) {
 
 	// 提交 SimTx 后，所有节点收到后入 onChainPatches
 	// Leader 在提交前先入，确保本地即刻可用
-	s.retryScheduler.AddOnChainPatch(txHash, commit.SimulationNum, simulation.ChainPatch, upstreamTxHash, upstreamSimNum)
+	s.retryScheduler.AddOnChainPatch(txHash, commit.SimulationNum, simulation.ChainPatch, upstreamTxList)
 	tOnChainPatch = time.Since(t0)
 
 	err = s.txSubmitter.SubmitSimulationTx(simulation)
@@ -859,7 +856,7 @@ func (s *sscService) CommitSimulation(commit *api.SimulationCommit) {
 	}
 
 	// SimTx 提交成功后，统计链式深度
-	if upstreamTxHash != (common.Hash{}) {
+	if len(upstreamTxList) > 0 {
 		// 是链式交易，记录提交深度（simNum=链深度）
 		chainRetryStats.ChainLengthMu.Lock()
 		chainRetryStats.ChainCommitCnt[commit.SimulationNum]++
@@ -875,7 +872,7 @@ func (s *sscService) CommitSimulation(commit *api.SimulationCommit) {
 	if s.IsLeader(commit.Epochs[s.SelfShard]) {
 		s.retryScheduler.chainNextSim(txHash, commit.SimulationNum, writeSet)
 		// v4: Add to PatchPool for local shard matching
-		s.retryScheduler.patchPool.Add(txHash, writeSet)
+		s.retryScheduler.patchPool.Add(txHash, commit.SimulationNum, writeSet)
 		// Trigger matching for retryPool entries
 		s.retryScheduler.OnPatchPoolUpdated()
 	}
@@ -1171,6 +1168,15 @@ func (s *sscService) closeTransaction(txHash common.Hash, commitOrRollback bool,
 	s.timerMgr.RemoveTx(txHash)
 
 	s.retryScheduler.StaleTx(txHash)
+
+	// DAG: Clean up consumedPatches — 释放残留的 Consumed Patch
+	if consumedTxHashesVal, exists := s.retryScheduler.consumedPatches.Load(txHash); exists {
+		consumedTxHashes := consumedTxHashesVal.([]common.Hash)
+		for _, txh := range consumedTxHashes {
+			s.retryScheduler.patchPool.Release(txh)
+		}
+		s.retryScheduler.consumedPatches.Delete(txHash)
+	}
 
 	// v4: Clean up PatchPool
 	s.retryScheduler.patchPool.Remove(txHash)

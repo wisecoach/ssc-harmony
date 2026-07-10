@@ -240,7 +240,7 @@ func (v *Verifier) VerifySimulation(simulationBytes []byte, stateDB api.StateDB,
 	// v6: 所有节点收到 SimTx 后，将 ChainPatch 存入 onChainPatches
 	if simulation.ChainPatch != nil {
 		v.retrySchd.AddOnChainPatch(txHash, simulation.SimulationNum, simulation.ChainPatch,
-			simulation.UpstreamTxHash, simulation.UpstreamSimNum)
+			simulation.UpstreamTxList)
 	}
 
 	if v.committee.SelfShard == simulation.OriginShardId {
@@ -295,7 +295,7 @@ func (v *Verifier) VerifySimulation(simulationBytes []byte, stateDB api.StateDB,
 		isChainTx = true
 		utils.SSCLogger().Info().Str("txHash", txHash.Hex()).
 			Int("simNum", simulation.SimulationNum).
-			Bool("hasUpstream", simulation.UpstreamTxHash != (common.Hash{})).
+			Int("upstreamCount", len(simulation.UpstreamTxList)).
 			Msg("VerifySimulation: chain tx detected (from SimTx ChainPatch), skipping lock conflict check")
 	}
 
@@ -365,24 +365,28 @@ CallStates:
 
 		// 链式交易：Patch vs stateDB 一致性检查
 		// 如果上游失败，stateDB 值与 patch 期望值不匹配，自己也失败
-		if isChainTx && simulation.UpstreamTxHash != (common.Hash{}) {
+		// DAG 多上游：遍历所有上游，任一能提供匹配值就算通过
+		if isChainTx && len(simulation.UpstreamTxList) > 0 {
 			for address, stateMap := range callState.RWSet.ReadState.State {
 				for key := range stateMap {
-					expectedVal, found := v.retrySchd.ReadOnChainPatch(
-						simulation.UpstreamTxHash,
-						simulation.UpstreamSimNum,
-						address, key)
-					if found {
-						actualVal, err := stateDB.GetState(txHash, address, key)
-						if err == nil && expectedVal != actualVal {
-							utils.SSCLogger().Warn().Str("txHash", txHash.Hex()).
-								Str("address", address.Hex()).
-								Str("key", key.Hex()).
-								Str("expected", expectedVal.Hex()).
-								Str("actual", actualVal.Hex()).
-								Msg("VerifySimulation: upstream failed, patch mismatch")
-							execErr = fmt.Errorf("upstream failed: patch mismatch for key %s", api.FormKey(address, key))
-							break CallStates
+					for _, upstream := range simulation.UpstreamTxList {
+						expectedVal, found := v.retrySchd.ReadOnChainPatch(
+							upstream.TxHash,
+							upstream.SimulationNum,
+							address, key)
+						if found {
+							actualVal, err := stateDB.GetState(txHash, address, key)
+							if err == nil && expectedVal != actualVal {
+								utils.SSCLogger().Warn().Str("txHash", txHash.Hex()).
+									Str("address", address.Hex()).
+									Str("key", key.Hex()).
+									Str("expected", expectedVal.Hex()).
+									Str("actual", actualVal.Hex()).
+									Msg("VerifySimulation: upstream failed, patch mismatch")
+								execErr = fmt.Errorf("upstream failed: patch mismatch for key %s", api.FormKey(address, key))
+								break CallStates
+							}
+							break // found matching upstream, no need to check others
 						}
 					}
 				}

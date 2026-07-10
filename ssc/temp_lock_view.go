@@ -177,6 +177,56 @@ func (v *TempLockView) ClearWounded(txHash common.Hash) {
 	delete(v.woundedTxs, txHash)
 }
 
+// IsTempLockedBySelf 检查当前交易是否持有该 key 的 TempLock（写锁或读锁）。
+// 用于 GetState/SetState 的锁仲裁：如果自己持有 TempLock，可以跳过 SLM 检查。
+func (v *TempLockView) IsTempLockedBySelf(txHash common.Hash, lockKey api.LockKey) bool {
+	v.mu.RLock()
+	defer v.mu.RUnlock()
+
+	// 检查写锁
+	if entry, held := v.tempWriteLocks[lockKey]; held {
+		return bytes.Compare(entry.Holder.Bytes(), txHash.Bytes()) == 0
+	}
+
+	// 检查读锁
+	if holders, held := v.tempReadLocks[lockKey]; held {
+		for _, h := range holders {
+			if bytes.Compare(h.Bytes(), txHash.Bytes()) == 0 {
+				return true
+			}
+		}
+	}
+
+	return false
+}
+
+// HasConflict 检查指定 key 是否被**其他**交易在 TempLockView 中预约。
+// 用于 GetState/SetState 的锁仲裁：若当前 tx 自己持有，不算冲突。
+// lockKey 应为 api.FormKey(address, key) 的结果。
+func (v *TempLockView) HasConflict(txHash common.Hash, lockKey api.LockKey) bool {
+	v.mu.RLock()
+	defer v.mu.RUnlock()
+
+	// 检查写锁
+	if entry, held := v.tempWriteLocks[lockKey]; held {
+		if bytes.Compare(entry.Holder.Bytes(), txHash.Bytes()) != 0 {
+			return true // 其他交易持有写锁
+		}
+		return false // 自己持有，不算冲突
+	}
+
+	// 检查读锁
+	if holders, held := v.tempReadLocks[lockKey]; held {
+		for _, h := range holders {
+			if bytes.Compare(h.Bytes(), txHash.Bytes()) != 0 {
+				return true // 有其他交易持有读锁
+			}
+		}
+	}
+
+	return false
+}
+
 // CanLock 是 TryLock 的只读版本，不产生实际锁操作。
 func (v *TempLockView) CanLock(txHash common.Hash, reads []api.LockKey, writes []api.LockKey) bool {
 	v.mu.RLock()

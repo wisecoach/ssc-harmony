@@ -681,7 +681,13 @@ func (sim *Simulator) StartReSimulation(txHash common.Hash, simulationNum int) {
 
 	simState, _ := sim.GetSimState(txHash)
 
+	// DSN-25: 优先使用 OnBlockCommitted 缓存的 block hash，与 RetryCommit Phase 2 的 CheckLock 同版本
 	header := sim.bc.CurrentHeader()
+	if bh := sim.sscService.retryScheduler.GetCachedBlockHash(); bh != (common.Hash{}) {
+		if h := sim.bc.GetHeaderByHash(bh); h != nil {
+			header = h
+		}
+	}
 	// request recall origin contract
 	lastReq := simState.SimulationRequest
 	if lastReq == nil {

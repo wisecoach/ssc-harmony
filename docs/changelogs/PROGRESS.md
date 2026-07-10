@@ -18,6 +18,11 @@
 | DSN-10 | Log Query Guide | active |
 | DSN-11 | Log Lifecycle | active |
 | DSN-12 | Rollback v1 Passive Pool | active |
+| DSN-22 | RetryCommit 锁检查顺序修正 | active |
+| DSN-23 | PatchPool DAG 多 Patch 联合覆盖 | active |
+| DSN-24 | 统一锁检查 — TLV+SLM+Patch 三层仲裁 | active |
+| DSN-25 | RetryCommit StateDB 缓存 — OnBlockCommitted | active |
+| DSN-26 | PatchPool DAG 扩展到 TLV Phase 1 | active |
 
 ### Archived
 
