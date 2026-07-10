@@ -1158,6 +1158,12 @@ func (rs *retryScheduler) StaleTx(txHash common.Hash) {
 
 func (rs *retryScheduler) RetryCommit(txHash common.Hash) *api.RetryCommitResp {
 	chainRetryStats.SigRetryCommitCalled.Add(1)
+	t0 := time.Now()
+	defer func() {
+		utils.SSCLogger().Info().Str("txHash", txHash.Hex()).
+			Dur("cost", time.Since(t0)).
+			Msg("retryCommit timing")
+	}()
 
 	// v2: 如果在被动池中，移出（被 O 的 RetrySignal 唤醒）
 	if _, inPassive := rs.passivePool.Load(txHash); inPassive {
