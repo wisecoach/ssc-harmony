@@ -1300,8 +1300,10 @@ func (rs *retryScheduler) RetryCommit(txHash common.Hash) *api.RetryCommitResp {
 		Msg("retryCommit failed: stateDB lock conflict")
 
 	// DAG: 找一组 Patch 联合覆盖全部冲突 key
+	// 限制最多使用 maxPatches 个 Patch，避免过多 Patch 组合导致 state 不一致 → SimTx 失败
+	const maxPatches = 1
 	patches := rs.patchPool.FindCoveringSet(conflictKeys)
-	if len(patches) > 0 {
+	if len(patches) > 0 && len(patches) <= maxPatches {
 		// 原子消费：逐个 TryConsume，任一失败则全部 Release
 		var consumedTxHashes []common.Hash
 		var merged *api.RWSet
