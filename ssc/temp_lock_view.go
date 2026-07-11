@@ -23,24 +23,29 @@ type RWKeySet struct {
 	Writes []api.LockKey
 }
 
+// readHolderMap is the inner sync.Map for read-lock holders of a single key.
+// key: txHash common.Hash, value: struct{}{}
+type readHolderMap struct {
+	sync.Map
+}
+
 // TempLockView — 临时锁视图（委员会 leader 维护）
-// ... 省略重复的注释，结构不变 ...
+//
+// 全部使用 sync.Map 替代传统 map + Mutex，不同 tx / 不同 key 之间完全并行。
+// - tempWriteLocks: LoadOrStore 实现单 key 原子获取，失败回滚已拿 key
+// - tempReadLocks:  两层 sync.Map，O(1) 查找持有者
+// - txReadWriteSets: per-tx 数据，不同 tx 互不冲突
+// - woundedTxs:      per-tx 标记，不同 tx 互不冲突
 type TempLockView struct {
-	mu               sync.RWMutex
-	tempWriteLocks   map[api.LockKey]tempLockEntry // LockKey → holder+priority
-	tempReadLocks    map[api.LockKey][]common.Hash
-	txReadWriteSets  map[common.Hash]*RWKeySet
-	woundedTxs       map[common.Hash]struct{} // txs that have been Wounded
+	tempWriteLocks   sync.Map // key: api.LockKey, value: tempLockEntry
+	tempReadLocks    sync.Map // key: api.LockKey, value: *readHolderMap
+	txReadWriteSets  sync.Map // key: common.Hash, value: *RWKeySet
+	woundedTxs       sync.Map // key: common.Hash, value: struct{}{}
 	stateLockManager *stateLockManager
 }
 
 func NewTempLockView(manager *stateLockManager) *TempLockView {
 	return &TempLockView{
-		mu:               sync.RWMutex{},
-		tempReadLocks:    make(map[api.LockKey][]common.Hash),
-		tempWriteLocks:   make(map[api.LockKey]tempLockEntry),
-		txReadWriteSets:  make(map[common.Hash]*RWKeySet),
-		woundedTxs:       make(map[common.Hash]struct{}),
 		stateLockManager: manager,
 	}
 }
@@ -59,21 +64,14 @@ func (v *TempLockView) TryLock(txHash common.Hash, reads []api.LockKey, writes [
 //	locked:  是否成功获得所有锁
 //	wounded: 是否被更高优先级的交易踢掉（仅当 locked=false 时有意义）
 //
-// Wound-Wait 规则：
-//
-//	如果锁空闲 → 拿锁 ✅
-//	如果锁被低优先级占着 → Wound（踢掉低优先级，自己拿锁）✅
-//	如果锁被高优先级或 Finalized 的 Patch 占着 → 失败 ❌
+// 每把写锁通过 LoadOrStore 原子获取，不存在跨 key 全局锁。
+// 部分 key 获取失败后回滚已拿的 key，后续 stateDB CheckLock / ForceSimulation 兜底。
 func (v *TempLockView) TryLockWithPriority(txHash common.Hash, priority api.Priority, reads []api.LockKey, writes []api.LockKey) (locked bool, wounded bool) {
 	tEntry := time.Now()
-	v.mu.Lock()
-	tMutex := time.Since(tEntry)
-	defer v.mu.Unlock()
 	defer func() {
 		tTotal := time.Since(tEntry)
 		if tTotal > 100*time.Millisecond {
 			utils.SSCLogger().Warn().Str("txHash", txHash.Hex()).
-				Dur("mutex", tMutex).
 				Dur("total", tTotal).
 				Int("writes", len(writes)).
 				Int("reads", len(reads)).
@@ -88,80 +86,100 @@ func (v *TempLockView) TryLockWithPriority(txHash common.Hash, priority api.Prio
 		Writes: append([]api.LockKey(nil), writes...),
 	}
 
-	// Step 1: 检查写集 — 支持 Wound-Wait
-	// committedWriteLocks 不在这里检查——它们是 stateDB 锁的过期缓存，
-	// 由调用方（RetryCommit）中的 stateDB.CheckLock 和模拟中的 GetState/SetState 兜底。
+	// Step 1: 逐个原子获取写锁（LoadOrStore）— 失败则回滚
+	var acquiredWrites []api.LockKey
 	for _, key := range rwSet.Writes {
-		// 写-写冲突：临时锁 — 支持 Wound
-		if entry, held := v.tempWriteLocks[key]; held {
-			if bytes.Compare(entry.Holder.Bytes(), txHash.Bytes()) != 0 {
-				// 检查是否可以 Wound
-				if v.canWound(entry, priority, txHash) {
-					// Wound: 踢掉低优先级占锁者
-					v.woundedTxs[entry.Holder] = struct{}{}
-					v.tempWriteLocks[key] = tempLockEntry{
-						Holder:   txHash,
-						Priority: priority,
-					}
-					utils.SSCLogger().Info().Str("wounded", entry.Holder.Hex()).
-						Str("wounder", txHash.Hex()).
-						Str("key", string(key)).
-						Msg("Wound: high priority tx took lock from low priority")
-				} else {
-					// 被高优先级占着（或 Finalized）→ 失败
-					v.stateLockManager.sscService.stats.TempLockTryFail.Add(1)
-					utils.SSCLogger().Info().Str("txHash", txHash.Hex()).
-						Str("holder", entry.Holder.Hex()).
-						Str("key", string(key)).
-						Msg("TryLockWithPriority: tempWriteLock conflict, cannot wound")
-					return false, false
+		entry := tempLockEntry{Holder: txHash, Priority: priority}
+		existing, loaded := v.tempWriteLocks.LoadOrStore(key, entry)
+		if !loaded {
+			// key 原来为空，成功获取
+			acquiredWrites = append(acquiredWrites, key)
+			continue
+		}
+		// key 已被占
+		existingEntry := existing.(tempLockEntry)
+		if bytes.Equal(existingEntry.Holder.Bytes(), txHash.Bytes()) {
+			// 自己占着，不算冲突
+			continue
+		}
+		if v.canWound(existingEntry, priority, txHash) {
+			// 可以 Wound → 替换
+			v.woundedTxs.Store(existingEntry.Holder, struct{}{})
+			v.tempWriteLocks.Store(key, entry)
+			acquiredWrites = append(acquiredWrites, key)
+			utils.SSCLogger().Info().Str("wounded", existingEntry.Holder.Hex()).
+				Str("wounder", txHash.Hex()).
+				Str("key", string(key)).
+				Msg("Wound: high priority tx took lock from low priority")
+			continue
+		}
+		// 被高优先级占着（或 Finalized）→ 失败，回滚已拿的写锁
+		v.stateLockManager.sscService.stats.TempLockTryFail.Add(1)
+		utils.SSCLogger().Info().Str("txHash", txHash.Hex()).
+			Str("holder", existingEntry.Holder.Hex()).
+			Str("key", string(key)).
+			Msg("TryLockWithPriority: tempWriteLock conflict, cannot wound")
+		// 回滚
+		for _, k := range acquiredWrites {
+			if val, ok := v.tempWriteLocks.Load(k); ok {
+				entry := val.(tempLockEntry)
+				if bytes.Equal(entry.Holder.Bytes(), txHash.Bytes()) {
+					v.tempWriteLocks.Delete(k)
 				}
 			}
 		}
+		return false, false
 	}
 
-	// Step 2: 检查读集 — 支持 Wound-Wait
+	// Step 2: 检查+注册读锁
 	for _, key := range rwSet.Reads {
-		if entry, writtenInTemp := v.tempWriteLocks[key]; writtenInTemp {
-			if bytes.Compare(entry.Holder.Bytes(), txHash.Bytes()) != 0 {
-				// 检查是否可以 Wound
-				if v.canWound(entry, priority, txHash) {
-					v.woundedTxs[entry.Holder] = struct{}{}
-					v.tempWriteLocks[key] = tempLockEntry{
-						Holder:   txHash,
-						Priority: priority,
-					}
-					utils.SSCLogger().Info().Str("wounded", entry.Holder.Hex()).
-						Str("wounder", txHash.Hex()).
-						Str("key", string(key)).
-						Msg("Wound (readset): high priority tx took read lock from low priority")
-				} else {
+		// 检查该 key 是否被别的 tx 写锁着
+		if existing, loaded := v.tempWriteLocks.Load(key); loaded {
+			existingEntry := existing.(tempLockEntry)
+			if !bytes.Equal(existingEntry.Holder.Bytes(), txHash.Bytes()) {
+				if !v.canWound(existingEntry, priority, txHash) {
+					// 读锁被高优写锁占着 → 失败，回滚已拿的写锁
 					v.stateLockManager.sscService.stats.TempLockTryFail.Add(1)
 					utils.SSCLogger().Info().Str("txHash", txHash.Hex()).
-						Str("holder", entry.Holder.Hex()).
+						Str("holder", existingEntry.Holder.Hex()).
 						Str("key", string(key)).
 						Msg("TryLockWithPriority: read-tempWriteLock conflict, cannot wound")
+					for _, k := range acquiredWrites {
+						if val, ok := v.tempWriteLocks.Load(k); ok {
+							entry := val.(tempLockEntry)
+							if bytes.Equal(entry.Holder.Bytes(), txHash.Bytes()) {
+								v.tempWriteLocks.Delete(k)
+							}
+						}
+					}
 					return false, false
 				}
+				// 可以 wound 写锁持有者 → 升级为写锁
+				v.woundedTxs.Store(existingEntry.Holder, struct{}{})
+				v.tempWriteLocks.Store(key, tempLockEntry{Holder: txHash, Priority: priority})
+				acquiredWrites = append(acquiredWrites, key)
+				utils.SSCLogger().Info().Str("wounded", existingEntry.Holder.Hex()).
+					Str("wounder", txHash.Hex()).
+					Str("key", string(key)).
+					Msg("Wound (readset): high priority tx took read lock from low priority")
+				continue
 			}
 		}
+		// 注册读锁
+		v.addReadLock(key, txHash)
 	}
 
-	// Step 3: 注册临时锁（只注册尚未锁定的 key）
-	v.txReadWriteSets[txHash] = rwSet
-	for _, key := range rwSet.Writes {
-		if _, already := v.tempWriteLocks[key]; !already {
-			v.tempWriteLocks[key] = tempLockEntry{
-				Holder:   txHash,
-				Priority: priority,
-			}
-		}
-	}
-	for _, key := range rwSet.Reads {
-		v.tempReadLocks[key] = append(v.tempReadLocks[key], txHash)
-	}
-
+	// Step 3: 注册交易读写集（sync.Map，无锁）
+	v.txReadWriteSets.Store(txHash, rwSet)
 	return true, false
+}
+
+// addReadLock 为 tx 注册对 key 的读锁。
+// 内层 readHolderMap 以 txHash 为 key，不同 tx 的 Store 不冲突。
+func (v *TempLockView) addReadLock(key api.LockKey, txHash common.Hash) {
+	holdersVal, _ := v.tempReadLocks.LoadOrStore(key, &readHolderMap{})
+	holders := holdersVal.(*readHolderMap)
+	holders.Store(txHash, struct{}{})
 }
 
 // canWound 检查是否可以踢掉当前锁持有者。
@@ -177,37 +195,29 @@ func (v *TempLockView) canWound(entry tempLockEntry, requesterPri api.Priority, 
 
 // IsWounded 检查当前交易是否已被 Wound（被更高优先级的交易踢掉）。
 func (v *TempLockView) IsWounded(txHash common.Hash) bool {
-	v.mu.RLock()
-	defer v.mu.RUnlock()
-	_, exists := v.woundedTxs[txHash]
+	_, exists := v.woundedTxs.Load(txHash)
 	return exists
 }
 
 // ClearWounded 清理指定交易的 wounded 标记（在交易重试开始时调用）。
 func (v *TempLockView) ClearWounded(txHash common.Hash) {
-	v.mu.Lock()
-	defer v.mu.Unlock()
-	delete(v.woundedTxs, txHash)
+	v.woundedTxs.Delete(txHash)
 }
 
 // IsTempLockedBySelf 检查当前交易是否持有该 key 的 TempLock（写锁或读锁）。
 // 用于 GetState/SetState 的锁仲裁：如果自己持有 TempLock，可以跳过 SLM 检查。
 func (v *TempLockView) IsTempLockedBySelf(txHash common.Hash, lockKey api.LockKey) bool {
-	v.mu.RLock()
-	defer v.mu.RUnlock()
-
 	// 检查写锁
-	if entry, held := v.tempWriteLocks[lockKey]; held {
-		return bytes.Compare(entry.Holder.Bytes(), txHash.Bytes()) == 0
+	if val, loaded := v.tempWriteLocks.Load(lockKey); loaded {
+		entry := val.(tempLockEntry)
+		return bytes.Equal(entry.Holder.Bytes(), txHash.Bytes())
 	}
 
-	// 检查读锁
-	if holders, held := v.tempReadLocks[lockKey]; held {
-		for _, h := range holders {
-			if bytes.Compare(h.Bytes(), txHash.Bytes()) == 0 {
-				return true
-			}
-		}
+	// 检查读锁 holder 列表
+	if holdersVal, loaded := v.tempReadLocks.Load(lockKey); loaded {
+		holders := holdersVal.(*readHolderMap)
+		_, exists := holders.Load(txHash)
+		return exists
 	}
 
 	return false
@@ -217,24 +227,27 @@ func (v *TempLockView) IsTempLockedBySelf(txHash common.Hash, lockKey api.LockKe
 // 用于 GetState/SetState 的锁仲裁：若当前 tx 自己持有，不算冲突。
 // lockKey 应为 api.FormKey(address, key) 的结果。
 func (v *TempLockView) HasConflict(txHash common.Hash, lockKey api.LockKey) bool {
-	v.mu.RLock()
-	defer v.mu.RUnlock()
-
 	// 检查写锁
-	if entry, held := v.tempWriteLocks[lockKey]; held {
-		if bytes.Compare(entry.Holder.Bytes(), txHash.Bytes()) != 0 {
+	if val, loaded := v.tempWriteLocks.Load(lockKey); loaded {
+		entry := val.(tempLockEntry)
+		if !bytes.Equal(entry.Holder.Bytes(), txHash.Bytes()) {
 			return true // 其他交易持有写锁
 		}
 		return false // 自己持有，不算冲突
 	}
 
 	// 检查读锁
-	if holders, held := v.tempReadLocks[lockKey]; held {
-		for _, h := range holders {
-			if bytes.Compare(h.Bytes(), txHash.Bytes()) != 0 {
-				return true // 有其他交易持有读锁
+	if holdersVal, loaded := v.tempReadLocks.Load(lockKey); loaded {
+		holders := holdersVal.(*readHolderMap)
+		hasOther := false
+		holders.Range(func(k, _ interface{}) bool {
+			if !bytes.Equal(k.(common.Hash).Bytes(), txHash.Bytes()) {
+				hasOther = true
+				return false
 			}
-		}
+			return true
+		})
+		return hasOther
 	}
 
 	return false
@@ -242,20 +255,19 @@ func (v *TempLockView) HasConflict(txHash common.Hash, lockKey api.LockKey) bool
 
 // CanLock 是 TryLock 的只读版本，不产生实际锁操作。
 func (v *TempLockView) CanLock(txHash common.Hash, reads []api.LockKey, writes []api.LockKey) bool {
-	v.mu.RLock()
-	defer v.mu.RUnlock()
-
 	for _, key := range writes {
-		if entry, held := v.tempWriteLocks[key]; held {
-			if bytes.Compare(entry.Holder.Bytes(), txHash.Bytes()) != 0 {
+		if val, loaded := v.tempWriteLocks.Load(key); loaded {
+			entry := val.(tempLockEntry)
+			if !bytes.Equal(entry.Holder.Bytes(), txHash.Bytes()) {
 				return false
 			}
 		}
 	}
 
 	for _, key := range reads {
-		if entry, writtenInTemp := v.tempWriteLocks[key]; writtenInTemp {
-			if bytes.Compare(entry.Holder.Bytes(), txHash.Bytes()) != 0 {
+		if val, loaded := v.tempWriteLocks.Load(key); loaded {
+			entry := val.(tempLockEntry)
+			if !bytes.Equal(entry.Holder.Bytes(), txHash.Bytes()) {
 				return false
 			}
 		}
@@ -272,41 +284,56 @@ func (v *TempLockView) OnBlockCommitted(block *types.Block) {
 	}
 	tBuildList := time.Since(t0)
 
+	// 统计日志（大致计数）
+	writeLockCount := 0
+	v.tempWriteLocks.Range(func(_, _ interface{}) bool {
+		writeLockCount++
+		return true
+	})
+	readLockCount := 0
+	v.tempReadLocks.Range(func(_, _ interface{}) bool {
+		readLockCount++
+		return true
+	})
+	woundedCount := 0
+	v.woundedTxs.Range(func(_, _ interface{}) bool {
+		woundedCount++
+		return true
+	})
+
 	utils.SSCLogger().Info().Uint64("blockNum", block.NumberU64()).
-		Int("tempWriteLocks", len(v.tempWriteLocks)).
-		Int("tempReadLocks", len(v.tempReadLocks)).
-		Int("woundedTxs", len(v.woundedTxs)).
+		Int("tempWriteLocks", writeLockCount).
+		Int("tempReadLocks", readLockCount).
+		Int("woundedTxs", woundedCount).
 		Msg("TempLockView on block committed")
 
-	v.mu.Lock()
-	defer v.mu.Unlock()
-
 	for _, txHash := range blockTxHashes {
-		if rwSet, exists := v.txReadWriteSets[txHash]; exists {
-			for _, key := range rwSet.Writes {
-				if entry, ok := v.tempWriteLocks[key]; ok && bytes.Compare(entry.Holder.Bytes(), txHash.Bytes()) == 0 {
-					delete(v.tempWriteLocks, key)
-				}
-			}
-			for _, key := range rwSet.Reads {
-				if holders, ok := v.tempReadLocks[key]; ok {
-					newHolders := make([]common.Hash, 0, len(holders))
-					for _, h := range holders {
-						if bytes.Compare(h.Bytes(), txHash.Bytes()) != 0 {
-							newHolders = append(newHolders, h)
-						}
-					}
-					if len(newHolders) == 0 {
-						delete(v.tempReadLocks, key)
-					} else {
-						v.tempReadLocks[key] = newHolders
-					}
-				}
-			}
-			delete(v.txReadWriteSets, txHash)
+		// 取出 tx 的读写集
+		rwSetVal, exists := v.txReadWriteSets.Load(txHash)
+		if !exists {
+			v.woundedTxs.Delete(txHash)
+			continue
 		}
-		// 清理 wounded 标记
-		delete(v.woundedTxs, txHash)
+		rwSet := rwSetVal.(*RWKeySet)
+
+		// 清理写锁
+		for _, key := range rwSet.Writes {
+			if val, ok := v.tempWriteLocks.Load(key); ok {
+				entry := val.(tempLockEntry)
+				if bytes.Equal(entry.Holder.Bytes(), txHash.Bytes()) {
+					v.tempWriteLocks.Delete(key)
+				}
+			}
+		}
+		// 清理读锁
+		for _, key := range rwSet.Reads {
+			if holdersVal, ok := v.tempReadLocks.Load(key); ok {
+				holders := holdersVal.(*readHolderMap)
+				holders.Delete(txHash)
+			}
+		}
+		v.txReadWriteSets.Delete(txHash)
+		v.woundedTxs.Delete(txHash)
 	}
 	tCleanupLoop := time.Since(t0)
 	utils.SSCLogger().Info().
@@ -320,31 +347,30 @@ func (v *TempLockView) OnBlockCommitted(block *types.Block) {
 
 // GarbageCollect 清理 stale 交易（如 nonce 过期）。
 func (v *TempLockView) GarbageCollect(staleTxHash common.Hash) {
-	v.mu.Lock()
-	defer v.mu.Unlock()
-
-	if rwSet, exists := v.txReadWriteSets[staleTxHash]; exists {
-		for _, key := range rwSet.Writes {
-			if entry, ok := v.tempWriteLocks[key]; ok && bytes.Compare(entry.Holder.Bytes(), staleTxHash.Bytes()) == 0 {
-				delete(v.tempWriteLocks, key)
-			}
-		}
-		for _, key := range rwSet.Reads {
-			if holders, ok := v.tempReadLocks[key]; ok {
-				newHolders := make([]common.Hash, 0, len(holders))
-				for _, h := range holders {
-					if bytes.Compare(h.Bytes(), staleTxHash.Bytes()) != 0 {
-						newHolders = append(newHolders, h)
-					}
-				}
-				if len(newHolders) == 0 {
-					delete(v.tempReadLocks, key)
-				} else {
-					v.tempReadLocks[key] = newHolders
-				}
-			}
-		}
-		delete(v.txReadWriteSets, staleTxHash)
+	// 取出 tx 的读写集
+	rwSetVal, exists := v.txReadWriteSets.Load(staleTxHash)
+	if !exists {
+		v.woundedTxs.Delete(staleTxHash)
+		return
 	}
-	delete(v.woundedTxs, staleTxHash)
+	rwSet := rwSetVal.(*RWKeySet)
+
+	// 清理写锁
+	for _, key := range rwSet.Writes {
+		if val, ok := v.tempWriteLocks.Load(key); ok {
+			entry := val.(tempLockEntry)
+			if bytes.Equal(entry.Holder.Bytes(), staleTxHash.Bytes()) {
+				v.tempWriteLocks.Delete(key)
+			}
+		}
+	}
+	// 清理读锁
+	for _, key := range rwSet.Reads {
+		if holdersVal, ok := v.tempReadLocks.Load(key); ok {
+			holders := holdersVal.(*readHolderMap)
+			holders.Delete(staleTxHash)
+		}
+	}
+	v.txReadWriteSets.Delete(staleTxHash)
+	v.woundedTxs.Delete(staleTxHash)
 }
