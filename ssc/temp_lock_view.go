@@ -81,8 +81,6 @@ func (v *TempLockView) TryLockWithPriority(txHash common.Hash, priority api.Prio
 		}
 	}()
 
-	tWriteCheck := time.Now()
-
 	v.stateLockManager.sscService.stats.TempLockTryTotal.Add(1)
 
 	rwSet := &RWKeySet{
@@ -123,7 +121,6 @@ func (v *TempLockView) TryLockWithPriority(txHash common.Hash, priority api.Prio
 	}
 
 	// Step 2: 检查读集 — 支持 Wound-Wait
-	tReadCheck := time.Now()
 	for _, key := range rwSet.Reads {
 		if entry, writtenInTemp := v.tempWriteLocks[key]; writtenInTemp {
 			if bytes.Compare(entry.Holder.Bytes(), txHash.Bytes()) != 0 {
@@ -151,7 +148,6 @@ func (v *TempLockView) TryLockWithPriority(txHash common.Hash, priority api.Prio
 	}
 
 	// Step 3: 注册临时锁（只注册尚未锁定的 key）
-	tCommitLock := time.Now()
 	v.txReadWriteSets[txHash] = rwSet
 	for _, key := range rwSet.Writes {
 		if _, already := v.tempWriteLocks[key]; !already {
