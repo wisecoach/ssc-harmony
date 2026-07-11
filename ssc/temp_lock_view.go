@@ -65,8 +65,23 @@ func (v *TempLockView) TryLock(txHash common.Hash, reads []api.LockKey, writes [
 //	如果锁被低优先级占着 → Wound（踢掉低优先级，自己拿锁）✅
 //	如果锁被高优先级或 Finalized 的 Patch 占着 → 失败 ❌
 func (v *TempLockView) TryLockWithPriority(txHash common.Hash, priority api.Priority, reads []api.LockKey, writes []api.LockKey) (locked bool, wounded bool) {
+	tEntry := time.Now()
 	v.mu.Lock()
+	tMutex := time.Since(tEntry)
 	defer v.mu.Unlock()
+	defer func() {
+		tTotal := time.Since(tEntry)
+		if tTotal > 100*time.Millisecond {
+			utils.SSCLogger().Warn().Str("txHash", txHash.Hex()).
+				Dur("mutex", tMutex).
+				Dur("total", tTotal).
+				Int("writes", len(writes)).
+				Int("reads", len(reads)).
+				Msg("TryLockWithPriority: slow")
+		}
+	}()
+
+	tWriteCheck := time.Now()
 
 	v.stateLockManager.sscService.stats.TempLockTryTotal.Add(1)
 
@@ -108,6 +123,7 @@ func (v *TempLockView) TryLockWithPriority(txHash common.Hash, priority api.Prio
 	}
 
 	// Step 2: 检查读集 — 支持 Wound-Wait
+	tReadCheck := time.Now()
 	for _, key := range rwSet.Reads {
 		if entry, writtenInTemp := v.tempWriteLocks[key]; writtenInTemp {
 			if bytes.Compare(entry.Holder.Bytes(), txHash.Bytes()) != 0 {
@@ -135,6 +151,7 @@ func (v *TempLockView) TryLockWithPriority(txHash common.Hash, priority api.Prio
 	}
 
 	// Step 3: 注册临时锁（只注册尚未锁定的 key）
+	tCommitLock := time.Now()
 	v.txReadWriteSets[txHash] = rwSet
 	for _, key := range rwSet.Writes {
 		if _, already := v.tempWriteLocks[key]; !already {

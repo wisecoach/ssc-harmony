@@ -1272,6 +1272,7 @@ func (rs *retryScheduler) RetryCommit(txHash common.Hash) *api.RetryCommitResp {
 	}
 
 	// 收集所有 stateDB 和 TempLock 层面冲突的 key
+	tCheckLock := time.Now()
 	var conflictKeys []api.LockKey
 	for _, key := range retryTx.WriteSet {
 		if err := stateDB.CheckLock(key, txHash); err != nil {
@@ -1287,6 +1288,13 @@ func (rs *retryScheduler) RetryCommit(txHash common.Hash) *api.RetryCommitResp {
 		} else if rs.tempLockView.HasConflict(txHash, key) {
 			conflictKeys = append(conflictKeys, key)
 		}
+	}
+	if tCheckLockDur := time.Since(tCheckLock); tCheckLockDur > 50*time.Millisecond {
+		utils.SSCLogger().Warn().Str("txHash", txHash.Hex()).
+			Dur("checkLock", tCheckLockDur).
+			Int("writeKeys", len(retryTx.WriteSet)).
+			Int("readKeys", len(retryTx.ReadSet)).
+			Msg("RetryCommit Phase2 CheckLock: slow")
 	}
 
 	if len(conflictKeys) == 0 {
