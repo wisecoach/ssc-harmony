@@ -369,14 +369,28 @@ func (s *sscService) BindBlockChain(bcValue *atomic.Value) {
 }
 
 func (s *sscService) BlockCommitted(block *types.Block) error {
+	t0 := time.Now()
+	var tTimerMgr, tHandleBlock, tOnBlockCommitted time.Duration
+	defer func() {
+		utils.SSCLogger().Info().
+			Uint64("blockNum", block.NumberU64()).
+			Dur("timerMgr", tTimerMgr).
+			Dur("handleBlock", tHandleBlock).
+			Dur("onBlockCommitted", tOnBlockCommitted).
+			Dur("total", time.Since(t0)).
+			Msg("[BlockTiming] BlockCommitted breakdown")
+	}()
 	utils.SSCLogger().Info().Uint64("blockNum", block.NumberU64()).Msg("block committed")
 	s.timerMgr.BlockCommitted(block.NumberU64())
+	tTimerMgr = time.Since(t0)
 	err := s.CommitteeMechanism.HandleBlockCommitted(block)
+	tHandleBlock = time.Since(t0)
 	if err != nil {
 		utils.SSCLogger().Error().Err(err).Msg("failed to handle block committed")
 		return err
 	}
 	s.retryScheduler.OnBlockCommitted(block)
+	tOnBlockCommitted = time.Since(t0)
 	return nil
 }
 
@@ -399,6 +413,7 @@ func (s *sscService) loop() {
 			utils.SSCLogger().Error().Msg("chain head subscription error")
 			return
 		case head := <-s.chainHeadCh:
+			tBlockCh := time.Now()
 			utils.SSCLogger().Info().Uint64("blockNum", head.Block.NumberU64()).Msg("new block committed")
 			b := head.Block
 			callStatesInWaiting := s.Simulator.PopCallStatesInWaiting(b.Header().Hash())
@@ -417,6 +432,10 @@ func (s *sscService) loop() {
 					Msg("call state synced")
 				callState.SyncedCh <- struct{}{}
 			}
+			utils.SSCLogger().Info().
+				Uint64("blockNum", b.NumberU64()).
+				Dur("callStateSync", time.Since(tBlockCh)).
+				Msg("[BlockTiming] chainHeadCh handler")
 		case <-statsTicker.C:
 			s.stats.sampleQueueLen(s.stats.QueuePushCount.Load(), s.stats.QueuePopCount.Load())
 			s.traceLock.Lock()

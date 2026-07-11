@@ -36,6 +36,18 @@ func (consensus *Consensus) ProposeNewBlock(commitSigs chan []byte) (*types.Bloc
 	utils.AnalysisStart("ProposeNewBlock", nowEpoch, blockNow)
 	defer utils.AnalysisEnd("ProposeNewBlock", nowEpoch, blockNow)
 
+	t0 := time.Now()
+	var tCommitTxs, tReceipts, tFinalize time.Duration
+	defer func() {
+		consensus.GetLogger().Info().
+			Uint64("blockNum", blockNow.Uint64()+1).
+			Dur("commitTxs", tCommitTxs).
+			Dur("receipts", tReceipts).
+			Dur("finalize", tFinalize).
+			Dur("total", time.Since(t0)).
+			Msg("[BlockTiming] ProposeNewBlock breakdown")
+	}()
+
 	// Update worker's current header and
 	// state data in preparation to propose/process new transactions
 	env, err := worker.UpdateCurrent()
@@ -152,6 +164,7 @@ func (consensus *Consensus) ProposeNewBlock(commitSigs chan []byte) (*types.Bloc
 			return nil, err
 		}
 		utils.AnalysisEnd("proposeNewBlockChooseFromTxnPool")
+		tCommitTxs = time.Since(t0)
 	}
 
 	// Prepare incoming cross shard transaction receipts
@@ -168,6 +181,7 @@ func (consensus *Consensus) ProposeNewBlock(commitSigs chan []byte) (*types.Bloc
 			return nil, err
 		}
 	}
+	tReceipts = time.Since(t0)
 
 	// isBeaconchainInCrossLinkEra := consensus.ShardID == shard.BeaconChainShardID &&
 	// 	consensus.Blockchain().Config().IsCrossLink(worker.GetCurrentHeader().GetEpoch())
@@ -261,6 +275,7 @@ func (consensus *Consensus) ProposeNewBlock(commitSigs chan []byte) (*types.Bloc
 		commitSigs, viewIDFunc,
 		coinbase, make(types.CrossLinks, 0), shardState,
 	)
+	tFinalize = time.Since(t0)
 	if err != nil {
 		consensus.GetLogger().Error().Err(err).Msg("[ProposeNewBlock] Failed finalizing the new block")
 		return nil, err

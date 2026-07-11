@@ -720,6 +720,16 @@ func (w *Worker) FinalizeNewBlock(
 	commitSigs chan []byte, viewID func() uint64, coinbase common.Address,
 	crossLinks types.CrossLinks, shardState *shard.State,
 ) (*types.Block, error) {
+	t0 := time.Now()
+	var tHeaderPrep, tEngineFinalize time.Duration
+	defer func() {
+		utils.SSCLogger().Info().
+			Uint64("blockNum", w.current.header.NumberU64()).
+			Dur("headerPrep", tHeaderPrep).
+			Dur("waitSigsFinalize", time.Duration(int64(tEngineFinalize)-int64(tHeaderPrep))).
+			Dur("total", time.Since(t0)).
+			Msg("[BlockTiming] FinalizeNewBlock breakdown")
+	}()
 	w.current.header.SetCoinbase(coinbase)
 
 	// Put crosslinks into header
@@ -776,6 +786,7 @@ func (w *Worker) FinalizeNewBlock(
 	}
 	state := w.current.state
 	copyHeader := types.CopyHeader(w.current.header)
+	tHeaderPrep = time.Since(t0)
 
 	utils.Logger().Debug().
 		Uint64("blockNum", copyHeader.Number().Uint64()).
@@ -824,6 +835,7 @@ func (w *Worker) FinalizeNewBlock(
 		w.current.outcxs, w.current.incxs, w.current.stakingTxs,
 		w.current.slashes, sigsReady, viewID,
 	)
+	tEngineFinalize = time.Since(t0)
 	if err != nil {
 		return nil, errors.Wrapf(err, "cannot finalize block")
 	}
