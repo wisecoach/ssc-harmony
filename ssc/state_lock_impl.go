@@ -573,7 +573,11 @@ func (s *stateLockManager) GetLockerAt(stateRoot common.Hash) (api.StateLocker, 
 
 	// Case 1: 请求当前状态 — 返回一个包含当前全局锁状态作为 baseSnapshot 的 locker
 	if s.currentRoot == stateRoot || stateRoot == (common.Hash{}) {
-		utils.SSCLogger().Info().Msgf("GetLockerAt: returning current state locker for root %s", stateRoot.Hex())
+		utils.SSCLogger().Info().
+			Str("stateRoot", stateRoot.Hex()).
+			Str("currentRoot", s.currentRoot.Hex()).
+			Bool("isCurrent", stateRoot == s.currentRoot).
+			Msgf("GetLockerAt: current state locker (root=%s)", stateRoot.Hex()[:20])
 		return &stateLocker{
 			txLock:           sync.RWMutex{},
 			root:             stateRoot,
@@ -609,8 +613,10 @@ func (s *stateLockManager) GetLockerAt(stateRoot common.Hash) (api.StateLocker, 
 		s.sscService.stats.SnapshotMiss.Add(1)
 		utils.SSCLogger().Warn().
 			Str("stateRoot", stateRoot.Hex()).
+			Str("currentRoot", s.currentRoot.Hex()).
 			Int("available_snapshots", len(s.snapshots)).
-			Msgf("GetLockerAt: snapshot not found, use current state locker")
+			Msgf("GetLockerAt: snapshot not found, use current state locker (requested root=%s, current=%s)",
+				stateRoot.Hex()[:20], s.currentRoot.Hex()[:20])
 		// 降级为当前全局状态
 		return &stateLocker{
 			txLock:           sync.RWMutex{},
@@ -642,9 +648,11 @@ func (s *stateLockManager) GetLockerAt(stateRoot common.Hash) (api.StateLocker, 
 	s.sscService.stats.SnapshotHit.Add(1)
 	utils.SSCLogger().Info().
 		Str("stateRoot", stateRoot.Hex()).
+		Str("currentRoot", s.currentRoot.Hex()).
 		Int("locked_count", len(snapshot.lockedStates)).
 		Dur("cost", time.Since(startTime)).
-		Msgf("GetLockerAt: returning historical state locker")
+		Msgf("GetLockerAt: returning historical state locker (requested root=%s, current=%s)",
+			stateRoot.Hex()[:20], s.currentRoot.Hex()[:20])
 
 	// 创建一个新的 locker 实例，baseSnapshot 来自快照（只读，不可变）
 	locker := &stateLocker{

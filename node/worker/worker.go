@@ -157,6 +157,7 @@ func (w *Worker) CommitSSCTransactions(
 			Str("txHash", tx.Hash().Hex()).
 			Str("sender", sender).
 			Uint64("nonce", tx.Nonce()).
+			Uint64("blockNum", w.current.header.NumberU64()).
 			Str("duration", txDur.String()).
 			Int("count", count).
 			Str("loop", "CommitSSCTransactions").
@@ -247,6 +248,7 @@ func (w *Worker) CommitSortedTransactions(
 
 		utils.SSCLogger().Info().
 			Str("txHash", tx.Hash().Hex()).
+			Uint64("blockNum", w.current.header.NumberU64()).
 			Str("sender", sender).
 			Uint64("nonce", tx.Nonce()).
 			Str("duration", txDur.String()).
@@ -452,13 +454,54 @@ var (
 func (w *Worker) commitTransaction(
 	tx *types.Transaction, coinbase common.Address,
 ) error {
+	t0 := time.Now()
+	var tSnap, tApply, tAppend time.Duration
+	defer func() {
+		// 归一化 to addr，区分交易类型
+		txAddr := ""
+		txType := "NormalTx"
+		if tx.To() != nil {
+			addrHex := tx.To().Hex()[:20]
+			txAddr = addrHex
+			switch addrHex {
+			case "0xfF0000000000000000":
+				txType = "SimTx"
+				_ = txAddr
+			case "0xfF0100000000000000":
+				txType = "CRTx"
+			default:
+				if tx.CrossShard() {
+					txType = "CrossShardTx"
+				} else {
+					txType = "UserTx"
+				}
+			}
+		}
+		utils.SSCLogger().Info().
+			Str("txHash", tx.Hash().Hex()).
+			Uint64("blockNum", w.current.header.NumberU64()).
+			Str("txType", txType).
+			Str("to", txAddr).
+			Uint64("nonce", tx.Nonce()).
+			Bool("crossShard", tx.CrossShard()).
+			Dur("snap", tSnap).
+			Dur("apply", tApply).
+			Dur("append", tAppend).
+			Dur("total", time.Since(t0)).
+			Msg("commitTransaction timing breakdown")
+	}()
+
+	tSnapTimer := time.Now()
 	snap := w.current.state.Snapshot()
 	gasUsed := w.current.header.GasUsed()
 	crossGasUsed := w.current.header.CrossGasUsed()
+	tSnap = time.Since(tSnapTimer)
+
 	var err error
 	var receipt *types.Receipt
 	var cx *types.CXReceipt
 	var stakeMsgs []staking.StakeMsg
+	tApplyTimer := time.Now()
 	if !tx.CrossShard() {
 		receipt, cx, stakeMsgs, _, err = core.ApplyTransaction(
 			w.chain,
@@ -479,6 +522,8 @@ func (w *Worker) commitTransaction(
 		// [removed] Cross shard transaction log — too noisy
 	}
 	w.current.header.SetGasUsed(gasUsed)
+	tApply = time.Since(tApplyTimer)
+
 	if err != nil {
 		w.current.state.RevertToSnapshot(snap)
 		senderAddress, addrErr := tx.SenderAddress()
@@ -501,10 +546,12 @@ func (w *Worker) commitTransaction(
 		return errNilReceipt
 	}
 
+	tAppendTimer := time.Now()
 	w.current.txs = append(w.current.txs, tx)
 	w.current.receipts = append(w.current.receipts, receipt)
 	w.current.logs = append(w.current.logs, receipt.Logs...)
 	w.current.stakeMsgs = append(w.current.stakeMsgs, stakeMsgs...)
+	tAppend = time.Since(tAppendTimer)
 
 	if tx.To() != nil {
 		utils.SSCLogger().Info().Str("txHash", tx.Hash().Hex()).Uint64("blockNum", w.current.header.NumberU64()).Uint64("gasUsed", gasUsed).

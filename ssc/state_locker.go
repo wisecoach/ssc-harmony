@@ -357,8 +357,16 @@ func (s *stateLocker) RevertToSnapshot(targetId int) {
 
 // CommitTx 提交一个交易，释放其在 pendingStates 中的所有锁。
 func (s *stateLocker) CommitTx(txHash common.Hash) error {
+	tLockWait := time.Now()
 	s.txLock.Lock()
+	tLockWaitDur := time.Since(tLockWait)
 	defer s.txLock.Unlock()
+
+	if tLockWaitDur > 1*time.Millisecond {
+		utils.SSCLogger().Warn().Str("txHash", txHash.Hex()).
+			Dur("lockWait", tLockWaitDur).
+			Msg("CommitTx: slow lock wait")
+	}
 
 	// 从 pendingStates 中解锁该交易的所有写锁
 	c2ls := s.pendingStates.getCallIndex2LockedStates(txHash)
@@ -398,8 +406,16 @@ func (s *stateLocker) CommitTx(txHash common.Hash) error {
 
 // RollbackTx 回滚一个交易，恢复 stateDB 中的值并释放锁。
 func (s *stateLocker) RollbackTx(txHash common.Hash) error {
+	tLockWait := time.Now()
 	s.txLock.Lock()
+	tLockWaitDur := time.Since(tLockWait)
 	defer s.txLock.Unlock()
+
+	if tLockWaitDur > 1*time.Millisecond {
+		utils.SSCLogger().Warn().Str("txHash", txHash.Hex()).
+			Dur("lockWait", tLockWaitDur).
+			Msg("RollbackTx: slow lock wait")
+	}
 
 	// 从 pendingStates 中回滚该交易的所有写锁
 	c2ls := s.pendingStates.getCallIndex2LockedStates(txHash)
