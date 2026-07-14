@@ -253,26 +253,28 @@ func (s *SimulationStats) Dump(mgr *stateLockManager) {
 	var stuckLockedWriteCount, stuckLockedReadCount int
 	var stuckLocks []string
 	if mgr != nil {
-		mgr.mu.RLock()
 		threshold := 30 * time.Second
 		now := time.Now()
-		for lockKey, ls := range mgr.lockedStates.lockedStates {
+		mgr.globalLockedStates.Range(func(k, v interface{}) bool {
+			ls := v.(*lockedState)
 			if now.Sub(ls.lockTime) > threshold {
 				stuckLockedWriteCount++
-				stuckLocks = append(stuckLocks, fmt.Sprintf("%s (held=%s, by=%s)", string(lockKey), now.Sub(ls.lockTime).Round(time.Second), ls.lockedBy.Hex()))
+				stuckLocks = append(stuckLocks, fmt.Sprintf("%s (held=%s, by=%s)", string(k.(api.LockKey)), now.Sub(ls.lockTime).Round(time.Second), ls.lockedBy.Hex()))
 			}
-		}
-		for lockKey, rls := range mgr.lockedStates.rlockedStates {
+			return true
+		})
+		mgr.globalRLockedStates.Range(func(k, v interface{}) bool {
+			rls := v.(*rlockedState)
 			if now.Sub(rls.lockTime) > threshold {
 				stuckLockedReadCount++
 				by := rls.lockedBy[0].Hex()
 				if len(rls.lockedBy) > 1 {
 					by += fmt.Sprintf(" (+%d)", len(rls.lockedBy)-1)
 				}
-				stuckLocks = append(stuckLocks, fmt.Sprintf("%s (held=%s, by=%s)", string(lockKey), now.Sub(rls.lockTime).Round(time.Second), by))
+				stuckLocks = append(stuckLocks, fmt.Sprintf("%s (held=%s, by=%s)", string(k.(api.LockKey)), now.Sub(rls.lockTime).Round(time.Second), by))
 			}
-		}
-		mgr.mu.RUnlock()
+			return true
+		})
 	}
 
 	// per-tx stage 分布：遍历所有 in-flight tx，统计各 stage 的数量
@@ -451,15 +453,15 @@ func (s *SimulationStats) topLockedKeys(n int, mgr *stateLockManager) []string {
 		avgMs := e.totalNs / (e.count + 1) / 1e6
 		by := ""
 		if mgr != nil {
-			mgr.mu.RLock()
-			if ls, exists := mgr.lockedStates.lockedStates[api.LockKey(e.key)]; exists {
+			if v, ok := mgr.globalLockedStates.Load(api.LockKey(e.key)); ok {
+				ls := v.(*lockedState)
 				by = ls.lockedBy.Hex()
-			} else if rls, exists := mgr.lockedStates.rlockedStates[api.LockKey(e.key)]; exists {
+			} else if v, ok := mgr.globalRLockedStates.Load(api.LockKey(e.key)); ok {
+				rls := v.(*rlockedState)
 				if len(rls.lockedBy) > 0 {
 					by = rls.lockedBy[0].Hex()
 				}
 			}
-			mgr.mu.RUnlock()
 		}
 		if by != "" {
 			result = append(result, fmt.Sprintf("%s (avg=%dms, cnt=%d, by=%s)", e.key, avgMs, e.count, by))

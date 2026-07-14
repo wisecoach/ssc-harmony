@@ -49,10 +49,7 @@ type lockEntry struct {
 
 // revert 撤销 Lock：从 pendingStates 中删除该写锁记录。
 func (l *lockEntry) revert(locker *stateLocker) {
-	locker.mu.Lock()
-	defer locker.mu.Unlock()
-
-	// 从 pendingStates（隔离的事务状态）中还原
+	// pendingStates 是本 locker 私有的，journal revert 是单线程
 	locker.pendingStates.deleteLockedState(l.txHash, l.callIndex.ToString(), l.key)
 }
 
@@ -65,10 +62,7 @@ type rlockEntry struct {
 
 // revert 撤销 RLock：从 pendingStates 中删除该读锁记录。
 func (l *rlockEntry) revert(locker *stateLocker) {
-	locker.mu.Lock()
-	defer locker.mu.Unlock()
-
-	// 从 pendingStates（隔离的事务状态）中还原
+	// pendingStates 是本 locker 私有的，journal revert 是单线程
 	locker.pendingStates.deleteRLockedState(l.txHash, l.callIndex.ToString(), l.key)
 }
 
@@ -93,18 +87,12 @@ type unlockEntry struct {
 // 1. 将 lockedState 加回 pendingStates（恢复锁）
 // 2. 如果是回滚场景，将 stateDB 的值也还原
 func (l *unlockEntry) revert(locker *stateLocker) {
-	func() {
-		locker.mu.Lock()
-		defer locker.mu.Unlock()
-		// 将锁状态加回 pendingStates（还原到 lockedState）
-		locker.pendingStates.addLockedState(l.txHash, l.callIndexStr, l.key, l.oldValue, l.state)
-	}()
+	// pendingStates 是本 locker 私有的，journal revert 是单线程
+	locker.pendingStates.addLockedState(l.txHash, l.callIndexStr, l.key, l.oldValue, l.state)
 
 	if l.rollback {
 		// 如果是回滚，还需要将 stateDB 中的值还原
-		locker.mu.Lock()
 		locker.pendingStates.setLockedValue(l.txHash, l.callIndexStr, l.key, l.oldValue)
-		locker.mu.Unlock()
 
 		addr, key := l.key.Value()
 		locker.stateDB.SetState(l.txHash, addr, key, l.newValue)
@@ -121,9 +109,7 @@ type unlockRLockEntry struct {
 
 // revert 撤销 unlockRLock：将 rlockedState 加回 pendingStates。
 func (l *unlockRLockEntry) revert(locker *stateLocker) {
-	locker.mu.Lock()
-	defer locker.mu.Unlock()
-	// 将读锁状态加回 pendingStates（还原到 rlockedState）
+	// pendingStates 是本 locker 私有的，journal revert 是单线程
 	locker.pendingStates.addRLockedState(l.txHash, l.callIndexStr, l.key, l.state)
 }
 
