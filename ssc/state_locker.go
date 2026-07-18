@@ -182,7 +182,7 @@ func (s *stateLocker) Lock(txHash common.Hash, callIndex api.CallIndex, key api.
 		key:       key,
 		value:     value,
 	})
-	utils.SSCLogger().Info().Str("txHash", txHash.Hex()).
+	utils.SSCLogger().Debug().Str("txHash", txHash.Hex()).
 		Str("callIndex", callIndex.ToString()).
 		Str("key", string(key)).
 		Msgf("mu state, pending locked %d state, journal %d", s.pendingStates.length(), s.journal.length())
@@ -370,7 +370,7 @@ func (s *stateLocker) RollbackTx(txHash common.Hash) error {
 func (s *stateLocker) Commit(newRoot common.Hash) error {
 	currentVersion := s.version.Load()
 
-	utils.SSCLogger().Info().
+	utils.SSCLogger().Debug().
 		Int("pendingLockedStates", len(s.pendingStates.lockedStates)).
 		Int("unlockedTxs", len(s.pendingUnlocks.unlockedTxs)).
 		Uint64("version", currentVersion).

@@ -166,10 +166,10 @@ func (cm *CommitteeMechanism) waitForEpoch(epoch api.Epoch, shardId uint32) {
 	cm.epochWaitLock.Unlock()
 
 	if waitCh != nil {
-		utils.SSCLogger().Info().Msgf("waiting for epoch %d to be ready, shardId=%d", epoch, shardId)
+		utils.SSCLogger().Debug().Msgf("waiting for epoch %d to be ready, shardId=%d", epoch, shardId)
 		select {
 		case <-waitCh:
-			utils.SSCLogger().Info().Msgf("epoch %d is ready, cost=%v", epoch, time.Since(startTime))
+			utils.SSCLogger().Debug().Msgf("epoch %d is ready, cost=%v", epoch, time.Since(startTime))
 		case <-time.After(time.Hour * 10):
 			utils.SSCLogger().Error().Msgf("timeout waiting for epoch %d, cost=%v", epoch, time.Since(startTime))
 		}
@@ -240,7 +240,7 @@ func (cm *CommitteeMechanism) GetCommittee(epoch api.Epoch, shardID uint32) *api
 
 func (cm *CommitteeMechanism) updateCommittee(shardID uint32, committee *api.ShardSimulateCommittee) error {
 	if _, exists := cm.Committees[shardID][committee.Epoch]; exists {
-		utils.SSCLogger().Info().Msgf("COMMITTEE_EXISTS,ShardID=%d,Epoch=%d", shardID, committee.Epoch)
+		utils.SSCLogger().Debug().Msgf("COMMITTEE_EXISTS,ShardID=%d,Epoch=%d", shardID, committee.Epoch)
 		return nil
 	}
 
@@ -423,11 +423,11 @@ type BlockStateDelta struct {
 	MemberSignedCounts map[int]int // 签名计数 (memberIndex -> count)
 }
 
-// HandleBlockCommitted
+// OnBlockCommitted
 // 1. 从区块解析数据 (解耦到 parser)
 // 2. 应用状态变更
 // 3. 检查是否需要启动新 epoch
-func (cm *CommitteeMechanism) HandleBlockCommitted(block *types.Block) error {
+func (cm *CommitteeMechanism) OnBlockCommitted(block *types.Block) error {
 	committee := cm.getCommittee(cm.CurrentEpoch, cm.SelfShard)
 
 	// Step 1: 解析区块数据，提取状态变更 (解耦：解析逻辑独立)

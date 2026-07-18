@@ -23,11 +23,12 @@ var (
 	port string
 	ip   string
 	// Logging
-	logInstance  log.Logger
-	glogger      *log.GlogHandler // top-level handler
-	logHandlers  []log.Handler    // sub handlers of glogger
-	logVerbosity log.Lvl
-	onceForLog   sync.Once
+	logInstance     log.Logger
+	glogger         *log.GlogHandler // top-level handler
+	logHandlers     []log.Handler    // sub handlers of glogger
+	logVerbosity    log.Lvl
+	sscLogVerbosity = log.LvlInfo
+	onceForLog      sync.Once
 
 	// ZeroLog
 	zeroLogger      *zerolog.Logger
@@ -93,6 +94,31 @@ func GetLogInstance() log.Logger {
 	return logInstance
 }
 
+// SetSSCLogVerbosity sets the verbosity of SSCLogger independently from the global Logger.
+func SetSSCLogVerbosity(verbosity log.Lvl) {
+	sscLogVerbosity = verbosity
+	if sscLogger != nil {
+		zlvl := logLvlToZerologLevel(int(verbosity))
+		child := sscLogger.Level(zlvl)
+		sscLogger = &child
+	}
+}
+
+func logLvlToZerologLevel(level int) zerolog.Level {
+	switch level {
+	case 0:
+		return zerolog.Disabled
+	case 1:
+		return zerolog.ErrorLevel
+	case 2:
+		return zerolog.WarnLevel
+	case 3:
+		return zerolog.InfoLevel
+	default:
+		return zerolog.DebugLevel
+	}
+}
+
 // ZeroLog
 func setZeroLogContext(port string, ip string) {
 	childLogger := Logger().
@@ -136,7 +162,8 @@ func setSSCLoggerFileOutput(filepath string, maxSize int, rotateCount int, rotat
 		Compress:   true,
 	})
 
-	childLogger := Logger().Output(w)
+	zlvl := logLvlToZerologLevel(int(sscLogVerbosity))
+	childLogger := Logger().Level(zlvl).Output(w)
 	sscLogger = &childLogger
 	return nil
 }
@@ -208,18 +235,7 @@ func SampledLogger() *zerolog.Logger {
 }
 
 func updateZeroLogLevel(level int) {
-	switch level {
-	case 0:
-		zeroLoggerLevel = zerolog.Disabled
-	case 1:
-		zeroLoggerLevel = zerolog.ErrorLevel
-	case 2:
-		zeroLoggerLevel = zerolog.WarnLevel
-	case 3:
-		zeroLoggerLevel = zerolog.InfoLevel
-	default:
-		zeroLoggerLevel = zerolog.DebugLevel
-	}
+	zeroLoggerLevel = logLvlToZerologLevel(level)
 	childLogger := Logger().Level(zeroLoggerLevel)
 	zeroLogger = &childLogger
 }

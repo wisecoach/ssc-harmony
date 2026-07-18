@@ -15,7 +15,6 @@ import (
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/crypto"
 	"github.com/harmony-one/harmony/core/types"
-	"github.com/harmony-one/harmony/internal/utils"
 )
 
 const (
@@ -559,8 +558,8 @@ type CXTSimulation struct {
 	OriginShardId  uint32
 	RelatedShards  RelatedShards
 	CallStates     []*CXTCallState // all cross-shard call of cxt related to this shard
-	ChainPatch     *RWSet        `json:"chain_patch,omitempty"`        // merged upstream WriteSet for chained retries
-	UpstreamTxList []TxSimKey    `json:"upstream_tx_list,omitempty"`   // all upstream SimTxs (DAG)
+	ChainPatch     *RWSet          `json:"chain_patch,omitempty"`      // merged upstream WriteSet for chained retries
+	UpstreamTxList []TxSimKey      `json:"upstream_tx_list,omitempty"` // all upstream SimTxs (DAG)
 	BaseBLSSignedMessage
 }
 
@@ -1043,8 +1042,8 @@ type RetrySignal struct {
 type ChainNode struct {
 	TxHash         common.Hash
 	SimulationNum  int
-	Patch          *RWSet        // 自己的 WriteSet
-	UpstreamTxList []TxSimKey    // 所有上游 SimTx（空=根节点，DAG 支持多上游）
+	Patch          *RWSet     // 自己的 WriteSet
+	UpstreamTxList []TxSimKey // 所有上游 SimTx（空=根节点，DAG 支持多上游）
 }
 
 // TxSimKey identifies a specific simulation of a transaction.
@@ -1072,306 +1071,6 @@ func (p Priority) Less(other Priority) bool {
 	}
 	// Final tiebreaker: compare TxHash as big-endian bytes
 	return bytes.Compare(p.TxHash.Bytes(), other.TxHash.Bytes()) < 0
-}
-
-// PatchConsumeStatus represents the lifecycle state of a ChainPatchNode.
-type PatchConsumeStatus int
-
-const (
-	PatchFree      PatchConsumeStatus = iota // Not yet taken by any retryTx
-	PatchConsumed                            // Taken by a retryTx, can still be Wounded
-	PatchFinalized                           // Locked by CommitSimulation, cannot be Wounded
-)
-
-// ChainPatchNode is a node in the PatchPool.
-// Each submitted SimTx corresponds to one node.
-type ChainPatchNode struct {
-	TxHash        common.Hash        // txHash of the SimTx
-	SimulationNum int                // simulationNum of the SimTx
-	Patch         *RWSet             // WriteSet of the SimTx
-	Status        PatchConsumeStatus // Free → Consumed → Finalized
-	Consumer      common.Hash        // retryTx that consumed this Patch (zero if Free)
-	Priority      Priority           // priority of the consumer
-	CreatedAt     time.Time          // time when added to pool
-}
-
-// PatchPool is a shard-local pool of chain patches maintained by the leader.
-// Each shard has its own instance, storing only WriteSets of SimTxs submitted by this shard.
-type PatchPool struct {
-	mu       sync.RWMutex
-	Patches  map[common.Hash]*ChainPatchNode      // patches[txHash] = ChainPatchNode
-	KeyIndex map[LockKey]map[common.Hash]struct{} // keyIndex[lockKey] = set of txHashes that write this key
-}
-
-// Add adds a submitted SimTx's WriteSet to the PatchPool.
-// Also updates the keyIndex inverted index.
-func (pp *PatchPool) Add(txHash common.Hash, simNum int, writeSet *RWSet) {
-	pp.mu.Lock()
-	defer pp.mu.Unlock()
-
-	pp.Patches[txHash] = &ChainPatchNode{
-		TxHash:        txHash,
-		SimulationNum: simNum,
-		Patch:         writeSet,
-		Status:        PatchFree,
-		CreatedAt:     time.Now(),
-	}
-
-	// Update keyIndex
-	for addr, state := range writeSet.WriteState.State {
-		for key := range state {
-			lockKey := FormKey(addr, key)
-			if pp.KeyIndex[lockKey] == nil {
-				pp.KeyIndex[lockKey] = make(map[common.Hash]struct{})
-			}
-			pp.KeyIndex[lockKey][txHash] = struct{}{}
-		}
-	}
-}
-
-// HasConflict checks if a retryTx depends on any SimTx in the PatchPool.
-// Returns true + the best matching node (highest key coverage).
-func (pp *PatchPool) HasConflict(retryTx *RetryTx) (bool, *ChainPatchNode) {
-	pp.mu.RLock()
-	defer pp.mu.RUnlock()
-
-	// Collect all owners of keys that retryTx touches, count hits per txHash
-	candidates := make(map[common.Hash]int)
-	for _, key := range retryTx.ReadSet {
-		if owners, ok := pp.KeyIndex[key]; ok {
-			for txHash := range owners {
-				candidates[txHash]++
-			}
-		}
-	}
-	for _, key := range retryTx.WriteSet {
-		if owners, ok := pp.KeyIndex[key]; ok {
-			for txHash := range owners {
-				candidates[txHash]++
-			}
-		}
-	}
-
-	// Select the one with highest coverage (most matching keys)
-	// Skip Finalized patches (already committed, cannot be Wounded)
-	var best common.Hash
-	var bestCnt int
-	for txHash, cnt := range candidates {
-		node, exists := pp.Patches[txHash]
-		if cnt > bestCnt && exists && node.Status != PatchFinalized && node.Status != PatchConsumed {
-			bestCnt = cnt
-			best = txHash
-		}
-	}
-	if bestCnt > 0 {
-		return true, pp.Patches[best]
-	}
-	return false, nil
-}
-
-// FindCovering checks if a single non-Finalized, non-Consumed Patch in the Pool
-// covers all given conflictKeys. Returns the matching node if found.
-// Unlike HasConflict which checks all keys of a retryTx, this only checks the
-// specific keys that already failed stateDB.CheckLock.
-func (pp *PatchPool) FindCovering(conflictKeys []LockKey) (bool, *ChainPatchNode) {
-	pp.mu.RLock()
-	defer pp.mu.RUnlock()
-
-	// For each conflictKey, find the set of Patches that own it
-	// Then find the intersection — a single Patch that owns all conflictKeys
-	candidates := make(map[common.Hash]int)
-	for _, key := range conflictKeys {
-		if owners, ok := pp.KeyIndex[key]; ok {
-			for txHash := range owners {
-				candidates[txHash]++
-			}
-		} else {
-			// This key has no Patch at all → impossible to cover
-			return false, nil
-		}
-	}
-
-	// Select the Patch that covers ALL conflictKeys
-	// Skip Finalized or Consumed patches
-	var best common.Hash
-	for txHash, cnt := range candidates {
-		if cnt != len(conflictKeys) {
-			continue
-		}
-		node, exists := pp.Patches[txHash]
-		if exists && node.Status != PatchFinalized && node.Status != PatchConsumed {
-			if best == (common.Hash{}) {
-				best = txHash
-			}
-		}
-	}
-	if best != (common.Hash{}) {
-		return true, pp.Patches[best]
-	}
-	return false, nil
-}
-
-// FindCoveringSet 返回一组 Free Patch，联合覆盖全部 conflictKeys（DAG 多 Patch 覆盖）。
-// 贪心近似：每轮选覆盖最多「未覆盖 key」的 Free Patch。
-// 返回 nil = 无法覆盖全部 key。
-func (pp *PatchPool) FindCoveringSet(conflictKeys []LockKey) []*ChainPatchNode {
-	pp.mu.RLock()
-	defer pp.mu.RUnlock()
-
-	// 建可用 Patch 表
-	type patchEntry struct {
-		node *ChainPatchNode
-		keys map[int]struct{} // 该 Patch 覆盖的 conflictKeys 下标
-	}
-	var available []patchEntry
-	for i, key := range conflictKeys {
-		owners, ok := pp.KeyIndex[key]
-		if !ok {
-			return nil // 某个 key 完全无 Patch → 无法覆盖
-		}
-		for txHash := range owners {
-			node, exists := pp.Patches[txHash]
-			if !exists || node.Status != PatchFree {
-				continue
-			}
-			// Find or create entry
-			found := false
-			for j := range available {
-				if available[j].node.TxHash == txHash {
-					available[j].keys[i] = struct{}{}
-					found = true
-					break
-				}
-			}
-			if !found {
-				available = append(available, patchEntry{
-					node: node,
-					keys: map[int]struct{}{i: {}},
-				})
-			}
-		}
-	}
-
-	// 贪心选 Patch
-	covered := make(map[int]bool)
-	var result []*ChainPatchNode
-
-	for len(covered) < len(conflictKeys) {
-		// 找覆盖最多未覆盖 key 的 Patch
-		bestIdx := -1
-		bestCnt := 0
-		for idx, entry := range available {
-			cnt := 0
-			for k := range entry.keys {
-				if !covered[k] {
-					cnt++
-				}
-			}
-			if cnt > bestCnt {
-				bestCnt = cnt
-				bestIdx = idx
-			}
-		}
-		if bestIdx == -1 || bestCnt == 0 {
-			return nil // 无法继续覆盖
-		}
-		// 标记已覆盖的 key
-		for k := range available[bestIdx].keys {
-			covered[k] = true
-		}
-		result = append(result, available[bestIdx].node)
-		// Remove chosen entry from available
-		available = append(available[:bestIdx], available[bestIdx+1:]...)
-	}
-
-	return result
-}
-
-// TryConsume attempts to take the Patch for the given txHash.
-// Returns the Patch if successful, nil if already consumed/finalized or not found.
-// Sets Status to PatchConsumed.
-func (pp *PatchPool) TryConsume(txHash common.Hash, consumer common.Hash, priority Priority) *RWSet {
-	pp.mu.Lock()
-	defer pp.mu.Unlock()
-
-	node, ok := pp.Patches[txHash]
-	if !ok || node.Status != PatchFree {
-		return nil
-	}
-	node.Status = PatchConsumed
-	node.Consumer = consumer
-	node.Priority = priority
-	return node.Patch
-}
-
-// Release releases a consumed Patch (on retry failure), allowing other retryTxs to take it.
-func (pp *PatchPool) Release(txHash common.Hash) {
-	pp.mu.Lock()
-	defer pp.mu.Unlock()
-
-	if node, ok := pp.Patches[txHash]; ok && node.Status == PatchConsumed {
-		node.Status = PatchFree
-		node.Consumer = common.Hash{}
-		node.Priority = Priority{}
-	}
-}
-
-// Finalize marks a Patch as Finalized — cannot be Wounded anymore.
-// Called in CommitSimulation before submitting the SimTx.
-func (pp *PatchPool) Finalize(txHash common.Hash) {
-	pp.mu.Lock()
-	defer pp.mu.Unlock()
-
-	if node, ok := pp.Patches[txHash]; ok && node.Status == PatchConsumed {
-		node.Status = PatchFinalized
-	}
-}
-
-// IsFinalized returns true if the given txHash's Patch is Finalized.
-func (pp *PatchPool) IsFinalized(txHash common.Hash) bool {
-	pp.mu.RLock()
-	defer pp.mu.RUnlock()
-
-	node, ok := pp.Patches[txHash]
-	return ok && node.Status == PatchFinalized
-}
-
-// Remove removes a Patch from the pool and cleans up keyIndex.
-func (pp *PatchPool) Remove(txHash common.Hash) {
-	t0 := time.Now()
-	pp.mu.Lock()
-	defer pp.mu.Unlock()
-
-	node, ok := pp.Patches[txHash]
-	if !ok {
-		return
-	}
-
-	// Clean up keyIndex
-	for addr, state := range node.Patch.WriteState.State {
-		for key := range state {
-			lockKey := FormKey(addr, key)
-			if owners, ok := pp.KeyIndex[lockKey]; ok {
-				delete(owners, txHash)
-				if len(owners) == 0 {
-					delete(pp.KeyIndex, lockKey)
-				}
-			}
-		}
-	}
-
-	delete(pp.Patches, txHash)
-
-	utils.SSCLogger().Info().Str("txHash", txHash.Hex()).
-		Str("duration", time.Since(t0).String()).
-		Msg("PatchPool.Remove timing")
-}
-
-// Stats returns snapshot of PatchPool size metrics.
-func (pp *PatchPool) Stats() (patchCount int, keyCount int) {
-	pp.mu.RLock()
-	defer pp.mu.RUnlock()
-	return len(pp.Patches), len(pp.KeyIndex)
 }
 
 func NewCallStack(txHash common.Hash, simulationNum int) *CallStack {
@@ -1424,7 +1123,6 @@ func (c *CallStack) Push(frame *CallFrame) {
 func (c *CallStack) Pop() *CallFrame {
 	c.PopNum++
 	if len(c.CallFrames) == 0 {
-		// utils.SSCLogger().Info().Str("txHash", c.TxHash.Hex()).Int("simulationNum", c.SimulationNum).Str("callStack", c.String()).Msgf("pop call nil frame, pop=%d, push=%d, length=%d", c.PopNum, c.PushNum, len(c.CallFrames))
 		return nil
 	}
 	frame := c.CallFrames[len(c.CallFrames)-1]
@@ -1668,6 +1366,16 @@ type SLOpinion struct {
 	Omega float64        `json:"Omega"`
 }
 
+// RetryStatus represents the lifecycle state of a retryTx in the retry pool.
+type RetryStatus int
+
+const (
+	RetryActive   RetryStatus = iota // In subscriber index, eligible for matching
+	RetryConsumed                    // Patch consumed, waiting for re-sim result
+	RetryPassive                     // Skipped by active scanning, waiting for origin signal
+	RetryWounded                     // TLV lock stolen, will be restored on next block
+)
+
 type RetryTx struct {
 	TxHash        common.Hash
 	Epochs        []Epoch
@@ -1680,7 +1388,7 @@ type RetryTx struct {
 	RelatedShards RelatedShards
 	SimulationNum int
 	Condition     ConflictCondition
-	ChainDepth    int // 链式依赖深度：0=无上游依赖，1=依赖1跳，2=依赖2跳...
+	Status        RetryStatus // 重试交易的生命周期状态
 }
 
 type RetryCommitResp struct {

@@ -257,14 +257,15 @@ func (node *Node) tryBroadcastStaking(stakingTx *staking.StakingTransaction) {
 // Add new transactions to the pending transaction list.
 func (node *Node) addPendingTransactions(registry *registry.Registry, newTxs types.Transactions) []error {
 	var (
-		errs          []error
-		bc            = registry.GetBlockchain()
-		txPool        = registry.GetTxPool()
-		poolTxs       = types.PoolTransactions{}
-		epoch         = bc.CurrentHeader().Epoch()
-		acceptCx      = bc.Config().AcceptsCrossTx(epoch)
-		isBeforeHIP30 = bc.Config().IsOneEpochBeforeHIP30(epoch)
-		nxtShards     = shard.Schedule.InstanceForEpoch(new(big.Int).Add(epoch, common.Big1)).NumShards()
+		errs                 []error
+		bc                   = registry.GetBlockchain()
+		txPool               = registry.GetTxPool()
+		poolTxs              = types.PoolTransactions{}
+		normalCrossShardTxs  types.PoolTransactions // CrossShardTx trigger tx：不入 pool，直启模拟
+		epoch                = bc.CurrentHeader().Epoch()
+		acceptCx             = bc.Config().AcceptsCrossTx(epoch)
+		isBeforeHIP30        = bc.Config().IsOneEpochBeforeHIP30(epoch)
+		nxtShards            = shard.Schedule.InstanceForEpoch(new(big.Int).Add(epoch, common.Big1)).NumShards()
 	)
 	for _, tx := range newTxs {
 		if tx.ShardID() != tx.ToShardID() {
@@ -289,6 +290,12 @@ func (node *Node) addPendingTransactions(registry *registry.Registry, newTxs typ
 				continue
 			}
 		}
+		// DSN-31: 普通跨分片交易不入池，直启模拟（仅 Leader）
+		// 非 Leader 节点正常入池，等待 Leader 打包触发
+		if node.Consensus != nil && node.Consensus.IsLeader() && tx.CrossShard() && !vm.IsSSCAddrApplyOnChain(*tx.To()) {
+			normalCrossShardTxs = append(normalCrossShardTxs, tx)
+			continue
+		}
 		poolTxs = append(poolTxs, tx)
 	}
 	txErrs := registry.GetTxPool().AddRemotes(poolTxs)
@@ -296,26 +303,21 @@ func (node *Node) addPendingTransactions(registry *registry.Registry, newTxs typ
 	gasLimit := bc.CurrentHeader().Header.GasLimit()
 	// begin to stimulate the cross tx, if self is leader
 	if node.Consensus != nil && node.Consensus.IsLeader() {
-		for i, tx := range poolTxs {
-			if txErrs[i] == nil {
-				// if transaction is cross-shard tx and it is not the tx apply on chain
-				if tx.CrossShard() && !vm.IsSSCAddrApplyOnChain(*tx.To()) {
-					utils.Logger().Info().Str("txHash", tx.Hash().Hex()).Msg("Pre-Simulating cross shard transaction")
-					senderAddress, err := tx.SenderAddress()
-					if err != nil {
-						utils.SSCLogger().Error().Err(err).Msg("Cannot get sender address from tx")
-						return nil
-					}
-					req := &api.CXTSimulationRequest{
-						SimulationNum: 0,
-						Tx:            tx.(*types.Transaction),
-						TxHash:        tx.Hash(),
-						From:          senderAddress,
-						GasPool:       gasLimit,
-					}
-					go node.SSCService.SimulateCXTransaction(req)
-				}
+		for _, tx := range normalCrossShardTxs {
+			utils.Logger().Info().Str("txHash", tx.Hash().Hex()).Msg("Pre-Simulating cross shard transaction (off-pool)")
+			senderAddress, err := tx.SenderAddress()
+			if err != nil {
+				utils.SSCLogger().Error().Err(err).Msg("Cannot get sender address from tx")
+				return nil
 			}
+			req := &api.CXTSimulationRequest{
+				SimulationNum: 0,
+				Tx:            tx.(*types.Transaction),
+				TxHash:        tx.Hash(),
+				From:          senderAddress,
+				GasPool:       gasLimit,
+			}
+			go node.SSCService.SimulateCXTransaction(req)
 		}
 	}
 

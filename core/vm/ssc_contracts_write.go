@@ -107,7 +107,7 @@ func (s *slOpinion) RequiredGas(vm *SSCVM, contract *Contract, input []byte) (ui
 }
 func (s *slOpinion) RunWriteCapable(vm *SSCVM, contract *Contract, input []byte) ([]byte, error) {
 	startTime := time.Now()
-	defer utils.SSCLogger().Info().
+	defer utils.SSCLogger().Debug().
 		Str("txHash", vm.Context.TxHash.Hex()).
 		Dur("cost", time.Since(startTime)).
 		Msgf("upload SLOpinion")

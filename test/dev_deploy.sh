@@ -112,7 +112,7 @@ function deploy() {
     if ${VERBOSE}; then
       verbosity=5
     else
-      verbosity=3
+      verbosity=2
     fi
 
     base_args=(--log_folder "${log_folder}" --min_peers "${MIN}" "--network_type=$NETWORK" --blspass file:"${PROJECT_ROOT}/.hmy/blspass.txt" "--dns=false" "--p2p.security.max-conn-per-ip=100")

@@ -112,7 +112,7 @@ func (c *Committer) CommitOrRollbackWithProof(commitProofBytes []byte, stateDB a
 	}
 
 	total := time.Since(t0)
-	utils.SSCLogger().Info().Str("txHash", txHash.Hex()).
+	utils.SSCLogger().Debug().Str("txHash", txHash.Hex()).
 		Str("type", commitProof.Type.String()).
 		Str("unmarshal", tUnmarshal.String()).
 		Str("isFinished", tIsFinished.String()).

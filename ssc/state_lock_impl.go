@@ -367,7 +367,7 @@ func (s *stateLockManager) handleLockCommit(newRoot common.Hash) error {
 	}
 
 	total := time.Since(t0)
-	utils.SSCLogger().Info().
+	utils.SSCLogger().Debug().
 		Uint64("newVersion", newVersion).
 		Uint64("prevVersion", s.prevVersion).
 		Str("oldRoot", oldRoot.Hex()).
@@ -397,7 +397,7 @@ func (s *stateLockManager) handleLockCommit(newRoot common.Hash) error {
 // InitLockManager 初始化锁管理器。
 func (s *stateLockManager) InitLockManager(genesisRoot common.Hash) error {
 	s.currentRoot.Store(genesisRoot)
-	utils.SSCLogger().Info().
+	utils.SSCLogger().Debug().
 		Str("stateRoot", genesisRoot.Hex()).
 		Msg("locker inited")
 	return nil
@@ -423,7 +423,7 @@ func (s *stateLockManager) GetLockerAt(stateRoot common.Hash) (api.StateLocker, 
 
 	// 请求当前版本或空 root → 用当前版本
 	if stateRoot == curRoot || stateRoot == (common.Hash{}) {
-		utils.SSCLogger().Info().
+		utils.SSCLogger().Debug().
 			Str("stateRoot", stateRoot.Hex()).
 			Str("currentRoot", curRoot.Hex()).
 			Bool("isCurrent", stateRoot == curRoot).
@@ -432,7 +432,7 @@ func (s *stateLockManager) GetLockerAt(stateRoot common.Hash) (api.StateLocker, 
 	} else if stateRoot == s.prevRoot {
 		// 请求上一个版本 → 用 prevVersion 过滤
 		baseVersion = s.prevVersion
-		utils.SSCLogger().Info().
+		utils.SSCLogger().Debug().
 			Str("stateRoot", stateRoot.Hex()).
 			Str("currentRoot", curRoot.Hex()).
 			Uint64("baseVersion", baseVersion).
@@ -549,9 +549,31 @@ func (s *stateLockManager) printTxNums() {
 		return true
 	})
 
-	utils.SSCLogger().Info().
+	utils.SSCLogger().Debug().
 		Int("commitCnt", int(s.commitCnt)).
 		Int("lockedStateNum", lockedStateNum).
 		Int("stateNum", sn).
 		Msg("print waiting tx nums")
+}
+
+// Stats returns counts of all stateLockManager sync.Maps.
+// Added for OnBlockCommitted stats logging.
+func (s *stateLockManager) Stats() (globalLocked, globalRLocked, globalFinished, globalLockStart int) {
+	s.globalLockedStates.Range(func(_, _ interface{}) bool {
+		globalLocked++
+		return true
+	})
+	s.globalRLockedStates.Range(func(_, _ interface{}) bool {
+		globalRLocked++
+		return true
+	})
+	s.globalFinishedTxs.Range(func(_, _ interface{}) bool {
+		globalFinished++
+		return true
+	})
+	s.globalLockStartBlock.Range(func(_, _ interface{}) bool {
+		globalLockStart++
+		return true
+	})
+	return
 }

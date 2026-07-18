@@ -485,7 +485,7 @@ func SimulateCXTransaction(service api.Service, bc ChainContext, author *common.
 		if err != nil {
 			return nil, nil, nil, 0, err
 		}
-		utils.SSCLogger().Info().Str("txHash", tx.Hash().Hex()).
+		utils.SSCLogger().Debug().Str("txHash", tx.Hash().Hex()).
 			Dur("cost", time.Since(startTime)).
 			Uint64("nonce", statedb.GetNonce(msg.From())).
 			Uint64("originNonce", originNonce).

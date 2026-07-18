@@ -282,10 +282,10 @@ func buildConfig(config ShardConfig) {
 		localSSCMembers := make([]*api.Member, 0)
 		devSSCMembers := make([]*api.Member, 0)
 		timeout := &api.TimeoutConfig{
-			Sp1:                  9999,
-			PoolTimeout:          9999,
-			MaxOnChainRetries:    9999,
-			MaxRetriesTotal:      9999,
+			Sp1:                  10,
+			PoolTimeout:          10,
+			MaxOnChainRetries:    2,
+			MaxRetriesTotal:      5,
 			ForceSimulation:      true,
 			EnableLockOnConflict: false,
 		}

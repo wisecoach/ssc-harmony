@@ -129,7 +129,7 @@ func (s *blsSigner) Aggregate(msgs []api.SSCMessage) (signatures []byte, bitmap 
 	s.mu.RLock()
 	currentEpoch := s.currentEpoch
 	if currentEpoch < msgEpoch {
-		utils.SSCLogger().Info().Msgf("current epoch=%d, msg epoch=%d", currentEpoch, msgEpoch)
+		utils.SSCLogger().Debug().Msgf("current epoch=%d, msg epoch=%d", currentEpoch, msgEpoch)
 		waitCh = s.epochReadyCh[shardID][msgEpoch]
 		if waitCh == nil {
 			waitCh = make(chan struct{})
@@ -139,7 +139,7 @@ func (s *blsSigner) Aggregate(msgs []api.SSCMessage) (signatures []byte, bitmap 
 	s.mu.RUnlock()
 
 	if waitCh != nil {
-		utils.SSCLogger().Info().Msgf("waiting for epoch %d to be ready, current epoch=%d", msgEpoch, currentEpoch)
+		utils.SSCLogger().Debug().Msgf("waiting for epoch %d to be ready, current epoch=%d", msgEpoch, currentEpoch)
 		select {
 		case <-waitCh:
 			utils.SSCLogger().Debug().Msgf("epoch %d is ready", msgEpoch)
@@ -210,7 +210,7 @@ func (s *blsSigner) Aggregate(msgs []api.SSCMessage) (signatures []byte, bitmap 
 		return nil, nil, errors.New("not enough signatures")
 	}
 
-	utils.SSCLogger().Info().Interface("addr2Index", addr2Index).Msgf("aggregate sigs, epoch: %d, want: %d, get: %d, total: %d, indexes: [%v]",
+	utils.SSCLogger().Debug().Interface("addr2Index", addr2Index).Msgf("aggregate sigs, epoch: %d, want: %d, get: %d, total: %d, indexes: [%v]",
 		msgEpoch, s.shard2Threshold[s.selfShardId][msgEpoch], mask.CountEnabled(), mask.CountTotal(), usedIndexes)
 
 	keys := mask.GetPubKeyFromMask(true)
@@ -315,7 +315,7 @@ func (s *blsSigner) UpdatePubKeys(shardID uint32, epoch api.Epoch, changed bool,
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	utils.SSCLogger().Info().Uint64("epoch", uint64(epoch)).Interface("addr2Index", addr2Index).Msgf("update pub keys, shard: %d, changed: %t", shardID, changed)
+	utils.SSCLogger().Debug().Uint64("epoch", uint64(epoch)).Interface("addr2Index", addr2Index).Msgf("update pub keys, shard: %d, changed: %t", shardID, changed)
 	if changed {
 		if _, exists := s.shard2PublicKeys[shardID]; !exists {
 			s.shard2PublicKeys[shardID] = make(map[api.Epoch][]bls.PublicKeyWrapper)

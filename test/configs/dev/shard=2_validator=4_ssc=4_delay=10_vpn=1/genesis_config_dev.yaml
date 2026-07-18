@@ -83,10 +83,10 @@ ssc_config:
     memberindex: {}
     validatorindex: {}
   timeout:
-    sp1: 9999
-    pool_timeout: 9999
-    max_on_chain_retries: 9999
-    max_retries_total: 9999
+    sp1: 10
+    pool_timeout: 10
+    max_on_chain_retries: 2
+    max_retries_total: 5
     force_simulation: true
     enable_lock_on_conflict: false
   chain: null

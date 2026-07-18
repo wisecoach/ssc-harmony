@@ -291,7 +291,7 @@ func (s *SimulationStats) Dump(mgr *stateLockManager) {
 		stuckLocks = stuckLocks[:5]
 	}
 
-	utils.SSCLogger().Info().
+	utils.SSCLogger().Debug().
 		Dur("elapsed", elapsed).
 		Int64("queuePush", pushCnt).
 		Int64("queuePop", popCnt).
@@ -376,7 +376,7 @@ func (s *SimulationStats) dumpBlockSpanTraces() {
 	}
 
 	if len(entries) == 0 {
-		utils.SSCLogger().Info().Msg("[TX_TRACE] no completed traces yet")
+		utils.SSCLogger().Debug().Msg("[TX_TRACE] no completed traces yet")
 		return
 	}
 
@@ -389,13 +389,13 @@ func (s *SimulationStats) dumpBlockSpanTraces() {
 		n = len(entries)
 	}
 
-	utils.SSCLogger().Info().
+	utils.SSCLogger().Debug().
 		Int("totalTraces", len(entries)).
 		Msgf("[TX_TRACE] === TOP %d BLOCK SPAN TRACES ===", n)
 
 	for i := 0; i < n; i++ {
 		e := entries[i]
-		utils.SSCLogger().Info().
+		utils.SSCLogger().Debug().
 			Str("tx", e.hash).
 			Uint64("simulate", e.trace.SimulateBlockNum).
 			Uint64("simSubmit", e.trace.SimulationTxSubmitBlockNum).

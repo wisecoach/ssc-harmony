@@ -1178,7 +1178,7 @@ func (db *DB) Commit(deleteEmptyObjects bool) (common.Hash, error) {
 	newRoot := db.IntermediateRoot(deleteEmptyObjects)
 
 	if db.locker != nil {
-		utils.SSCLogger().Info().Msg("Commit")
+		utils.SSCLogger().Debug().Msg("Commit")
 		err := db.locker.Commit(newRoot)
 		if err != nil {
 			return common.Hash{}, err

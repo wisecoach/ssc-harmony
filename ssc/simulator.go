@@ -206,7 +206,7 @@ func (sim *Simulator) Cleanup(txHash common.Hash) {
 	delete(sim.callStatesInWaiting, txHash)
 	sim.syncLock.Unlock()
 
-	utils.SSCLogger().Info().Str("txHash", txHash.Hex()).
+	utils.SSCLogger().Debug().Str("txHash", txHash.Hex()).
 		Str("delSimState", tDelSim.String()).
 		Str("pendingLock", tPending.String()).
 		Msg("Simulator.Cleanup timing")
@@ -403,7 +403,7 @@ func (sim *Simulator) SimulateCXTransaction(req *api.CXTSimulationRequest) {
 	atomic.AddInt64(&sim.simulatingCount, 1)
 	currentCount := atomic.LoadInt64(&sim.simulatingCount)
 
-	utils.SSCLogger().Info().Str("txHash", req.Tx.Hash().String()).Str("leader", leader.Endpoint).
+	utils.SSCLogger().Debug().Str("txHash", req.Tx.Hash().String()).Str("leader", leader.Endpoint).
 		Int64("simulatingCount", currentCount).
 		Msg("simulate cx transaction, send to pq")
 
@@ -412,7 +412,7 @@ func (sim *Simulator) SimulateCXTransaction(req *api.CXTSimulationRequest) {
 	sim.simulateTaskPQ.Push(&simulateTask{req: req, pushTime: time.Now()})
 	sim.stats.setCxtStage(req.Tx.Hash(), 0)
 
-	utils.SSCLogger().Info().Str("txHash", req.Tx.Hash().String()).Str("leader", leader.Endpoint).
+	utils.SSCLogger().Debug().Str("txHash", req.Tx.Hash().String()).Str("leader", leader.Endpoint).
 		Int64("simulatingCount", currentCount).
 		Msg("simulate cx transaction, in chan")
 }
@@ -420,12 +420,12 @@ func (sim *Simulator) SimulateCXTransaction(req *api.CXTSimulationRequest) {
 // worker 处理模拟任务
 func (sim *Simulator) worker(id int) {
 	defer sim.workerWg.Done()
-	utils.SSCLogger().Info().Int("workerId", id).Msg("worker started")
+	utils.SSCLogger().Debug().Int("workerId", id).Msg("worker started")
 
 	for {
 		task, ok := sim.simulateTaskPQ.PopOrWait()
 		if !ok {
-			utils.SSCLogger().Info().Int("workerId", id).Msg("worker stopped")
+			utils.SSCLogger().Debug().Int("workerId", id).Msg("worker stopped")
 			return
 		}
 		// 队列等待统计
@@ -457,7 +457,7 @@ func (sim *Simulator) processSimulationTask(task *simulateTask, workerId int) {
 		currentCount := atomic.LoadInt64(&sim.simulatingCount)
 		sim.simuStatsLock.Unlock()
 
-		utils.SSCLogger().Info().
+		utils.SSCLogger().Debug().
 			Str("txHash", req.Tx.Hash().String()).
 			Interface("epochs", req.Epochs).
 			Int("workerId", workerId).
@@ -468,7 +468,7 @@ func (sim *Simulator) processSimulationTask(task *simulateTask, workerId int) {
 			Msg("simulate cx transaction, end")
 
 		// timing breakdown
-		utils.SSCLogger().Info().
+		utils.SSCLogger().Debug().
 			Str("txHash", req.Tx.Hash().String()).
 			Str("queueWait", queueWaitDur.String()).
 			Str("p2pCall", p2pCallDur.String()).
@@ -620,7 +620,7 @@ func (sim *Simulator) startSimulation(req *api.CXTSimulationRequest) (*api.TxSta
 	simState, _ := sim.GetSimState(txHash)
 	if simState != nil {
 		if callState := simState.SimulationCallStates[tx.SimulationNum].Get(api.CallIndex{}); callState != nil {
-			utils.SSCLogger().Info().Str("txHash", txHash.Hex()).Msgf("simulation has been started, simulationNum=%d", tx.SimulationNum)
+			utils.SSCLogger().Debug().Str("txHash", txHash.Hex()).Msgf("simulation has been started, simulationNum=%d", tx.SimulationNum)
 			return tx, callState, nil
 		}
 	}
@@ -644,7 +644,7 @@ func (sim *Simulator) startSimulation(req *api.CXTSimulationRequest) (*api.TxSta
 		sim.waitForSync(txHash, callState)
 		header = sim.bc.GetHeaderByHash(callState.BlockHash)
 		if header == nil {
-			utils.SSCLogger().Info().
+			utils.SSCLogger().Debug().
 				Str("txHash", txHash.Hex()).
 				Msg("start simulation 1.4")
 			utils.SSCLogger().Error().Msg("failed to get block header")
@@ -692,18 +692,18 @@ func (sim *Simulator) startSimulation(req *api.CXTSimulationRequest) (*api.TxSta
 	pendingList := sim.PopPendingRequests(txHash)
 	if len(pendingList) > 0 {
 		for _, p := range pendingList {
-			utils.SSCLogger().Info().
+			utils.SSCLogger().Debug().
 				Str("txHash", txHash.Hex()).
 				Str("callIndex", p.req.CallIndex.ToString()).
 				Msg("found pending CXT request")
 			if p.req.CallIndex[:len(p.req.CallIndex)-1].ToString() == callState.CallIndex.ToString() {
-				utils.SSCLogger().Info().
+				utils.SSCLogger().Debug().
 					Str("txHash", txHash.Hex()).
 					Str("callIndex", p.req.CallIndex.ToString()).
 					Msg("processing pending CXT request")
 				go func(req *api.CXTCallRequest, ch chan *api.CXTCallSSCResult) {
 					result := sim.RequestCallCXT(req)
-					utils.SSCLogger().Info().
+					utils.SSCLogger().Debug().
 						Str("txHash", txHash.Hex()).
 						Str("callIndex", req.CallIndex.ToString()).
 						Msg("finished processing pending CXT request")
@@ -729,7 +729,7 @@ func (sim *Simulator) waitForSync(txHash common.Hash, callState *api.SimulationC
 	// 使用自管理的 callStatesInWaiting 存储
 	sim.AddCallStatesInWaiting(callState.BlockHash, callState)
 
-	utils.SSCLogger().Info().Str("txHash", txHash.Hex()).
+	utils.SSCLogger().Debug().Str("txHash", txHash.Hex()).
 		Str("callIndex", callState.CallIndex.ToString()).
 		Str("blockHash", callState.BlockHash.Hex()).
 		Uint64("blockNum", callState.BlockNum).

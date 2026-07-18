@@ -55,10 +55,10 @@ func (sim *Simulator) StartSimulateCXTransaction(req *api.CXTSimulationRequest) 
 	t0 := time.Now()
 	var tCallMembers, tAggregate, tThresholdSign, tCommitSend time.Duration
 	startTime := time.Now()
-	utils.SSCLogger().Info().Int("simulationNum", req.SimulationNum).Str("txHash", txHash.String()).Msg("start simulate cx transaction, start")
+	utils.SSCLogger().Debug().Int("simulationNum", req.SimulationNum).Str("txHash", txHash.String()).Msg("start simulate cx transaction, start")
 	defer func() {
-		utils.SSCLogger().Info().Int("simulationNum", req.SimulationNum).Str("txHash", txHash.String()).Dur("cost", time.Since(startTime)).Msg("start simulate cx transaction, end")
-		utils.SSCLogger().Info().Str("txHash", txHash.String()).
+		utils.SSCLogger().Debug().Int("simulationNum", req.SimulationNum).Str("txHash", txHash.String()).Dur("cost", time.Since(startTime)).Msg("start simulate cx transaction, end")
+		utils.SSCLogger().Debug().Str("txHash", txHash.String()).
 			Str("callMembers", tCallMembers.String()).
 			Str("aggregate", tAggregate.String()).
 			Str("thresholdSign", tThresholdSign.String()).
@@ -118,7 +118,7 @@ func (sim *Simulator) StartSimulateCXTransaction(req *api.CXTSimulationRequest) 
 	results = make([]api.SSCMessage, 0, t)
 	addrMap := make(map[int]bool)
 
-	utils.SSCLogger().Info().Int("simulationNum", req.SimulationNum).Str("txHash", txHash.String()).Msg("start simulate cx transaction, call to handle simulation request")
+	utils.SSCLogger().Debug().Int("simulationNum", req.SimulationNum).Str("txHash", txHash.String()).Msg("start simulate cx transaction, call to handle simulation request")
 
 	for i := 0; i < n; i++ {
 		member := committee.Members[i]
@@ -162,7 +162,7 @@ func (sim *Simulator) StartSimulateCXTransaction(req *api.CXTSimulationRequest) 
 
 			// 检查是否满足终止条件
 			if hasSelf && len(results) == t {
-				utils.SSCLogger().Info().Interface("addrMap", addrMap).Str("txHash", txHash.String()).Msg("simulation result received, including self")
+				utils.SSCLogger().Debug().Interface("addrMap", addrMap).Str("txHash", txHash.String()).Msg("simulation result received, including self")
 				cancel()
 			}
 		}(member, committee)
@@ -228,14 +228,14 @@ func (sim *Simulator) StartSimulateCXTransaction(req *api.CXTSimulationRequest) 
 		simulationCommit.Commit = true
 		simulationCommit.Status = api.OK
 		simulationCommit.Reason = api.OK.String()
-		utils.SSCLogger().Info().Str("txHash", simulationCommit.TxHash.Hex()).
+		utils.SSCLogger().Debug().Str("txHash", simulationCommit.TxHash.Hex()).
 			Msgf("simulation accomplished, send simulation commit, commit type: %v, simulationNum: %d, relatedShards: %v",
 				simulationCommit.Commit, simulationCommit.SimulationNum, simulationCommit.RelatedShards)
 	} else {
 		simNumTag := fmt.Sprintf("[simNum=%d]", req.SimulationNum)
 		if vm.IsLockConflictErr(sscResult.Err) {
 			if len(sscResult.ConflictKeys) > 0 {
-				utils.SSCLogger().Info().Str("txHash", simulationCommit.TxHash.Hex()).
+				utils.SSCLogger().Debug().Str("txHash", simulationCommit.TxHash.Hex()).
 					Int("conflictKeys", len(sscResult.ConflictKeys)).
 					Msgf("ForceSimulation: conflict keys=%d, full RWSet available for retry", len(sscResult.ConflictKeys))
 			}
@@ -305,7 +305,7 @@ func (sim *Simulator) StartSimulateCXTransaction(req *api.CXTSimulationRequest) 
 			continue
 		}
 		if bytes.Equal(leader.Address.Bytes(), selfAddr.Bytes()) {
-			utils.SSCLogger().Info().Str("txHash", txHash.Hex()).
+			utils.SSCLogger().Debug().Str("txHash", txHash.Hex()).
 				Uint32("shardId", shardId).
 				Msg("CommitSimulation: self is leader, calling locally (StartSimulateCXTransaction)")
 			sim.sscService.CommitSimulation(simulationCommit)
@@ -471,7 +471,7 @@ func (sim *Simulator) thresholdSignSimulationCommit(commit *api.SimulationCommit
 	}
 	wg.Wait()
 
-	utils.SSCLogger().Info().Str("txHash", txHash.Hex()).
+	utils.SSCLogger().Debug().Str("txHash", txHash.Hex()).
 		Int("results", len(results)).
 		Bool("ctxDone", ctx.Err() != nil).
 		Msg("thresholdSignSimulationCommit: after wg.Wait")
@@ -482,13 +482,13 @@ func (sim *Simulator) thresholdSignSimulationCommit(commit *api.SimulationCommit
 			Msg("thresholdSignSimulationCommit: aggregate failed")
 		return
 	}
-	utils.SSCLogger().Info().Str("txHash", txHash.Hex()).
+	utils.SSCLogger().Debug().Str("txHash", txHash.Hex()).
 		Int("bitMapLen", len(bitMap)).
 		Msg("thresholdSignSimulationCommit: aggregated OK")
 	commit.Signatures = aggregatedSig
 	commit.BLSBitMap = bitMap
 	commit.ShardId = sim.committee.SelfShard
-	utils.SSCLogger().Info().Str("txHash", txHash.Hex()).
+	utils.SSCLogger().Debug().Str("txHash", txHash.Hex()).
 		Msg("thresholdSignSimulationCommit: done")
 }
 
@@ -658,7 +658,7 @@ func (sim *Simulator) StartReSimulation(txHash common.Hash, simulationNum int) {
 	t0 := time.Now()
 	var tGetState, tCallMembers, tAggregate, tThresholdSign, tCommitSend time.Duration
 	defer func() {
-		utils.SSCLogger().Info().Str("txHash", txHash.Hex()).
+		utils.SSCLogger().Debug().Str("txHash", txHash.Hex()).
 			Str("getState", tGetState.String()).
 			Str("callMembers", tCallMembers.String()).
 			Str("aggregate", tAggregate.String()).
@@ -708,9 +708,9 @@ func (sim *Simulator) StartReSimulation(txHash common.Hash, simulationNum int) {
 	tGetState = time.Since(t0)
 
 	startTime := time.Now()
-	utils.SSCLogger().Info().Str("txHash", txHash.Hex()).Msgf("recall simulation, simulationNum: %d, start", simulationNum)
+	utils.SSCLogger().Debug().Str("txHash", txHash.Hex()).Msgf("recall simulation, simulationNum: %d, start", simulationNum)
 	defer func() {
-		utils.SSCLogger().Info().Str("txHash", txHash.Hex()).Msgf("recall simulation finished, simulationNum: %d, duration: %v, end", simulationNum, time.Since(startTime))
+		utils.SSCLogger().Debug().Str("txHash", txHash.Hex()).Msgf("recall simulation finished, simulationNum: %d, duration: %v, end", simulationNum, time.Since(startTime))
 	}()
 
 	committee := sim.committee.GetCommittee(req.Epochs[sim.committee.SelfShard], sim.committee.SelfShard)
@@ -848,17 +848,17 @@ func (sim *Simulator) StartReSimulation(txHash common.Hash, simulationNum int) {
 		simulationCommit.Commit = true
 		simulationCommit.Status = api.OK
 		simulationCommit.Reason = api.OK.String()
-		utils.SSCLogger().Info().Str("txHash", simulationCommit.TxHash.Hex()).
+		utils.SSCLogger().Debug().Str("txHash", simulationCommit.TxHash.Hex()).
 			Msgf("resimulation accomplished, send simulation commit, commit type: %v, simulationNum: %d, relatedShards: %v",
 				simulationCommit.Commit, simulationCommit.SimulationNum, simulationCommit.RelatedShards)
 	} else {
 		if vm.IsLockConflictErr(sscResult.Err) {
 			if len(sscResult.ConflictKeys) > 0 {
-				utils.SSCLogger().Info().Str("txHash", txHash.Hex()).
+				utils.SSCLogger().Debug().Str("txHash", txHash.Hex()).
 					Int("conflictKeys", len(sscResult.ConflictKeys)).
 					Msgf("ForceSimulation: resimulation conflict keys=%d, full RWSet available", len(sscResult.ConflictKeys))
 			}
-			utils.SSCLogger().Info().Str("txHash", txHash.Hex()).Msgf("resimulation failed err=%s, it has subscribe to resimulate again, nextSimulationNum=%d", sscResult.Err, req.SimulationNum+1)
+			utils.SSCLogger().Debug().Str("txHash", txHash.Hex()).Msgf("resimulation failed err=%s, it has subscribe to resimulate again, nextSimulationNum=%d", sscResult.Err, req.SimulationNum+1)
 			simulationCommit.Commit = false
 			simulationCommit.Status = api.LockConflict
 			simulationCommit.Reason = sscResult.Err
@@ -887,12 +887,12 @@ func (sim *Simulator) StartReSimulation(txHash common.Hash, simulationNum int) {
 			simulationCommit.Commit, simulationCommit.Status.String(), simulationCommit.SimulationNum, simulationCommit.RelatedShards)
 	}
 
-	utils.SSCLogger().Info().Str("txHash", txHash.Hex()).
+	utils.SSCLogger().Debug().Str("txHash", txHash.Hex()).
 		Msg("startReSimulation: calling thresholdSignSimulationCommit")
 	tAggregate = time.Since(t0)
 	sim.thresholdSignSimulationCommit(simulationCommit)
 	tThresholdSign = time.Since(t0)
-	utils.SSCLogger().Info().Str("txHash", txHash.Hex()).
+	utils.SSCLogger().Debug().Str("txHash", txHash.Hex()).
 		Msg("startReSimulation: after thresholdSignSimulationCommit")
 
 	// 创建独立的 ctx 用于后续 Multicast，避免被 thresholdSignSimulationCommit 的 cancel 影响
@@ -911,7 +911,7 @@ func (sim *Simulator) StartReSimulation(txHash common.Hash, simulationNum int) {
 		}
 		if bytes.Equal(leader.Address.Bytes(), selfAddr.Bytes()) {
 			// 自己就是目标 leader，直接本地调用，不走 RPC
-			utils.SSCLogger().Info().Str("txHash", txHash.Hex()).
+			utils.SSCLogger().Debug().Str("txHash", txHash.Hex()).
 				Uint32("shardId", shardId).
 				Msg("CommitSimulation: self is leader, calling locally")
 			sim.sscService.CommitSimulation(simulationCommit)
@@ -924,7 +924,7 @@ func (sim *Simulator) StartReSimulation(txHash common.Hash, simulationNum int) {
 			Int("memberCount", len(members)).
 			Msg("CommitSimulation Multicast failed")
 	}
-	utils.SSCLogger().Info().Str("txHash", txHash.Hex()).
+	utils.SSCLogger().Debug().Str("txHash", txHash.Hex()).
 		Int("members", len(members)).
 		Msg("startReSimulation: after Multicast")
 	tCommitSend = time.Since(t0)
@@ -953,7 +953,7 @@ func (sim *Simulator) HandleCXTSSCCall(req *api.CXTCallSSCRequest) *api.CXTCallS
 	header := sim.bc.CurrentHeader()
 	req.BlockHash = header.Hash()
 	req.BlockNum = header.NumberU64()
-	utils.SSCLogger().Info().Str("txHash", req.TxHash.String()).Str("callIndex", req.CallIndex.ToString()).Msg("handle cxt ssc call, start")
+	utils.SSCLogger().Debug().Str("txHash", req.TxHash.String()).Str("callIndex", req.CallIndex.ToString()).Msg("handle cxt ssc call, start")
 	committee := sim.committee.GetCommittee(req.Epochs[sim.committee.SelfShard], sim.committee.SelfShard)
 	t := committee.Threshold
 	n := committee.Number
@@ -1027,7 +1027,7 @@ func (sim *Simulator) HandleCXTSSCCall(req *api.CXTCallSSCRequest) *api.CXTCallS
 
 	txState, _ := sim.state.GetTxState(txHash)
 
-	utils.SSCLogger().Info().Str("txHash", txHash.Hex()).Int("n", n).Int("t", t).Int("results", len(results)).Int("addrs", len(addrMap)).Interface("addrMap", addrMap).Msg("receive sigs")
+	utils.SSCLogger().Debug().Str("txHash", txHash.Hex()).Int("n", n).Int("t", t).Int("results", len(results)).Int("addrs", len(addrMap)).Interface("addrMap", addrMap).Msg("receive sigs")
 
 	if len(results) < t {
 		if len(results) == 0 {
@@ -1082,7 +1082,7 @@ func (sim *Simulator) HandleCXTSSCCall(req *api.CXTCallSSCRequest) *api.CXTCallS
 		}
 	}
 
-	utils.SSCLogger().Info().Str("txHash", req.TxHash.String()).Dur("cost", time.Since(startTime)).Msg("handle cxt ssc call, end")
+	utils.SSCLogger().Debug().Str("txHash", req.TxHash.String()).Dur("cost", time.Since(startTime)).Msg("handle cxt ssc call, end")
 	return sscResult
 }
 
@@ -1153,7 +1153,7 @@ func (sim *Simulator) aggregateSSCCallRequest(requests []*api.CXTCallRequest) *a
 			}
 			utils.SSCLogger().Error().Str("txHash", msg.TxHash.Hex()).Str("callIndex", msg.CallIndex.ToString()).Interface("validatorIndexes", committee.ValidatorIndex).Str("addr", msg.GetSenderAddr().Hex()).Msgf("cxt call request sender not in validators, %v", validatorAddrs)
 		} else {
-			utils.SSCLogger().Info().Str("txHash", msg.TxHash.Hex()).Str("callIndex", msg.CallIndex.ToString()).Str("addr", msg.GetSenderAddr().Hex()).Msgf("cxt call request sender in committee, validatorIndex=%d", validatorIndex)
+			utils.SSCLogger().Debug().Str("txHash", msg.TxHash.Hex()).Str("callIndex", msg.CallIndex.ToString()).Str("addr", msg.GetSenderAddr().Hex()).Msgf("cxt call request sender in committee, validatorIndex=%d", validatorIndex)
 		}
 		msgs = append(msgs, msg)
 	}

@@ -54,7 +54,7 @@ func (c *CXTTimerManager) StartPoolTimer(txHash common.Hash, epochs []api.Epoch,
 	if _, exists := c.txs[txHash]; !exists {
 		c.service.stats.PoolTimerStarted.Add(1)
 		poolTimeout := blockNum + c.config.PoolTimeout
-		utils.SSCLogger().Info().Str("txHash", txHash.String()).Msgf("start pool timer for cxt, which will timeout at block %d committed, [%d->%d]", poolTimeout, blockNum, poolTimeout)
+		utils.SSCLogger().Debug().Str("txHash", txHash.String()).Msgf("start pool timer for cxt, which will timeout at block %d committed, [%d->%d]", poolTimeout, blockNum, poolTimeout)
 		if c.bkNum2txForPoolTimeout[poolTimeout] == nil {
 			c.bkNum2txForPoolTimeout[poolTimeout] = map[common.Hash]struct{}{}
 		}
@@ -102,7 +102,7 @@ func (c *CXTTimerManager) StartSp1Timer(txHash common.Hash, epochs []api.Epoch, 
 	if originShardId == c.selfShard {
 		c.service.stats.Sp1TimerStarted.Add(1)
 		sp1 := blockNum + c.config.Sp1
-		utils.SSCLogger().Info().Str("txHash", txHash.String()).Msgf("start sp1 timer for cxt, which will timeout at block %d committed", sp1)
+		utils.SSCLogger().Debug().Str("txHash", txHash.String()).Msgf("start sp1 timer for cxt, which will timeout at block %d committed", sp1)
 		if c.bkNum2txForSp1[sp1] == nil {
 			c.bkNum2txForSp1[sp1] = map[common.Hash]struct{}{}
 		}
@@ -117,11 +117,17 @@ func (c *CXTTimerManager) StartSp1Timer(txHash common.Hash, epochs []api.Epoch, 
 	}
 }
 
-func (c *CXTTimerManager) BlockCommitted(blockNum uint64) {
+func (c *CXTTimerManager) OnBlockCommitted(blockNum uint64) {
 	c.lock.Lock()
 	defer c.lock.Unlock()
 
 	c.blockNum = blockNum
+
+	utils.SSCLogger().Info().
+		Int("txs", len(c.txs)).
+		Int("sp1Txs", len(c.bkNum2txForSp1[blockNum])).
+		Int("poolTxs", len(c.bkNum2txForPoolTimeout[blockNum])).
+		Msg("[CXTTimerManager] OnBlockCommitted")
 
 	if txs, exists := c.bkNum2txForSp1[blockNum]; exists {
 		for hash := range txs {
@@ -130,7 +136,7 @@ func (c *CXTTimerManager) BlockCommitted(blockNum uint64) {
 				continue
 			}
 			c.service.stats.Sp1TimerFired.Add(1)
-			utils.SSCLogger().Info().Str("txHash", hash.String()).Msgf("cxt sp1 timeout at block %d committed", blockNum)
+			utils.SSCLogger().Debug().Str("txHash", hash.String()).Msgf("cxt sp1 timeout at block %d committed", blockNum)
 			go c.service.handleTxSp1Timeout(txInfo)
 			delete(c.txs, hash)
 		}
@@ -175,7 +181,7 @@ func (c *CXTTimerManager) RemoveTx(txHash common.Hash) {
 	}
 	delete(c.txs, txHash)
 
-	utils.SSCLogger().Info().Str("txHash", txHash.Hex()).
+	utils.SSCLogger().Debug().Str("txHash", txHash.Hex()).
 		Str("duration", time.Since(t0).String()).
 		Msg("CXTTimerManager.RemoveTx timing")
 }

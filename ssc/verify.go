@@ -62,7 +62,7 @@ func (vc *VerifyCommunicator) SendCommitVote(shardId uint32, vote *api.CXTCommit
 		return
 	}
 
-	utils.SSCLogger().Info().Str("txHash", txHash.Hex()).
+	utils.SSCLogger().Debug().Str("txHash", txHash.Hex()).
 		Str("type", vote.Type.String()).Str("reason", vote.Reason.String()).
 		Msgf("send CXTCommitVote to %s", targetLeader.Endpoint)
 	vc.comm.Call(ctx, nil, targetLeader, api.Method_HandleCommitVote, vote)
@@ -168,8 +168,8 @@ func (v *Verifier) Cleanup(txHash common.Hash) {
 	delete(v.executionVerifyContexts, txHash)
 	v.verifyCtxLock.Unlock()
 	v.txLockedSimNum.Delete(txHash)
-	utils.SSCLogger().Info().Str("txHash", txHash.Hex()).
-		Str("duration", time.Since(t0).String()).
+	utils.SSCLogger().Debug().Str("txHash", txHash.Hex()).
+		Dur("cost", time.Since(t0)).
 		Msg("Verifier.Cleanup timing")
 }
 
@@ -228,7 +228,7 @@ func (v *Verifier) VerifySimulation(simulationBytes []byte, stateDB api.StateDB,
 			Payload:        payloadBytes,
 			BaseSSCMessage: api.BaseSSCMessage{Epochs: simulation.Epochs},
 		}
-		v.communicator.SendCommitVote(v.committee.SelfShard, vote)
+		go v.communicator.SendCommitVote(v.committee.SelfShard, vote)
 		return
 	}
 
@@ -254,7 +254,7 @@ func (v *Verifier) VerifySimulation(simulationBytes []byte, stateDB api.StateDB,
 	// 所有节点记录首次锁冲突 simulationNum
 	v.getOrCreateLockedSimNum(txHash, simulation.SimulationNum)
 
-	utils.SSCLogger().Info().Str("txHash", txHash.Hex()).
+	utils.SSCLogger().Debug().Str("txHash", txHash.Hex()).
 		Int("simulationNum", simulation.SimulationNum).
 		Interface("epoch", simulation.Epochs).
 		Msg("begin to verify simulation")
@@ -264,7 +264,7 @@ func (v *Verifier) VerifySimulation(simulationBytes []byte, stateDB api.StateDB,
 	}
 
 	defer func() {
-		utils.SSCLogger().Info().Str("txHash", txHash.String()).
+		utils.SSCLogger().Debug().Str("txHash", txHash.String()).
 			Dur("total", time.Since(tVs0)).
 			Dur("chainPatch", tVsPatch).
 			Dur("lockCheck", tVsLockCheck).
@@ -293,7 +293,7 @@ func (v *Verifier) VerifySimulation(simulationBytes []byte, stateDB api.StateDB,
 	if simulation.ChainPatch != nil {
 		// v6: 直接从 SimTx 的 ChainPatch 判断是否为链式交易
 		isChainTx = true
-		utils.SSCLogger().Info().Str("txHash", txHash.Hex()).
+		utils.SSCLogger().Debug().Str("txHash", txHash.Hex()).
 			Int("simNum", simulation.SimulationNum).
 			Int("upstreamCount", len(simulation.UpstreamTxList)).
 			Msg("VerifySimulation: chain tx detected (from SimTx ChainPatch), skipping lock conflict check")
@@ -316,7 +316,7 @@ CallStates:
 					_, stateErr := stateDB.GetState(txHash, address, key)
 					if stateErr != nil {
 						if errors.Is(stateErr, api.ErrLockConflict_OnChain) {
-							utils.SSCLogger().Info().Str("txHash", txHash.Hex()).
+							utils.SSCLogger().Debug().Str("txHash", txHash.Hex()).
 								Str("simNum", fmt.Sprintf("%d", simulation.SimulationNum)).
 								Str("conflictSource", stateErr.Error()).
 								Msgf("VerifySimulation %s mu conflict (write) for key: %s", simNumTag, lockKey)
@@ -341,7 +341,7 @@ CallStates:
 					onChainValue, stateErr := stateDB.GetState(txHash, address, key)
 					if stateErr != nil {
 						if errors.Is(stateErr, api.ErrLockConflict_OnChain) {
-							utils.SSCLogger().Info().Str("txHash", txHash.Hex()).
+							utils.SSCLogger().Debug().Str("txHash", txHash.Hex()).
 								Str("simNum", fmt.Sprintf("%d", simulation.SimulationNum)).
 								Str("conflictSource", stateErr.Error()).
 								Msgf("VerifySimulation %s mu conflict (read) for key: %s", simNumTag, lockKey)
@@ -418,7 +418,7 @@ CallStates:
 			Payload:        payloadBytes,
 			BaseSSCMessage: api.BaseSSCMessage{Epochs: simulation.Epochs},
 		}
-		v.communicator.SendCommitVote(v.committee.SelfShard, vote)
+		go v.communicator.SendCommitVote(v.committee.SelfShard, vote)
 		return
 	}
 
@@ -457,7 +457,7 @@ CallStates:
 					Payload:        payloadBytes,
 					BaseSSCMessage: api.BaseSSCMessage{Epochs: simulation.Epochs},
 				}
-				v.communicator.SendCommitVote(v.committee.SelfShard, vote)
+				go v.communicator.SendCommitVote(v.committee.SelfShard, vote)
 				return
 			}
 			if v.committee.SelfShard == simulation.OriginShardId && v.committee.IsLeader(simulation.Epochs[v.committee.SelfShard]) {
@@ -494,7 +494,7 @@ CallStates:
 		}
 		return
 	} else {
-		utils.SSCLogger().Info().Str("txHash", txHash.Hex()).
+		utils.SSCLogger().Debug().Str("txHash", txHash.Hex()).
 			Uint32("FromShard", simulation.OriginShardId).
 			Int("size", len(simulationBytes)).
 			Msgf("simulation is valid, mu the rwset and send commit vote")
@@ -505,7 +505,7 @@ CallStates:
 		if v.committee.SelfShard == simulation.OriginShardId && v.committee.IsLeader(simulation.Epochs[v.committee.SelfShard]) {
 			v.stats.setCxtStage(txHash, 4)
 		}
-		utils.SSCLogger().Info().Str("txHash", txHash.Hex()).
+		utils.SSCLogger().Debug().Str("txHash", txHash.Hex()).
 			Int("simulationNum", simulation.SimulationNum).
 			Uint32("shardId", v.committee.SelfShard).
 			Uint32("originShard", simulation.OriginShardId).
@@ -522,8 +522,8 @@ CallStates:
 		utils.SSCLogger().Debug().Str("txHash", txHash.Hex()).
 			Uint32("FromShard", simulation.OriginShardId).
 			Int("size", len(simulationBytes)).
-			Msgf("send cxt commit vote")
-		v.communicator.SendCommitVote(v.committee.SelfShard, vote)
+			Msgf("send cxt commit vote (async)")
+		go v.communicator.SendCommitVote(v.committee.SelfShard, vote)
 	}
 }
 
@@ -564,7 +564,7 @@ func (v *Verifier) sendRollbackVoteForRetry(txHash common.Hash, simulationNum in
 		Payload:        payloadBytes,
 		BaseSSCMessage: api.BaseSSCMessage{Epochs: epochs},
 	}
-	v.communicator.SendCommitVote(v.committee.SelfShard, vote)
+	go v.communicator.SendCommitVote(v.committee.SelfShard, vote)
 }
 
 // callForRetry 通过 retryScheduler 调度下一轮链下重试
@@ -696,7 +696,7 @@ func (v *Verifier) checkLockConflict(simulation *api.CXTSimulation, stateDB api.
 				lockKey := api.FormKey(address, key)
 				_, err := stateDB.GetState(txHash, address, key)
 				if err != nil && errors.Is(err, api.ErrLockConflict_OnChain) {
-					utils.SSCLogger().Info().Str("txHash", txHash.Hex()).
+					utils.SSCLogger().Debug().Str("txHash", txHash.Hex()).
 						Str("simNum", fmt.Sprintf("%d", simulation.SimulationNum)).
 						Str("conflictSource", err.Error()).
 						Msgf("checkLockConflict %s mu conflict (read) for key: %s", simNumTag, lockKey)
@@ -709,7 +709,7 @@ func (v *Verifier) checkLockConflict(simulation *api.CXTSimulation, stateDB api.
 				lockKey := api.FormKey(address, key)
 				_, err := stateDB.GetState(txHash, address, key)
 				if err != nil && errors.Is(err, api.ErrLockConflict_OnChain) {
-					utils.SSCLogger().Info().Str("txHash", txHash.Hex()).
+					utils.SSCLogger().Debug().Str("txHash", txHash.Hex()).
 						Str("simNum", fmt.Sprintf("%d", simulation.SimulationNum)).
 						Str("conflictSource", err.Error()).
 						Msgf("checkLockConflict %s mu conflict (write) for key: %s", simNumTag, lockKey)
@@ -785,7 +785,7 @@ func (v *Verifier) lockStateWithExecution(epochs []api.Epoch, callState *api.CXT
 		return err
 	}
 	_ = leftOverGas
-	utils.SSCLogger().Info().Str("txHash", txHash.Hex()).
+	utils.SSCLogger().Debug().Str("txHash", txHash.Hex()).
 		Str("callIndex", callIndex.ToString()).
 		Dur("cost", time.Since(t0)).
 		Msg("lockStateWithExecution timing breakdown")
@@ -800,7 +800,7 @@ func (v *Verifier) lockStateWithRWSet(txHash common.Hash, callState *api.CXTCall
 			keyCount++
 		}
 	}
-	utils.SSCLogger().Info().Str("txHash", txHash.Hex()).
+	utils.SSCLogger().Debug().Str("txHash", txHash.Hex()).
 		Str("callIndex", callState.CallIndex.ToString()).
 		Int("keys", keyCount).
 		Dur("cost", time.Since(t0)).

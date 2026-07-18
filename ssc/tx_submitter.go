@@ -366,7 +366,7 @@ func (t *txSubmitter) submitWithRetry(
 		return err
 	}
 
-	utils.SSCLogger().Info().Str("txHash", signedTx.Hash().Hex()).
+	utils.SSCLogger().Debug().Str("txHash", signedTx.Hash().Hex()).
 		Uint64("Nonce", nonce).
 		Str("originTxHash", originTxHash.Hex()).
 		Int("retry", retryCount).Msgf("submitting %s, nonce=%d, gasPrice=%s", txType, nonce, gasPrice.String())
@@ -419,7 +419,7 @@ func (t *txSubmitter) submitWithRetry(
 	}
 	t.lock.Unlock()
 
-	utils.SSCLogger().Info().Str("txHash", signedTx.Hash().Hex()).
+	utils.SSCLogger().Debug().Str("txHash", signedTx.Hash().Hex()).
 		Uint64("Nonce", nonce).
 		Str("originTxHash", originTxHash.Hex()).Msgf("successfully submitted %s, nonce=%d", txType, nonce)
 	return nil

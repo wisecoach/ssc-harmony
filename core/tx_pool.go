@@ -1002,7 +1002,7 @@ func (pool *TxPool) add(tx types.PoolTransaction, local bool) (replaced bool, er
 	if tx.CrossShard() {
 		from, _ := tx.SenderAddress()
 		currentNonce := pool.pendingState.GetNonce(from)
-		utils.SSCLogger().Info().Str("txHash", tx.Hash().Hex()).
+		utils.SSCLogger().Debug().Str("txHash", tx.Hash().Hex()).
 			Bool("isPreCompiled", vm.IsSSCAddrApplyOnChain(*tx.To())).
 			Str("from", from.Hex()).
 			Uint64("currentNonce", currentNonce).

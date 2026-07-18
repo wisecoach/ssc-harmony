@@ -107,7 +107,7 @@ func (v *TempLockView) TryLockWithPriority(txHash common.Hash, priority api.Prio
 			v.woundedTxs.Store(existingEntry.Holder, struct{}{})
 			v.tempWriteLocks.Store(key, entry)
 			acquiredWrites = append(acquiredWrites, key)
-			utils.SSCLogger().Info().Str("wounded", existingEntry.Holder.Hex()).
+			utils.SSCLogger().Debug().Str("wounded", existingEntry.Holder.Hex()).
 				Str("wounder", txHash.Hex()).
 				Str("key", string(key)).
 				Msg("Wound: high priority tx took lock from low priority")
@@ -115,7 +115,7 @@ func (v *TempLockView) TryLockWithPriority(txHash common.Hash, priority api.Prio
 		}
 		// 被高优先级占着（或 Finalized）→ 失败，回滚已拿的写锁
 		v.stateLockManager.sscService.stats.TempLockTryFail.Add(1)
-		utils.SSCLogger().Info().Str("txHash", txHash.Hex()).
+		utils.SSCLogger().Debug().Str("txHash", txHash.Hex()).
 			Str("holder", existingEntry.Holder.Hex()).
 			Str("key", string(key)).
 			Msg("TryLockWithPriority: tempWriteLock conflict, cannot wound")
@@ -140,7 +140,7 @@ func (v *TempLockView) TryLockWithPriority(txHash common.Hash, priority api.Prio
 				if !v.canWound(existingEntry, priority, txHash) {
 					// 读锁被高优写锁占着 → 失败，回滚已拿的写锁
 					v.stateLockManager.sscService.stats.TempLockTryFail.Add(1)
-					utils.SSCLogger().Info().Str("txHash", txHash.Hex()).
+					utils.SSCLogger().Debug().Str("txHash", txHash.Hex()).
 						Str("holder", existingEntry.Holder.Hex()).
 						Str("key", string(key)).
 						Msg("TryLockWithPriority: read-tempWriteLock conflict, cannot wound")
@@ -158,7 +158,7 @@ func (v *TempLockView) TryLockWithPriority(txHash common.Hash, priority api.Prio
 				v.woundedTxs.Store(existingEntry.Holder, struct{}{})
 				v.tempWriteLocks.Store(key, tempLockEntry{Holder: txHash, Priority: priority})
 				acquiredWrites = append(acquiredWrites, key)
-				utils.SSCLogger().Info().Str("wounded", existingEntry.Holder.Hex()).
+				utils.SSCLogger().Debug().Str("wounded", existingEntry.Holder.Hex()).
 					Str("wounder", txHash.Hex()).
 					Str("key", string(key)).
 					Msg("Wound (readset): high priority tx took read lock from low priority")
@@ -186,7 +186,7 @@ func (v *TempLockView) addReadLock(key api.LockKey, txHash common.Hash) {
 // 如果持有者优先级更高，或者持有者的 Patch 已 Finalized → false
 func (v *TempLockView) canWound(entry tempLockEntry, requesterPri api.Priority, requester common.Hash) bool {
 	// 检查 PatchPool 中该持有者的 Patch 是否已 Finalized
-	if v.stateLockManager.sscService.retryScheduler.patchPool.IsFinalized(entry.Holder) {
+	if v.stateLockManager.sscService.retryScheduler.isPatchFinalized(entry.Holder) {
 		return false
 	}
 	// 如果持有者优先级更低（数值更大），可以踢
@@ -275,8 +275,8 @@ func (v *TempLockView) CanLock(txHash common.Hash, reads []api.LockKey, writes [
 	return true
 }
 
-// OnBlockCommitted 清理区块中所有交易的临时锁。
-func (v *TempLockView) OnBlockCommitted(block *types.Block) {
+// OnBlockCommitted 清理区块中所有交易的临时锁，并返回被释放的 key 集合。
+func (v *TempLockView) OnBlockCommitted(block *types.Block) []api.LockKey {
 	t0 := time.Now()
 	blockTxHashes := make([]common.Hash, 0, len(block.Transactions()))
 	for _, tx := range block.Transactions() {
@@ -301,12 +301,7 @@ func (v *TempLockView) OnBlockCommitted(block *types.Block) {
 		return true
 	})
 
-	utils.SSCLogger().Info().Uint64("blockNum", block.NumberU64()).
-		Int("tempWriteLocks", writeLockCount).
-		Int("tempReadLocks", readLockCount).
-		Int("woundedTxs", woundedCount).
-		Msg("TempLockView on block committed")
-
+	var releasedKeys []api.LockKey
 	for _, txHash := range blockTxHashes {
 		// 取出 tx 的读写集
 		rwSetVal, exists := v.txReadWriteSets.Load(txHash)
@@ -322,6 +317,7 @@ func (v *TempLockView) OnBlockCommitted(block *types.Block) {
 				entry := val.(tempLockEntry)
 				if bytes.Equal(entry.Holder.Bytes(), txHash.Bytes()) {
 					v.tempWriteLocks.Delete(key)
+					releasedKeys = append(releasedKeys, key)
 				}
 			}
 		}
@@ -330,6 +326,7 @@ func (v *TempLockView) OnBlockCommitted(block *types.Block) {
 			if holdersVal, ok := v.tempReadLocks.Load(key); ok {
 				holders := holdersVal.(*readHolderMap)
 				holders.Delete(txHash)
+				releasedKeys = append(releasedKeys, key)
 			}
 		}
 		v.txReadWriteSets.Delete(txHash)
@@ -339,10 +336,23 @@ func (v *TempLockView) OnBlockCommitted(block *types.Block) {
 	utils.SSCLogger().Info().
 		Uint64("blockNum", block.NumberU64()).
 		Int("txCount", len(blockTxHashes)).
+		Int("releasedKeys", len(releasedKeys)).
+		Int("keys", writeLockCount+readLockCount).
 		Dur("buildList", tBuildList).
 		Dur("cleanupLoop", tCleanupLoop).
 		Dur("total", time.Since(t0)).
-		Msg("TempLockView.OnBlockCommitted timing breakdown")
+		Msg("[TempLockView] OnBlockCommitted timing breakdown")
+
+	// Deduplicate released keys
+	seen := make(map[api.LockKey]struct{})
+	unique := releasedKeys[:0]
+	for _, key := range releasedKeys {
+		if _, exists := seen[key]; !exists {
+			seen[key] = struct{}{}
+			unique = append(unique, key)
+		}
+	}
+	return unique
 }
 
 // GarbageCollect 清理 stale 交易（如 nonce 过期）。
@@ -373,4 +383,13 @@ func (v *TempLockView) GarbageCollect(staleTxHash common.Hash) {
 	}
 	v.txReadWriteSets.Delete(staleTxHash)
 	v.woundedTxs.Delete(staleTxHash)
+}
+
+// Stats 返回 TLV 各 sync.Map 的条目数
+func (v *TempLockView) Stats() (writeLocks, readLocks, txSets, wounded int) {
+	v.tempWriteLocks.Range(func(_, _ any) bool { writeLocks++; return true })
+	v.tempReadLocks.Range(func(_, _ any) bool { readLocks++; return true })
+	v.txReadWriteSets.Range(func(_, _ any) bool { txSets++; return true })
+	v.woundedTxs.Range(func(_, _ any) bool { wounded++; return true })
+	return
 }

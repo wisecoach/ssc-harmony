@@ -157,7 +157,7 @@ func (vm *SSCVM) Call(caller ContractRef, addr common.Address, input []byte, gas
 	}
 
 	if IsWriteCapablePrecompiledSSCContract(addr) {
-		defer utils.SSCLogger().Info().
+		defer utils.SSCLogger().Debug().
 			Str("ExecutionType", vm.ExecutionType.String()).
 			Str("txHash", vm.Context.TxHash.Hex()).
 			Str("callIndex", vm.Context.CrossCallIndex.ToString()).
@@ -461,7 +461,7 @@ func (vm *SSCVM) DelegateCall(caller ContractRef, addr common.Address, input []b
 	}
 
 	if IsWriteCapablePrecompiledSSCContract(addr) {
-		utils.SSCLogger().Info().
+		utils.SSCLogger().Debug().
 			Str("ExecutionType", vm.ExecutionType.String()).
 			Str("txHash", vm.Context.TxHash.Hex()).
 			Str("callIndex", vm.Context.CrossCallIndex.ToString()).
@@ -506,7 +506,7 @@ func (vm *SSCVM) StaticCall(caller ContractRef, addr common.Address, input []byt
 	}
 
 	if IsWriteCapablePrecompiledSSCContract(addr) {
-		utils.SSCLogger().Info().
+		utils.SSCLogger().Debug().
 			Str("ExecutionType", vm.ExecutionType.String()).
 			Str("txHash", vm.Context.TxHash.Hex()).
 			Str("callIndex", vm.Context.CrossCallIndex.ToString()).
@@ -599,7 +599,7 @@ func (vm *SSCVM) run(contract *Contract, input []byte, readOnly bool) ([]byte, e
 		// it's used to cross-call for harmony, we don't need to RunWriteCapablePrecompiledContract
 		if len(writeCapablePrecompiles) > 0 {
 			if p := writeCapablePrecompiles[*contract.CodeAddr]; p != nil {
-				defer utils.SSCLogger().Info().Str("txHash", vm.Context.TxHash.Hex()).
+				defer utils.SSCLogger().Debug().Str("txHash", vm.Context.TxHash.Hex()).
 					Str("executionType", vm.ExecutionType.String()).
 					Dur("duration", time.Since(startTime)).
 					Msgf("RunWriteCapablePrecompiledContract: %s, contractType: %s", contract.CodeAddr.Hex(), reflect.TypeOf(p).Elem().Name())
