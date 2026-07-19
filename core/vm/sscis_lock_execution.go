@@ -81,7 +81,7 @@ func opCall_SSC_LE(pc *uint64, inp Interpreter, contract *Contract, memory *Memo
 	targetShardId := interpreter.vm.SSCService.GetShardID(common.BigToAddress(addr))
 	isCrossCall := targetShardId != interpreter.vm.Context.ShardID
 	if isCrossCall {
-		ret, returnGas, err = interpreter.vm.SSCService.GetResult(interpreter.vm.Context.TxHash)
+		ret, returnGas, err = interpreter.vm.SSCService.GetResult(interpreter.vm.Context.TxHash, interpreter.vm.Context.CrossCallIndex)
 		if err != nil {
 			utils.SSCLogger().Error().Err(err).
 				Str("ExecutionType", interpreter.vm.ExecutionType.String()).

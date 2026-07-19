@@ -41,7 +41,7 @@ require (
 	github.com/prometheus/client_golang v1.19.1
 	github.com/rjeczalik/notify v0.9.2
 	github.com/rs/cors v1.7.0
-	github.com/rs/zerolog v1.18.0
+	github.com/rs/zerolog v1.28.0
 	github.com/spf13/cobra v1.5.0
 	github.com/spf13/pflag v1.0.5
 	github.com/spf13/viper v1.14.0
@@ -291,7 +291,7 @@ require (
 	gopkg.in/ini.v1 v1.67.0 // indirect
 	gopkg.in/natefinch/lumberjack.v2 v2.0.0 // indirect
 	gopkg.in/yaml.v3 v3.0.1 // indirect
-	honnef.co/go/tools v0.0.1-2020.1.5 // indirect
+	honnef.co/go/tools v0.0.1-2020.1.4 // indirect
 	lukechampine.com/blake3 v1.2.1 // indirect
 	mvdan.cc/interfacer v0.0.0-20180901003855-c20040233aed // indirect
 	mvdan.cc/lint v0.0.0-20170908181259-adc824a0674b // indirect

@@ -1285,8 +1285,9 @@ type ExecutionVerifyCall struct {
 type ExecutionVerifyContext struct {
 	Simulation       *CXTSimulation
 	CallStateMap     map[string]*CXTCallState
-	CallFrame        *CallFrame
-	CurrentState     *StateSet
+	// SubCtx 内嵌子验证上下文映射，key: CallIndex → *ssc.callVerifyContext
+	// 并行验证时每 CallState 独立，Cleanup 时随根自动释放
+	SubCtx           sync.Map
 	DependentResults []*CXTCallSSCResult
 }
 

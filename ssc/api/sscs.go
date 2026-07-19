@@ -127,12 +127,12 @@ type CXTStateSimulationDB interface {
 
 	// --------------------------- functions for execution verify --------------------------------
 
-	SubSimuBalance(txHash common.Hash, address common.Address, balance *big.Int) error
-	AddSimuBalance(txHash common.Hash, address common.Address, balance *big.Int) error
-	GetSimuBalance(txHash common.Hash, address common.Address) (*big.Int, error)
-	GetSimuState(txHash common.Hash, address common.Address, key common.Hash) (common.Hash, error)
-	SetSimuState(txHash common.Hash, address common.Address, key common.Hash, value common.Hash) error
-	GetResult(txHash common.Hash) (result []byte, leftOverGas uint64, err error)
+	SubSimuBalance(txHash common.Hash, callIndex CallIndex, address common.Address, balance *big.Int) error
+	AddSimuBalance(txHash common.Hash, callIndex CallIndex, address common.Address, balance *big.Int) error
+	GetSimuBalance(txHash common.Hash, callIndex CallIndex, address common.Address) (*big.Int, error)
+	GetSimuState(txHash common.Hash, callIndex CallIndex, address common.Address, key common.Hash) (common.Hash, error)
+	SetSimuState(txHash common.Hash, callIndex CallIndex, address common.Address, key common.Hash, value common.Hash) error
+	GetResult(txHash common.Hash, callIndex CallIndex) (result []byte, leftOverGas uint64, err error)
 }
 
 type VM interface {

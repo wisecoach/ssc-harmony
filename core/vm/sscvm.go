@@ -189,8 +189,11 @@ func (vm *SSCVM) Call(caller ContractRef, addr common.Address, input []byte, gas
 
 	var (
 		to       = AccountRef(addr)
-		snapshot = vm.StateDB.Snapshot()
+		snapshot int
 	)
+	if vm.ExecutionType != ExecutionVerify {
+		snapshot = vm.StateDB.Snapshot()
+	}
 	if !vm.StateDB.Exist(addr) {
 		precompiles := PrecompiledContractsHomestead
 		var writeCapablePrecompiles map[common.Address]WriteCapablePrecompiledSSCContract
@@ -242,7 +245,9 @@ func (vm *SSCVM) Call(caller ContractRef, addr common.Address, input []byte, gas
 	// above we revert to the snapshot and consume any gas remaining. Additionally
 	// when we're in homestead this also counts for code storage gas errors.
 	if err != nil {
-		vm.StateDB.RevertToSnapshot(snapshot)
+		if vm.ExecutionType != ExecutionVerify {
+			vm.StateDB.RevertToSnapshot(snapshot)
+		}
 		if err != ErrExecutionReverted {
 			contract.UseGas(contract.Gas)
 		}
@@ -253,7 +258,7 @@ func (vm *SSCVM) Call(caller ContractRef, addr common.Address, input []byte, gas
 func (vm *SSCVM) CrossCall(targetShardId uint32, callerAddr common.Address, addr common.Address, input []byte, gas uint64, value *big.Int) (ret []byte, leftOverGas uint64, err error) {
 	// get result from simulation if ExecutionType is ExecutionVerify or LockExecution
 	if vm.ExecutionType == ExecutionVerify || vm.ExecutionType == LockExecution {
-		ret, leftOverGas, err = vm.SSCService.GetResult(vm.Context.TxHash)
+		ret, leftOverGas, err = vm.SSCService.GetResult(vm.Context.TxHash, vm.Context.CrossCallIndex)
 		return
 	}
 
@@ -324,8 +329,11 @@ func (vm *SSCVM) CallFromOtherShard(fromShard uint32, caller ContractRef, addr c
 
 	var (
 		to       = AccountRef(addr)
-		snapshot = vm.StateDB.Snapshot()
+		snapshot int
 	)
+	if vm.ExecutionType != ExecutionVerify {
+		snapshot = vm.StateDB.Snapshot()
+	}
 	if !vm.StateDB.Exist(addr) {
 		precompiles := PrecompiledContractsHomestead
 		var writeCapablePrecompiles map[common.Address]WriteCapablePrecompiledSSCContract
@@ -380,7 +388,9 @@ func (vm *SSCVM) CallFromOtherShard(fromShard uint32, caller ContractRef, addr c
 	// above we revert to the snapshot and consume any gas remaining. Additionally
 	// when we're in homestead this also counts for code storage gas errors.
 	if err != nil {
-		vm.StateDB.RevertToSnapshot(snapshot)
+		if vm.ExecutionType != ExecutionVerify {
+			vm.StateDB.RevertToSnapshot(snapshot)
+		}
 		if err != ErrExecutionReverted {
 			contract.UseGas(contract.Gas)
 		}
@@ -438,7 +448,9 @@ func (vm *SSCVM) CallCode(caller ContractRef, addr common.Address, input []byte,
 
 	ret, err = vm.run(contract, input, false)
 	if err != nil {
-		vm.StateDB.RevertToSnapshot(snapshot)
+		if vm.ExecutionType != ExecutionVerify {
+			vm.StateDB.RevertToSnapshot(snapshot)
+		}
 		if err != ErrExecutionReverted {
 			contract.UseGas(contract.Gas)
 		}
@@ -488,7 +500,9 @@ func (vm *SSCVM) DelegateCall(caller ContractRef, addr common.Address, input []b
 
 	ret, err = vm.run(contract, input, false)
 	if err != nil {
-		vm.StateDB.RevertToSnapshot(snapshot)
+		if vm.ExecutionType != ExecutionVerify {
+			vm.StateDB.RevertToSnapshot(snapshot)
+		}
 		if err != ErrExecutionReverted {
 			contract.UseGas(contract.Gas)
 		}
@@ -543,12 +557,20 @@ func (vm *SSCVM) StaticCall(caller ContractRef, addr common.Address, input []byt
 	// when we're in Homestead this also counts for code storage gas errors.
 	ret, err = vm.run(contract, input, true)
 	if err != nil {
-		vm.StateDB.RevertToSnapshot(snapshot)
+		if vm.ExecutionType != ExecutionVerify {
+			vm.StateDB.RevertToSnapshot(snapshot)
+		}
 		if err != ErrExecutionReverted {
 			contract.UseGas(contract.Gas)
 		}
 	}
 	return ret, contract.Gas, err
+}
+
+// Run 执行已绑定 code 的合约，跳过 stateDB 预读。
+// 用于并行验证：调用方自行构造 Contract（Phase 1 预读 code），直接执行 EVM 字节码。
+func (vm *SSCVM) Run(contract *Contract, input []byte, readOnly bool) ([]byte, error) {
+	return vm.run(contract, input, readOnly)
 }
 
 func (vm *SSCVM) run(contract *Contract, input []byte, readOnly bool) ([]byte, error) {
@@ -761,9 +783,9 @@ func (vm *SSCVM) transfer_RV(from common.Address, to common.Address, amount *big
 func (vm *SSCVM) transfer_EV(from common.Address, to common.Address, amount *big.Int, transferType TransferType) {
 	txHash := vm.Context.TxHash
 	if transferType == Internal {
-		vm.SSCService.SubSimuBalance(txHash, from, amount)
+		vm.SSCService.SubSimuBalance(txHash, vm.Context.CrossCallIndex, from, amount)
 	}
-	vm.SSCService.AddSimuBalance(txHash, to, amount)
+	vm.SSCService.AddSimuBalance(txHash, vm.Context.CrossCallIndex, to, amount)
 }
 
 func (vm *SSCVM) CanTransfer(from common.Address, amount *big.Int, transferType TransferType) bool {

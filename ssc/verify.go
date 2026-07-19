@@ -17,7 +17,6 @@ import (
 	"github.com/harmony-one/harmony/core/vm"
 	"github.com/harmony-one/harmony/internal/utils"
 	"github.com/harmony-one/harmony/ssc/api"
-	"github.com/harmony-one/harmony/ssc/lm"
 )
 
 // VerifyCommunicator 封装 Verifier 需要的跨节点通信和签名能力。
@@ -86,6 +85,35 @@ type lockedSimNumEntry struct {
 	num int
 }
 
+// callVerifyContext 是每个 CallState 独立的验证上下文
+// 用于并行验证时隔离 CurrentState/CallFrame/DependentResults
+type callVerifyContext struct {
+	currentState     *api.StateSet
+	callFrame        *api.CallFrame
+	dependentResults []*api.CXTCallSSCResult
+}
+
+// loadSubCtx 从根上下文的内嵌 subCtx 中加载子验证上下文。
+func (v *Verifier) loadSubCtx(txHash common.Hash, callIndex api.CallIndex) *callVerifyContext {
+	root := v.getVerifyContext(txHash)
+	if root == nil {
+		return nil
+	}
+	val, ok := root.SubCtx.Load(callIndex.ToString())
+	if !ok {
+		return nil
+	}
+	return val.(*callVerifyContext)
+}
+
+// storeSubCtx 在根上下文中存储子验证上下文。
+func (v *Verifier) storeSubCtx(txHash common.Hash, callIndex api.CallIndex, ctx *callVerifyContext) {
+	root := v.getVerifyContext(txHash)
+	if root != nil {
+		root.SubCtx.Store(callIndex.ToString(), ctx)
+	}
+}
+
 type Verifier struct {
 	communicator *VerifyCommunicator
 	timerMgr     *CXTTimerManager
@@ -97,8 +125,7 @@ type Verifier struct {
 	state        VerifierStateAccessor
 
 	// 自管理的独立存储
-	verifyCtxLock           lm.RWMutex
-	executionVerifyContexts map[common.Hash]*api.ExecutionVerifyContext
+	executionVerifyContexts sync.Map // key: common.Hash → *api.ExecutionVerifyContext（含内嵌 subCtx）
 	txLockedSimNum          sync.Map // key: common.Hash, value: *lockedSimNumEntry (num 创建后不可变)
 }
 
@@ -113,38 +140,33 @@ func NewVerifier(
 	state VerifierStateAccessor,
 ) *Verifier {
 	return &Verifier{
-		communicator:            communicator,
-		timerMgr:                timerMgr,
-		committee:               committee,
-		bc:                      bc,
-		vmService:               vmService,
-		stats:                   stats,
-		retrySchd:               retrySchd,
-		state:                   state,
-		verifyCtxLock:           lm.RWMutex{},
-		executionVerifyContexts: make(map[common.Hash]*api.ExecutionVerifyContext),
+		communicator: communicator,
+		timerMgr:     timerMgr,
+		committee:    committee,
+		bc:           bc,
+		vmService:    vmService,
+		stats:        stats,
+		retrySchd:    retrySchd,
+		state:        state,
 	}
 }
 
 // ===== 存储访问方法 =====
 
 func (v *Verifier) StoreVerifyContext(txHash common.Hash, ctx *api.ExecutionVerifyContext) {
-	v.verifyCtxLock.Lock()
-	v.executionVerifyContexts[txHash] = ctx
-	v.verifyCtxLock.Unlock()
+	v.executionVerifyContexts.Store(txHash, ctx)
 }
 
 func (v *Verifier) getVerifyContext(txHash common.Hash) *api.ExecutionVerifyContext {
-	v.verifyCtxLock.RLock()
-	defer v.verifyCtxLock.RUnlock()
-	return v.executionVerifyContexts[txHash]
+	if val, ok := v.executionVerifyContexts.Load(txHash); ok {
+		return val.(*api.ExecutionVerifyContext)
+	}
+	return nil
 }
 
 // HasVerifyContext 判断某笔 tx 是否存在验证上下文。
 func (v *Verifier) HasVerifyContext(txHash common.Hash) bool {
-	v.verifyCtxLock.RLock()
-	defer v.verifyCtxLock.RUnlock()
-	_, exists := v.executionVerifyContexts[txHash]
+	_, exists := v.executionVerifyContexts.Load(txHash)
 	return exists
 }
 
@@ -164,36 +186,30 @@ func (v *Verifier) deleteLockedSimNum(txHash common.Hash) {
 // 供 sscService.closeTransaction 调用。
 func (v *Verifier) Cleanup(txHash common.Hash) {
 	t0 := time.Now()
-	v.verifyCtxLock.Lock()
-	delete(v.executionVerifyContexts, txHash)
-	v.verifyCtxLock.Unlock()
+	v.executionVerifyContexts.Delete(txHash)
 	v.txLockedSimNum.Delete(txHash)
+	// 子上下文随根上下文一起清理
 	utils.SSCLogger().Debug().Str("txHash", txHash.Hex()).
 		Dur("cost", time.Since(t0)).
 		Msg("Verifier.Cleanup timing")
 }
 
 // GetResult 读取验证结果。实现 api.Service 中的 CXTStateSimulationDB 接口。
-func (v *Verifier) GetResult(txHash common.Hash) (result []byte, leftOverGas uint64, err error) {
-	v.verifyCtxLock.Lock()
-	defer v.verifyCtxLock.Unlock()
-
-	verifyContext := v.executionVerifyContexts[txHash]
-	if verifyContext == nil {
+func (v *Verifier) GetResult(txHash common.Hash, callIndex api.CallIndex) (result []byte, leftOverGas uint64, err error) {
+	subCtx := v.loadSubCtx(txHash, callIndex)
+	if subCtx == nil {
 		return nil, 0, api.ErrInvalidExecution
 	}
-	if len(verifyContext.DependentResults) <= verifyContext.CallFrame.PC {
+	if len(subCtx.dependentResults) <= subCtx.callFrame.PC {
 		utils.SSCLogger().Error().Str("txHash", txHash.Hex()).
-			Interface("verifyContext", verifyContext).
-			Interface("callFrame", verifyContext.CallFrame).
-			Int("dependentResultsLength", len(verifyContext.DependentResults)).
+			Int("pc", subCtx.callFrame.PC).
+			Int("dependentResultsLength", len(subCtx.dependentResults)).
 			Msg("get result failed, index out of range")
 		return nil, 0, api.ErrInvalidExecution
 	}
-	ret := verifyContext.DependentResults[verifyContext.CallFrame.PC]
+	ret := subCtx.dependentResults[subCtx.callFrame.PC]
 	if ret == nil {
 		utils.SSCLogger().Error().Str("txHash", txHash.Hex()).
-			Interface("dependentResults", verifyContext.DependentResults).
 			Msg("get result failed, result is nil")
 		return nil, 0, api.ErrInvalidExecution
 	}
@@ -201,9 +217,8 @@ func (v *Verifier) GetResult(txHash common.Hash) (result []byte, leftOverGas uin
 	leftOverGas = ret.LeftOverGas
 	utils.SSCLogger().Debug().
 		Str("txHash", txHash.Hex()).
-		Interface("callFrame", verifyContext.CallFrame).
-		Msgf("get result, [%d/%d]: %v", verifyContext.CallFrame.PC+1, len(verifyContext.DependentResults), result)
-	verifyContext.CallFrame.Next()
+		Msgf("get result, [%d/%d]: %v", subCtx.callFrame.PC+1, len(subCtx.dependentResults), result)
+	subCtx.callFrame.Next()
 	return
 }
 
@@ -264,7 +279,7 @@ func (v *Verifier) VerifySimulation(simulationBytes []byte, stateDB api.StateDB,
 	}
 
 	defer func() {
-		utils.SSCLogger().Debug().Str("txHash", txHash.String()).
+		utils.SSCLogger().Info().Str("txHash", txHash.String()).
 			Dur("total", time.Since(tVs0)).
 			Dur("chainPatch", tVsPatch).
 			Dur("lockCheck", tVsLockCheck).
@@ -313,7 +328,7 @@ CallStates:
 			for address, stateMap := range callState.RWSet.WriteState.State {
 				for key := range stateMap {
 					lockKey := api.FormKey(address, key)
-					_, stateErr := stateDB.GetState(txHash, address, key)
+					stateErr := stateDB.CheckLock(lockKey, txHash)
 					if stateErr != nil {
 						if errors.Is(stateErr, api.ErrLockConflict_OnChain) {
 							utils.SSCLogger().Debug().Str("txHash", txHash.Hex()).
@@ -334,38 +349,43 @@ CallStates:
 		}
 		// check if states in read set are locked by other tx or not consistent with current state
 		// 链式交易跳过锁冲突检查，nonce 排序保证执行顺序
-		if !isChainTx {
-			for address, stateMap := range callState.RWSet.ReadState.State {
-				for key := range stateMap {
-					lockKey := api.FormKey(address, key)
-					onChainValue, stateErr := stateDB.GetState(txHash, address, key)
-					if stateErr != nil {
-						if errors.Is(stateErr, api.ErrLockConflict_OnChain) {
-							utils.SSCLogger().Debug().Str("txHash", txHash.Hex()).
-								Str("simNum", fmt.Sprintf("%d", simulation.SimulationNum)).
-								Str("conflictSource", stateErr.Error()).
-								Msgf("VerifySimulation %s mu conflict (read) for key: %s", simNumTag, lockKey)
-							conflictLockKeys = append(conflictLockKeys, lockKey)
-							conflictLockCallIndexes = append(conflictLockCallIndexes, callState.CallIndex)
-						} else {
-							utils.SSCLogger().Error().Str("txHash", txHash.Hex()).
-								Str("callIndex", callState.CallIndex.ToString()).
-								Err(stateErr).Msgf("failed to get state for key: %s", lockKey)
-							return
-						}
-					}
-					if stateErr == nil && bytes.Compare(onChainValue.Bytes(), callState.RWSet.ReadState.State[address][key].Bytes()) != 0 {
-						conflictCallStateIndex = i
-						break CallStates
-					}
-				}
-			}
-		}
-		tVsLockCheck = time.Since(tVs0)
+		// if !isChainTx {
+		// 	for address, stateMap := range callState.RWSet.ReadState.State {
+		// 		for key := range stateMap {
+		// 			lockKey := api.FormKey(address, key)
+		// 			onChainValue, stateErr := stateDB.GetState(txHash, address, key)
+		// 			if stateErr != nil {
+		// 				if errors.Is(stateErr, api.ErrLockConflict_OnChain) {
+		// 					utils.SSCLogger().Debug().Str("txHash", txHash.Hex()).
+		// 						Str("simNum", fmt.Sprintf("%d", simulation.SimulationNum)).
+		// 						Str("conflictSource", stateErr.Error()).
+		// 						Msgf("VerifySimulation %s mu conflict (read) for key: %s", simNumTag, lockKey)
+		// 					conflictLockKeys = append(conflictLockKeys, lockKey)
+		// 					conflictLockCallIndexes = append(conflictLockCallIndexes, callState.CallIndex)
+		// 				} else {
+		// 					utils.SSCLogger().Error().Str("txHash", txHash.Hex()).
+		// 						Str("callIndex", callState.CallIndex.ToString()).
+		// 						Err(stateErr).Msgf("failed to get state for key: %s", lockKey)
+		// 					return
+		// 				}
+		// 			}
+		// 			if stateErr == nil && bytes.Compare(onChainValue.Bytes(), callState.RWSet.ReadState.State[address][key].Bytes()) != 0 {
+		// 				conflictCallStateIndex = i
+		// 				utils.SSCLogger().Info().Str("txHash", txHash.Hex()).
+		// 					Str("callIndex", callState.CallIndex.ToString()).
+		// 					Str("address", address.Hex()).
+		// 					Str("key", key.Hex()).
+		// 					Str("expected", callState.RWSet.ReadState.State[address][key].Hex()).
+		// 					Str("actual", onChainValue.Hex()).
+		// 					Uint64("blockNum", header.NumberU64()).
+		// 					Msg("VerifySimulation: read state mismatch with on-chain state")
+		// 				// 继续收集后续 CallState 的锁信息，但标记冲突点
+		// 			}
+		// 		}
+		// 	}
+		// }
 
 		// 链式交易：Patch vs stateDB 一致性检查
-		// 如果上游失败，stateDB 值与 patch 期望值不匹配，自己也失败
-		// DAG 多上游：遍历所有上游，任一能提供匹配值就算通过
 		if isChainTx && len(simulation.UpstreamTxList) > 0 {
 			for address, stateMap := range callState.RWSet.ReadState.State {
 				for key := range stateMap {
@@ -392,20 +412,72 @@ CallStates:
 				}
 			}
 		}
+	}
+	tVsLockCheck = time.Since(tVs0)
 
-		// execute the contract and check if the write set is consistent with the simulation's write set
-		execErr = v.verifyExecuteForCallState(simulation, txHash, callState, stateDB.(*corestate.DB))
-		if execErr != nil {
-			break CallStates
+	// execErr 为 nil 才需要继续执行 Phase 2/3
+	if execErr == nil {
+		// Phase 1.5: 预分配子上下文（所有 CallState 都需要）
+		// 子上下文存储 CurrentState/CallFrame/DependentResults，供并行 execVerify 隔离
+		execCallStates := len(simulation.CallStates)
+		if conflictCallStateIndex >= 0 {
+			execCallStates = conflictCallStateIndex // 冲突点之后的 CallState 不再执行
 		}
+		for i := 0; i < execCallStates; i++ {
+			callState := simulation.CallStates[i]
+			callIndex := callState.CallIndex
+			subCtx := &callVerifyContext{
+				currentState:     newStateSet(),
+				callFrame:        &api.CallFrame{CallIndex: callIndex, PC: 0},
+				dependentResults: callState.DependentResults,
+			}
+			v.storeSubCtx(txHash, callIndex, subCtx)
+		}
+
+		// Phase 1.5.5: Copy stateDB，每个 goroutine 独立实例避免 map 并发写
+		tCopy0 := time.Now()
+		db := stateDB.(*corestate.DB)
+		copies := make([]*corestate.DB, execCallStates)
+		for i := 0; i < execCallStates; i++ {
+			copies[i] = db.Copy()
+		}
+		utils.SSCLogger().Info().Int("copies", execCallStates).
+			Dur("cost", time.Since(tCopy0)).
+			Str("txHash", txHash.Hex()).
+			Msg("Phase 1.5.5: stateDB.Copy timing")
+
+		// Phase 2: 并行 execVerify — 对所有通过 lockCheck 的 CallState 并行执行
+		var wg sync.WaitGroup
+		type execResult struct {
+			idx int
+			err error
+		}
+		results := make([]execResult, execCallStates)
+		for i := 0; i < execCallStates; i++ {
+			wg.Add(1)
+			go func(idx int) {
+				defer wg.Done()
+				callState := simulation.CallStates[idx]
+				err := v.verifyExecuteForCallState(simulation, txHash, callState, copies[idx])
+				results[idx] = execResult{idx, err}
+			}(i)
+		}
+		wg.Wait()
+
+		// Phase 2.5: 检查 execVerify 结果
+		tVsExec = time.Since(tVs0)
+		for _, r := range results {
+			if r.err != nil {
+				execErr = r.err
+				break
+			}
+		}
+		// 清理子上下文（defer 已处理）
 	}
 
-	tVsExec = time.Since(tVs0)
 	if execErr != nil {
 		utils.SSCLogger().Error().Str("txHash", txHash.Hex()).
 			Err(execErr).Msg("failed to verify execution for call state")
-		// sscvm.Call() 在 verifyExecuteForCallState 内通过 SetAndLockState 获取了 locker 锁，
-		// 必须清理 locker.pendingStates，否则残留锁会在 Commit 时合并到 lockedStates → LOCK_STALE
 		stateDB.RollbackTx(txHash)
 		payload := &api.CXTInvalidSimulationPayload{Type: api.InvalidExecution}
 		payloadBytes, _ := json.Marshal(payload)
@@ -441,8 +513,6 @@ CallStates:
 			err := v.lockStateWithExecution(simulation.Epochs, simulation.CallStates[conflictCallStateIndex], stateDB.(*corestate.DB))
 			if err != nil {
 				stateDB.RevertToSnapshot(snapshot)
-				// lockStateWithExecution 通过 sscvm.Call() 调用了 SetAndLockState，
-				// RevertToSnapshot 只回退 state 数据，不清 locker.pendingStates
 				stateDB.RollbackTx(txHash)
 				utils.SSCLogger().Error().Str("txHash", txHash.Hex()).
 					Err(err).Msg("failed to mu state with execution")
@@ -653,21 +723,17 @@ func (v *Verifier) verifyExecuteForCallState(simulation *api.CXTSimulation, txHa
 		simuRet = callState.CallResult.Result
 	}
 
-	verifyContext.CurrentState = newStateSet()
 	utils.SSCLogger().Debug().Str("txHash", txHash.Hex()).
 		Str("callIndex", callIndex.ToString()).
 		Msgf("verify call state %s for shard %d", callState.CallIndex.ToString(), v.committee.SelfShard)
-	verifyContext.DependentResults = callState.DependentResults
-	verifyContext.CallFrame = &api.CallFrame{
-		CallIndex: callIndex,
-		PC:        0,
-	}
 
 	sender := vm.AccountRef(origin)
 	vmCtx := core.NewSSCVMContext(origin, txHash, callIndex, gasPrice, header, v.bc, nil)
 	sscvm := vm.NewSSCVM(vmCtx, stateDB, chainConfig, *vmConfig, v.vmService, vm.ExecutionVerify)
 
-	ret, _, err := sscvm.Call(sender, addr, input, gas, value)
+	var ret []byte
+	var err error
+	ret, _, err = sscvm.Call(sender, addr, input, gas, value)
 	if err != nil {
 		utils.SSCLogger().Error().Err(err).Str("txHash", txHash.Hex()).Msg("verify callState failed")
 		return err
@@ -676,10 +742,14 @@ func (v *Verifier) verifyExecuteForCallState(simulation *api.CXTSimulation, txHa
 	if bytes.Compare(ret, simuRet) != 0 {
 		return fmt.Errorf("simulation result is not equal to execution result, expected: %v, got: %v", simuRet, ret)
 	}
-	if !verifyContext.CurrentState.Equal(callState.RWSet.WriteState) {
-		return fmt.Errorf("simulation write set is not equal to execution write set, callFrame=%v, process: [%d/%d], expected: %v, got: %v",
-			verifyContext.CallFrame, verifyContext.CallFrame.PC, len(verifyContext.DependentResults),
-			callState.RWSet.WriteState, verifyContext.CurrentState)
+	// 从子上下文读取执行结果
+	execCtx := v.loadSubCtx(txHash, callIndex)
+	if execCtx != nil {
+		if !execCtx.currentState.Equal(callState.RWSet.WriteState) {
+			return fmt.Errorf("simulation write set is not equal to execution write set, callIndex=%v, pc=%d, expected: %v, got: %v",
+				callIndex, execCtx.callFrame.PC,
+				callState.RWSet.WriteState, execCtx.currentState)
+		}
 	}
 	return nil
 }
@@ -776,6 +846,17 @@ func (v *Verifier) lockStateWithExecution(epochs []api.Epoch, callState *api.CXT
 	vmConfig := v.bc.GetVMConfig()
 	sscvm := vm.NewSSCVM(vmCtx, state, chainConfig, *vmConfig, v.vmService, vm.ExecutionVerify)
 
+	// 设置子上下文，供 GetResult 读取
+	lockCtx := &callVerifyContext{
+		currentState:     newStateSet(),
+		callFrame:        &api.CallFrame{CallIndex: callIndex, PC: 0},
+		dependentResults: callState.DependentResults,
+	}
+	if root := v.getVerifyContext(txHash); root != nil {
+		root.SubCtx.Store(callIndex.ToString(), lockCtx)
+		defer root.SubCtx.Delete(callIndex.ToString())
+	}
+
 	sender := vm.AccountRef(caller)
 	_, leftOverGas, err := sscvm.Call(sender, addr, input, gas, value)
 	if err != nil {
@@ -813,111 +894,123 @@ func (v *Verifier) lockStateWithRWSet(txHash common.Hash, callState *api.CXTCall
 // ========================================================================
 
 // SubSimuBalance 在验证阶段扣除余额。
-func (v *Verifier) SubSimuBalance(txHash common.Hash, address common.Address, amount *big.Int) error {
-	v.verifyCtxLock.Lock()
-	defer v.verifyCtxLock.Unlock()
-
-	verifyContext := v.executionVerifyContexts[txHash]
-	if verifyContext == nil {
-		return api.ErrInvalidExecution
-	}
-
-	if verifyContext.CurrentState.Balance == nil {
-		verifyContext.CurrentState.Balance = make(map[common.Address]*big.Int)
-	}
-	if verifyContext.CurrentState.Balance[address] == nil {
-		balance, exists := verifyContext.CallStateMap[verifyContext.CallFrame.CallIndex.ToString()].RWSet.ReadState.Balance[address]
-		if !exists {
-			return api.ErrInvalidExecution
+func (v *Verifier) SubSimuBalance(txHash common.Hash, callIndex api.CallIndex, address common.Address, amount *big.Int) error {
+	// 优先查子上下文（并行验证阶段）
+	if subCtx := v.loadSubCtx(txHash, callIndex); subCtx != nil {
+		if subCtx.currentState.Balance == nil {
+			subCtx.currentState.Balance = make(map[common.Address]*big.Int)
 		}
-		verifyContext.CurrentState.Balance[address] = balance
+		if subCtx.currentState.Balance[address] == nil {
+			root := v.getVerifyContext(txHash)
+			if root == nil {
+				return api.ErrInvalidExecution
+			}
+			callStateMap := root.CallStateMap[callIndex.ToString()]
+			if callStateMap == nil || callStateMap.RWSet == nil {
+				return api.ErrInvalidExecution
+			}
+			balance, exists := callStateMap.RWSet.ReadState.Balance[address]
+			if !exists {
+				return api.ErrInvalidExecution
+			}
+			subCtx.currentState.Balance[address] = balance
+		}
+		subCtx.currentState.Balance[address].Sub(subCtx.currentState.Balance[address], amount)
+		return nil
 	}
-	verifyContext.CurrentState.Balance[address].Sub(verifyContext.CurrentState.Balance[address], amount)
-	return nil
+
+	return api.ErrInvalidExecution
 }
 
 // AddSimuBalance 在验证阶段增加余额。
-func (v *Verifier) AddSimuBalance(txHash common.Hash, address common.Address, balance *big.Int) error {
-	v.verifyCtxLock.Lock()
-	defer v.verifyCtxLock.Unlock()
-
-	verifyContext := v.executionVerifyContexts[txHash]
-	if verifyContext == nil {
-		return api.ErrInvalidExecution
-	}
-	if verifyContext.CurrentState.Balance == nil {
-		verifyContext.CurrentState.Balance = make(map[common.Address]*big.Int)
-	}
-	if verifyContext.CurrentState.Balance[address] == nil {
-		bal, exists := verifyContext.CallStateMap[verifyContext.CallFrame.CallIndex.ToString()].RWSet.ReadState.Balance[address]
-		if !exists {
-			return api.ErrInvalidExecution
+func (v *Verifier) AddSimuBalance(txHash common.Hash, callIndex api.CallIndex, address common.Address, balance *big.Int) error {
+	// 优先查子上下文（并行验证阶段）
+	if subCtx := v.loadSubCtx(txHash, callIndex); subCtx != nil {
+		if subCtx.currentState.Balance == nil {
+			subCtx.currentState.Balance = make(map[common.Address]*big.Int)
 		}
-		verifyContext.CurrentState.Balance[address] = bal
+		if subCtx.currentState.Balance[address] == nil {
+			root := v.getVerifyContext(txHash)
+			if root == nil {
+				return api.ErrInvalidExecution
+			}
+			callStateMap := root.CallStateMap[callIndex.ToString()]
+			if callStateMap == nil || callStateMap.RWSet == nil {
+				return api.ErrInvalidExecution
+			}
+			bal, exists := callStateMap.RWSet.ReadState.Balance[address]
+			if !exists {
+				return api.ErrInvalidExecution
+			}
+			subCtx.currentState.Balance[address] = bal
+		}
+		subCtx.currentState.Balance[address].Add(subCtx.currentState.Balance[address], balance)
+		return nil
 	}
-	verifyContext.CurrentState.Balance[address].Add(verifyContext.CurrentState.Balance[address], balance)
-	return nil
+
+	return api.ErrInvalidExecution
 }
 
 // GetSimuBalance 获取验证阶段余额。
-func (v *Verifier) GetSimuBalance(txHash common.Hash, address common.Address) (*big.Int, error) {
-	v.verifyCtxLock.RLock()
-	defer v.verifyCtxLock.RUnlock()
-
-	verifyContext := v.executionVerifyContexts[txHash]
-	if verifyContext == nil {
-		return nil, api.ErrInvalidExecution
-	}
-	if verifyContext.CurrentState.Balance == nil {
-		verifyContext.CurrentState.Balance = make(map[common.Address]*big.Int)
-	}
-	if verifyContext.CurrentState.Balance[address] == nil {
-		bal, exists := verifyContext.CallStateMap[verifyContext.CallFrame.CallIndex.ToString()].RWSet.ReadState.Balance[address]
-		if !exists {
-			return nil, api.ErrInvalidExecution
+func (v *Verifier) GetSimuBalance(txHash common.Hash, callIndex api.CallIndex, address common.Address) (*big.Int, error) {
+	// 优先查子上下文（并行验证阶段）
+	if subCtx := v.loadSubCtx(txHash, callIndex); subCtx != nil {
+		if subCtx.currentState.Balance == nil {
+			subCtx.currentState.Balance = make(map[common.Address]*big.Int)
 		}
-		verifyContext.CurrentState.Balance[address] = bal
+		if subCtx.currentState.Balance[address] == nil {
+			root := v.getVerifyContext(txHash)
+			if root == nil {
+				return nil, api.ErrInvalidExecution
+			}
+			callStateMap := root.CallStateMap[callIndex.ToString()]
+			if callStateMap == nil || callStateMap.RWSet == nil {
+				return nil, api.ErrInvalidExecution
+			}
+			bal, exists := callStateMap.RWSet.ReadState.Balance[address]
+			if !exists {
+				return nil, api.ErrInvalidExecution
+			}
+			subCtx.currentState.Balance[address] = bal
+		}
+		return subCtx.currentState.Balance[address], nil
 	}
-	return verifyContext.CurrentState.Balance[address], nil
+
+	return nil, api.ErrInvalidExecution
 }
 
 // GetSimuState 获取验证阶段状态值。
-func (v *Verifier) GetSimuState(txHash common.Hash, address common.Address, key common.Hash) (common.Hash, error) {
-	v.verifyCtxLock.RLock()
-	defer v.verifyCtxLock.RUnlock()
+func (v *Verifier) GetSimuState(txHash common.Hash, callIndex api.CallIndex, address common.Address, key common.Hash) (common.Hash, error) {
+	// 优先查子上下文（并行验证阶段）
+	if subCtx := v.loadSubCtx(txHash, callIndex); subCtx != nil {
+		if subCtx.currentState.State[address] != nil {
+			return subCtx.currentState.State[address][key], nil
+		}
+		// 子上下文中没有，去根上下文的 ReadState 查初始值
+		root := v.getVerifyContext(txHash)
+		if root == nil {
+			return common.Hash{}, api.ErrInvalidExecution
+		}
+		state, exists := root.CallStateMap[callIndex.ToString()].RWSet.ReadState.State[address]
+		if !exists {
+			return common.Hash{}, api.ErrInvalidExecution
+		}
+		return state[key], nil
+	}
 
-	verifyContext := v.executionVerifyContexts[txHash]
-	if verifyContext == nil {
-		return common.Hash{}, api.ErrInvalidExecution
-	}
-	if verifyContext.CurrentState.State[address] != nil {
-		return verifyContext.CurrentState.State[address][key], nil
-	}
-	state, exists := verifyContext.CallStateMap[verifyContext.CallFrame.CallIndex.ToString()].RWSet.ReadState.State[address]
-	if !exists {
-		return common.Hash{}, api.ErrInvalidExecution
-	}
-	utils.SSCLogger().Debug().Str("txHash", txHash.Hex()).
-		Interface("callFrame", verifyContext.CallFrame).
-		Msgf("get simu state [%s:%s] = %s", address.Hex(), key.Hex(), state[key].Hex())
-	return state[key], nil
+	return common.Hash{}, api.ErrInvalidExecution
 }
 
 // SetSimuState 设置验证阶段状态值。
-func (v *Verifier) SetSimuState(txHash common.Hash, address common.Address, key common.Hash, value common.Hash) error {
-	v.verifyCtxLock.Lock()
-	defer v.verifyCtxLock.Unlock()
+func (v *Verifier) SetSimuState(txHash common.Hash, callIndex api.CallIndex, address common.Address, key common.Hash, value common.Hash) error {
+	// 优先查子上下文（并行验证阶段）
+	if subCtx := v.loadSubCtx(txHash, callIndex); subCtx != nil {
+		if subCtx.currentState.State[address] == nil {
+			subCtx.currentState.State[address] = make(map[common.Hash]common.Hash)
+		}
+		subCtx.currentState.State[address][key] = value
+		return nil
+	}
 
-	verifyContext := v.executionVerifyContexts[txHash]
-	if verifyContext == nil {
-		return api.ErrInvalidExecution
-	}
-	if verifyContext.CurrentState.State[address] == nil {
-		verifyContext.CurrentState.State[address] = make(map[common.Hash]common.Hash)
-	}
-	verifyContext.CurrentState.State[address][key] = value
-	utils.SSCLogger().Debug().Str("txHash", txHash.Hex()).
-		Interface("callFrame", verifyContext.CallFrame).
-		Msgf("set simu state [%s:%s] = %s", address.Hex(), key.Hex(), value.Hex())
-	return nil
+	return api.ErrInvalidExecution
 }

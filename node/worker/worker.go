@@ -320,6 +320,7 @@ func (w *Worker) CommitTransactions(
 	pendingStaking staking.StakingTransactions, coinbase common.Address,
 	pendingCRTxs map[common.Address]types.Transactions,
 ) error {
+	startTime := time.Now()
 	if w.current.gasPool == nil {
 		w.current.gasPool = new(core.GasPool).AddGas(w.current.header.GasLimit())
 	}
@@ -359,6 +360,10 @@ func (w *Worker) CommitTransactions(
 	// HARMONY TXNS
 	// 单块所有交易上限（总 300 笔）
 	remaining := 500
+	crTxn := 0
+	simTxn := 0
+	normalTxn := 0
+	remainingTime := time.Millisecond * 1000
 
 	// 1. CommitOrRollbackTx 最高优先级
 	if len(pendingCRTxs) > 0 {
@@ -369,15 +374,16 @@ func (w *Worker) CommitTransactions(
 		}
 		utils.Logger().Info().Uint64("blockNum", w.current.header.NumberU64()).Int("txn", len(pendingCRTxs)).Interface("addrs", crTxAddrs).Msg("Leader apply CommitOrRollback txns first")
 		before := len(w.current.txs)
-		w.CommitSSCTransactions(crTxns, coinbase, remaining, 0)
-		remaining -= (len(w.current.txs) - before)
+		beginTime := time.Now()
+		w.CommitSSCTransactions(crTxns, coinbase, remaining, remainingTime)
+		remainingTime -= time.Since(beginTime)
+		crTxn = len(w.current.txs) - before
+		remaining -= crTxn
 	}
 
 	// 2. 其他 SSC 交易
 	sscTxns := types.NewTransactionsByPriceAndNonce(w.current.signer, w.current.ethSigner, pendingSSCTxs)
 	normalTxns := types.NewTransactionsByPriceAndNonce(w.current.signer, w.current.ethSigner, pendingNormal)
-
-	startTime := time.Now()
 
 	sscTxAddrs := make([]common.Address, 0)
 	for address := range pendingSSCTxs {
@@ -386,8 +392,11 @@ func (w *Worker) CommitTransactions(
 	utils.Logger().Info().Uint64("blockNum", w.current.header.NumberU64()).Int("txn", len(pendingSSCTxs)).Interface("addrs", sscTxAddrs).Str("duration", time.Since(startTime).String()).Msg("Leader apply ssctxs for duration")
 	if remaining > 0 {
 		before := len(w.current.txs)
-		w.CommitSSCTransactions(sscTxns, coinbase, remaining, 1*time.Second)
-		remaining -= (len(w.current.txs) - before)
+		beginTime := time.Now()
+		w.CommitSSCTransactions(sscTxns, coinbase, remaining, remainingTime)
+		remainingTime -= time.Since(beginTime)
+		simTxn = len(w.current.txs) - before
+		remaining -= simTxn
 	}
 
 	normalTxAddrs := make([]common.Address, 0)
@@ -396,7 +405,12 @@ func (w *Worker) CommitTransactions(
 	}
 	utils.Logger().Info().Uint64("blockNum", w.current.header.NumberU64()).Int("txn", len(pendingNormal)).Interface("addrs", normalTxAddrs).Str("duration", time.Since(startTime).String()).Msg("Leader apply txs for duration")
 	if remaining > 0 {
-		w.CommitSortedTransactions(normalTxns, coinbase, remaining, 200*time.Millisecond)
+		before := len(w.current.txs)
+		beginTime := time.Now()
+		w.CommitSortedTransactions(normalTxns, coinbase, remaining, remainingTime)
+		remainingTime -= time.Since(beginTime)
+		normalTxn = len(w.current.txs) - before
+		remaining -= normalTxn
 	}
 
 	// STAKING - only beaconchain process staking transaction
@@ -433,7 +447,10 @@ func (w *Worker) CommitTransactions(
 
 	utils.SSCLogger().Warn().
 		Int("newTxns", len(w.current.txs)).
-		Int("newStakingTxns", len(w.current.stakingTxs)).
+		Int("crTxn", crTxn).
+		Int("simTxn", simTxn).
+		Int("normalTxn", normalTxn).
+		Dur("duration", time.Since(startTime)).
 		Uint64("blockGasLimit", w.current.header.GasLimit()).
 		Uint64("blockGasUsed", w.current.header.GasUsed()).
 		Uint64("blockNum", w.current.header.NumberU64()).

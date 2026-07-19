@@ -476,11 +476,8 @@ func (p *pendingUnlockCache) applyTo(locker *stateLocker) {
 						heldNs := time.Since(ls.lockTime).Nanoseconds()
 						mgr.sscService.stats.RecordLockHeld(string(lockKey), heldNs)
 					}
-					// globalLockedStates 设为已释放（lockedBy = empty，保留 key）
-					mgr.globalLockedStates.Store(lockKey, &lockedState{
-						lockedBy: common.Hash{},
-						version:  mgr.version.Load(),
-					})
+					// globalLockedStates 删除已释放的锁（避免 sync.Map 无限增长）
+					mgr.globalLockedStates.Delete(lockKey)
 					// 旧版 lockedStates 删除（兼容）
 					delete(mgr.lockedStates.lockedStates, lockKey)
 				}
