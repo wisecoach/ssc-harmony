@@ -127,12 +127,12 @@ type CXTStateSimulationDB interface {
 
 	// --------------------------- functions for execution verify --------------------------------
 
-	SubSimuBalance(txHash common.Hash, callIndex CallIndex, address common.Address, balance *big.Int) error
-	AddSimuBalance(txHash common.Hash, callIndex CallIndex, address common.Address, balance *big.Int) error
-	GetSimuBalance(txHash common.Hash, callIndex CallIndex, address common.Address) (*big.Int, error)
-	GetSimuState(txHash common.Hash, callIndex CallIndex, address common.Address, key common.Hash) (common.Hash, error)
-	SetSimuState(txHash common.Hash, callIndex CallIndex, address common.Address, key common.Hash, value common.Hash) error
-	GetResult(txHash common.Hash, callIndex CallIndex) (result []byte, leftOverGas uint64, err error)
+	SubSimuBalance(txHash common.Hash, simNum int, callIndex CallIndex, address common.Address, balance *big.Int) error
+	AddSimuBalance(txHash common.Hash, simNum int, callIndex CallIndex, address common.Address, balance *big.Int) error
+	GetSimuBalance(txHash common.Hash, simNum int, callIndex CallIndex, address common.Address) (*big.Int, error)
+	GetSimuState(txHash common.Hash, simNum int, callIndex CallIndex, address common.Address, key common.Hash) (common.Hash, error)
+	SetSimuState(txHash common.Hash, simNum int, callIndex CallIndex, address common.Address, key common.Hash, value common.Hash) error
+	GetResult(txHash common.Hash, simNum int, callIndex CallIndex) (result []byte, leftOverGas uint64, err error)
 }
 
 type VM interface {
@@ -155,10 +155,18 @@ type InternalService interface {
 	//	@Description: call for cross-shard contract, send request to leader of CXTransaction, and wait for the simulation
 	//	result
 	CallCXTContract(req *CXTCallRequest) *CXTCallSSCResult
-
 	// VerifySimulation
+	//
 	//	@Description: verify the simulation and vote for commit or rollback
 	VerifySimulation(simulationBytes []byte, stateDB StateDB, header *block.Header)
+
+	// BatchVerifySimulations
+	//
+	//	@Description: batch verify multiple simulations and vote for commit or rollback
+	BatchVerifySimulations(simulations []CXTSimulation, stateDB StateDB, header *block.Header)
+
+	// IsParallelBatchEnabled 返回是否启用并行批量验证模式
+	IsParallelBatchEnabled() bool
 
 	CommitOrRollbackWithProof(commitProofBytes []byte, stateDB StateDB, blockNum uint64) error
 

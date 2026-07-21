@@ -131,11 +131,6 @@ type sscService struct {
 
 	txStates sync.Map // key: common.Hash, value: *api.TxState, 带 per-tx mu
 
-	// 验证上下文 now managed by Verifier
-	// verifyCtxLock           lm.RWMutex
-	// executionVerifyContexts map[common.Hash]*api.ExecutionVerifyContext
-	// txLockedSimNum          map[common.Hash]int   // moved to Verifier
-
 	commitLock   lm.RWMutex // cmLock for commitStates
 	commitStates map[common.Hash]*api.CommitState
 
@@ -147,6 +142,10 @@ type sscService struct {
 	// tx block trace: 记录各阶段块高度用于分析延迟
 	txTraces  map[common.Hash]*TxBlockTrace
 	traceLock sync.Mutex // 保护 txTraces，不借用 Simulator.simuLock
+
+	// batch 并行验证：CommitSimulation 收集的 SimTxs，CommitSSCTransactions 结束后统一验证
+	pendingBatchMu    sync.Mutex
+	pendingBatchSims  []*api.CXTSimulation
 }
 
 func (s *sscService) GetShardID(address common.Address) uint32 {
@@ -472,7 +471,7 @@ func (s *sscService) handleTxSp1Timeout(info txInfo) {
 // block committed will be called after apply the block, so we can close the transaction here after check if the tx's simulation is not onchain
 func (s *sscService) handleTxPoolTimeout(info txInfo) {
 	txHash := info.txHash
-	existsOnChain := s.Verifier.HasVerifyContext(txHash)
+	existsOnChain := s.Verifier.HasVerifyContext(txHash, info.simNum)
 	if val, ok := s.txStates.Load(txHash); ok {
 		tx := val.(*api.TxState)
 		tx.Mu.Lock()
@@ -498,6 +497,18 @@ func newStateSet() *api.StateSet {
 	return &api.StateSet{
 		Balance: make(map[common.Address]*big.Int),
 		State:   make(map[common.Address]map[common.Hash]common.Hash),
+	}
+}
+
+// newStateSetFromRead 从 ReadState 预初始化 currentState。
+// 浅引用 map（ReadState 校验后不再使用，无副作用）。
+func newStateSetFromRead(src *api.StateSet) *api.StateSet {
+	if src == nil {
+		return newStateSet()
+	}
+	return &api.StateSet{
+		Balance: src.Balance,
+		State:   src.State,
 	}
 }
 
@@ -876,6 +887,13 @@ func (s *sscService) CommitSimulation(commit *api.SimulationCommit) {
 		return
 	}
 
+	// batch 模式：收集 SimTxs，等 CommitSSCTransactions 结束后统一验证
+	if s.IsParallelBatchEnabled() {
+		s.pendingBatchMu.Lock()
+		s.pendingBatchSims = append(s.pendingBatchSims, simulation)
+		s.pendingBatchMu.Unlock()
+	}
+
 	// SimTx 提交成功后，统计链式深度
 	if len(upstreamTxList) > 0 {
 		// 是链式交易，记录提交深度（simNum=链深度）
@@ -1181,7 +1199,11 @@ func (s *sscService) closeTransaction(txHash common.Hash, commitOrRollback bool,
 	delete(s.commitStates, txHash)
 	s.commitLock.Unlock()
 
-	s.Verifier.Cleanup(txHash)
+	simNum := 0
+	if tx != nil {
+		simNum = tx.SimulationNum
+	}
+	s.Verifier.Cleanup(txHash, simNum)
 	tVerCleanup := time.Since(t0close)
 
 	// 清除定时器：无论提交还是回滚，不再需要 sp1/pool 定时器
@@ -1239,7 +1261,7 @@ func (s *sscService) closeTransactions(txs map[common.Hash]bool) {
 	}
 	s.commitLock.Unlock()
 	for txHash := range txs {
-		s.Verifier.Cleanup(txHash)
+		s.Verifier.Cleanup(txHash, 0) // epoch 结束批量清理，不精确 simNum 但 safe
 		s.retryScheduler.StaleTx(txHash)
 	}
 }
@@ -1264,4 +1286,13 @@ func (s *sscService) RetryCommit(txHash common.Hash) *api.RetryCommitResp {
 
 func (s *sscService) RetryCancel(txHash common.Hash) {
 	s.retryScheduler.RetryCancel(txHash)
+}
+
+// PendingBatchSimulations 返回 batch 模式收集的 SimTxs（清空内部列表）。
+func (s *sscService) PendingBatchSimulations() []*api.CXTSimulation {
+	s.pendingBatchMu.Lock()
+	defer s.pendingBatchMu.Unlock()
+	sims := s.pendingBatchSims
+	s.pendingBatchSims = nil
+	return sims
 }

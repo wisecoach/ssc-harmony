@@ -34,7 +34,7 @@ func opSload_SSC_EV(pc *uint64, inp Interpreter, contract *Contract, memory *Mem
 	interpreter := inp.(*SSCVMInterpreter)
 	loc := stack.peek()
 	txHash := interpreter.vm.Context.TxHash
-	val, _ := interpreter.vm.SSCService.GetSimuState(txHash, interpreter.vm.Context.CrossCallIndex, contract.Address(), common.BigToHash(loc))
+	val, _ := interpreter.vm.SSCService.GetSimuState(txHash, interpreter.vm.Context.SimulationNum, interpreter.vm.Context.CrossCallIndex, contract.Address(), common.BigToHash(loc))
 	loc.SetBytes(val.Bytes())
 	return nil, nil
 }
@@ -44,7 +44,7 @@ func opSstore_SSC_EV(pc *uint64, inp Interpreter, contract *Contract, memory *Me
 	loc := common.BigToHash(stack.pop())
 	val := stack.pop()
 	txHash := interpreter.vm.Context.TxHash
-	interpreter.vm.SSCService.SetSimuState(txHash, interpreter.vm.Context.CrossCallIndex, contract.Address(), loc, common.BigToHash(val))
+	interpreter.vm.SSCService.SetSimuState(txHash, interpreter.vm.Context.SimulationNum, interpreter.vm.Context.CrossCallIndex, contract.Address(), loc, common.BigToHash(val))
 
 	interpreter.intPool.put(val)
 	return nil, nil
@@ -74,8 +74,19 @@ func opCall_SSC_EV(pc *uint64, inp Interpreter, contract *Contract, memory *Memo
 
 	targetShardId := interpreter.vm.SSCService.GetShardID(toAddr)
 	isCrossCall := targetShardId != interpreter.vm.Context.ShardID
-	if isCrossCall {
-		ret, returnGas, err = interpreter.vm.SSCService.GetResult(interpreter.vm.Context.TxHash, interpreter.vm.Context.CrossCallIndex)
+
+	// WriteCapablePrecompiledSSCContract 不经过 CrossCall/GetResult
+	// （与模拟阶段行为一致：sscvm.Call 中直接调用 callSSCPrecompiledContract）
+	if IsWriteCapablePrecompiledSSCContract(toAddr) {
+		ret, returnGas, err = interpreter.vm.callSSCPrecompiledContract(contract, toAddr, args, gas, value)
+	} else if isCrossCall {
+		utils.SSCLogger().Info().
+			Str("txHash", interpreter.vm.Context.TxHash.Hex()).
+			Str("callIndex", interpreter.vm.Context.CrossCallIndex.ToString()).
+			Uint64("pc", *pc).
+			Bool("precompile", false).
+			Msgf("opCall_SSC_EV: cross-call GetResult, shard: %d->%d", interpreter.vm.Context.ShardID, targetShardId)
+		ret, returnGas, err = interpreter.vm.SSCService.GetResult(interpreter.vm.Context.TxHash, interpreter.vm.Context.SimulationNum, interpreter.vm.Context.CrossCallIndex)
 		if err != nil {
 			utils.SSCLogger().Error().Err(err).
 				Str("ExecutionType", interpreter.vm.ExecutionType.String()).
@@ -138,7 +149,7 @@ func opCallCode_SSC_EV(pc *uint64, inp Interpreter, contract *Contract, memory *
 	targetShardId := interpreter.vm.SSCService.GetShardID(common.BigToAddress(addr))
 	isCrossCall := targetShardId != interpreter.vm.Context.ShardID
 	if isCrossCall {
-		ret, returnGas, err = interpreter.vm.SSCService.GetResult(interpreter.vm.Context.TxHash, interpreter.vm.Context.CrossCallIndex)
+		ret, returnGas, err = interpreter.vm.SSCService.GetResult(interpreter.vm.Context.TxHash, interpreter.vm.Context.SimulationNum, interpreter.vm.Context.CrossCallIndex)
 		if err != nil {
 			utils.SSCLogger().Error().Err(err).
 				Str("ExecutionType", interpreter.vm.ExecutionType.String()).
@@ -187,7 +198,7 @@ func opDelegateCall_SSC_EV(pc *uint64, inp Interpreter, contract *Contract, memo
 	targetShardId := interpreter.vm.SSCService.GetShardID(common.BigToAddress(addr))
 	isCrossCall := targetShardId != interpreter.vm.Context.ShardID
 	if isCrossCall {
-		ret, returnGas, err = interpreter.vm.SSCService.GetResult(interpreter.vm.Context.TxHash, interpreter.vm.Context.CrossCallIndex)
+		ret, returnGas, err = interpreter.vm.SSCService.GetResult(interpreter.vm.Context.TxHash, interpreter.vm.Context.SimulationNum, interpreter.vm.Context.CrossCallIndex)
 		if err != nil {
 			utils.SSCLogger().Error().Err(err).
 				Str("ExecutionType", interpreter.vm.ExecutionType.String()).
@@ -236,7 +247,7 @@ func opStaticCall_SSC_EV(pc *uint64, inp Interpreter, contract *Contract, memory
 	targetShardId := interpreter.vm.SSCService.GetShardID(common.BigToAddress(addr))
 	isCrossCall := targetShardId != interpreter.vm.Context.ShardID
 	if isCrossCall {
-		ret, returnGas, err = interpreter.vm.SSCService.GetResult(interpreter.vm.Context.TxHash, interpreter.vm.Context.CrossCallIndex)
+		ret, returnGas, err = interpreter.vm.SSCService.GetResult(interpreter.vm.Context.TxHash, interpreter.vm.Context.SimulationNum, interpreter.vm.Context.CrossCallIndex)
 		if err != nil {
 			utils.SSCLogger().Error().Err(err).
 				Str("ExecutionType", interpreter.vm.ExecutionType.String()).

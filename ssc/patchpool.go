@@ -487,6 +487,12 @@ func (rs *retryScheduler) scanPatchSubscribers(writeSet *api.RWSet) {
 		var upstreamTxList []api.TxSimKey
 		allOk := true
 		for _, pn := range pt.patches {
+			// DAG 防环：自指 patch 跳过（patch 是自己的之前提交，不构成上游依赖）
+			if pn.TxHash == pt.txHash {
+				chainRetryStats.SigSelfPatchSkip.Add(1)
+				continue
+			}
+
 			patch := rs.tryConsumePatch(pn.TxHash, pt.txHash, priority)
 			if patch == nil {
 				allOk = false

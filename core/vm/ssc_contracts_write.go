@@ -48,10 +48,18 @@ func (s *simulationCommit) RequiredGas(vm *SSCVM, contract *Contract, input []by
 
 func (s *simulationCommit) RunWriteCapable(vm *SSCVM, contract *Contract, input []byte) ([]byte, error) {
 	startTime := time.Now()
-	defer utils.SSCLogger().Debug().
+	defer utils.SSCLogger().Info().
 		Str("txHash", vm.Context.TxHash.Hex()).
 		Dur("cost", time.Since(startTime)).
 		Msgf("verify simulation")
+
+	// 并行 batch 模式：跳过单笔验证，只保留 nonce/gas/EVM 交易处理
+	if vm.SSCService.IsParallelBatchEnabled() {
+		utils.SSCLogger().Info().Str("txHash", vm.Context.TxHash.Hex()).
+			Msg("batch mode: skip single VerifySimulation")
+		return nil, nil
+	}
+
 	vm.SSCService.VerifySimulation(input, vm.StateDB, vm.Context.Header)
 	return nil, nil
 }

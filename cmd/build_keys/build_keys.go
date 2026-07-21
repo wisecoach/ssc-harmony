@@ -288,6 +288,7 @@ func buildConfig(config ShardConfig) {
 			MaxRetriesTotal:      5,
 			ForceSimulation:      true,
 			EnableLockOnConflict: false,
+			EnableParallelBatch:  true,
 		}
 		for j := 0; j < config.validator; j++ {
 			v := shard2validators[i][j]

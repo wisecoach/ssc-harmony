@@ -1,7 +1,6 @@
 package consensus
 
 import (
-	"bytes"
 	"sort"
 	"strings"
 	"time"
@@ -10,7 +9,6 @@ import (
 	"github.com/harmony-one/harmony/core"
 	"github.com/harmony-one/harmony/core/rawdb"
 	"github.com/harmony-one/harmony/core/types"
-	"github.com/harmony-one/harmony/core/vm"
 	"github.com/harmony-one/harmony/crypto/bls"
 	"github.com/harmony-one/harmony/internal/utils"
 	"github.com/harmony-one/harmony/node/worker"
@@ -111,54 +109,17 @@ func (consensus *Consensus) ProposeNewBlock(commitSigs chan []byte) (*types.Bloc
 			sscAddrSet[addr] = true
 		}
 
-		pendingCRTxs := make(map[common.Address]types.Transactions)
-		pendingSSCTxs := make(map[common.Address]types.Transactions)
-		pendingPlainTxs := map[common.Address]types.Transactions{}
 		pendingStakingTxs := staking.StakingTransactions{}
 
-		// Single pass: sort all pending txs by type
-		//   To() == CxtCommitOrRollbackAddr → CommitOrRollback tx (any sender)
-		//   sender in sscAddrSet           → other SSC tx
-		//   else                           → plain tx
-		for addr, poolTxs := range pendingPoolTxs {
-			_, isSSCAddr := sscAddrSet[addr]
-			for _, tx := range poolTxs {
-				switch t := tx.(type) {
-				case *types.Transaction:
-					if t.To() != nil && bytes.Equal(t.To().Bytes(), vm.CxtCommitOrRollbackAddr.Bytes()) {
-						pendingCRTxs[addr] = append(pendingCRTxs[addr], t)
-					} else if isSSCAddr {
-						pendingSSCTxs[addr] = append(pendingSSCTxs[addr], t)
-					} else {
-						pendingPlainTxs[addr] = append(pendingPlainTxs[addr], t)
-					}
-				case *staking.StakingTransaction:
-					if consensus.Blockchain().Config().IsPreStaking(worker.GetCurrentHeader().Epoch()) {
-						pendingStakingTxs = append(pendingStakingTxs, t)
-					}
-				default:
-					consensus.GetLogger().Err(types.ErrUnknownPoolTxType).
-						Msg("Failed to parse pending transactions")
-					return nil, types.ErrUnknownPoolTxType
-				}
-			}
-		}
+		// 分类逻辑移至 CommitTransactions 内部处理
 
-		countFunc := func(txs map[common.Address]types.Transactions) int {
-			cnt := 0
-			for _, acTxs := range txs {
-				cnt += len(acTxs)
-			}
-			return cnt
-		}
-
-		consensus.GetLogger().Info().Msgf("[ProposeNewBlock] begin to commit transaction, [cr, ssc, plain] = [%d, %d, %d]", countFunc(pendingCRTxs), countFunc(pendingSSCTxs), countFunc(pendingPlainTxs))
+		consensus.GetLogger().Info().Int("txn", len(pendingPoolTxs)).
+			Msgf("[ProposeNewBlock] begin to commit transaction")
 
 		// Try commit normal and staking transactions based on the current state
 		// The successfully committed transactions will be put in the proposed block
 		if err := worker.CommitTransactions(
-			pendingSSCTxs, pendingPlainTxs, pendingStakingTxs, beneficiary,
-			pendingCRTxs,
+			pendingPoolTxs, sscAddrSet, pendingStakingTxs, beneficiary,
 		); err != nil {
 			consensus.GetLogger().Error().Err(err).Msg("cannot commit transactions")
 			return nil, err

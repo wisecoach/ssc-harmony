@@ -1,18 +1,57 @@
-# HANDOFF-20260718-parallel-simtx-verify
-
+HANDOFF-20260718-parallel-simtx-verify (续)
+>
 > from_session: 当前 Designer session
 > from_role: Designer
 > to_role: Designer (新 session)
-> 焦点: SimTx 并行验证设计方案讨论 + 落地
+> 焦点: SimTx 并行验证实现
 
-## 已完成
+## 代码状态
 
-| 事项 | 状态 |
+**已完成并编译通过：**
+
+| 文件 | 改动 | 
 |:-----|:------|
-| DSN-32: CommitTxs 时间预算 | 已实现（`worker.go`，1s SimTx / 200ms NormalTx） |
-| 修复 state_locker.go `globalLockedStates` Store→Delete 泄漏 | 已实现 |
-| rate=200 实验分析 | 已分析 |
-| 并行验证设计讨论 | 待推进（本交接焦点） |
+| `ssc/api/types.go` | `ShardSimulateCommitteeConfig` 新增 `EnableParallelBatch bool` |
+| `ssc/api/sscs.go` | `InternalService` 新增 `BatchVerifySimulations(simulations []CXTSimulation, ...)` + `IsParallelBatchEnabled() bool` |
+| `ssc/verify.go` | `VerifySimulation` 拆出 `verifySimulationParsed` |
+| `ssc/verify.go` | 新增 `BatchVerifySimulations`（Phase 0-0.5 冲突仲裁 + 调 `batchVerifyPassed`） |
+| `ssc/verify.go` | 新增 `batchVerifyPassed`（批量相位验证骨架，有编译错）|
+| `ssc/verify.go` | 新增 `extractRWSet` 辅助函数 |
+| `ssc/verify.go` | 新增 `IsParallelBatchEnabled` |
+| `core/vm/sscvm.go` | 导出 `Run()` 方法 |
+| `core/vm/sscis_execution_verify.go` | ExecutionVerify 指令集优化 |
+| `ssc/state_locker.go` | CheckLock 优化 |
+
+**batchVerifyPassed 编译错误（待修）：**
+
+```
+ssc/verify.go:1206:42: cs.RWSet.WriteState.Copy undefined
+  → 参考 verifySimulationParsed 中 subCtx 的 currentState 创建方式
+ssc/verify.go:1207:23: undefined: callFrame
+  → 参考 verifySimulationParsed 中 subCtx 的 callFrame 创建方式
+ssc/verify.go:1272:34: undefined: api.VERIFIED
+  → 检查 api 包中的状态常量名
+```
+
+**待实现（P0→P3）：**
+
+| P | 项 | 文件 |
+|:-:|:---|:-----|
+| 0 | 修 batchVerifyPassed 编译错 | `ssc/verify.go` |
+| 1 | Precompile 检测 `EnableParallelBatch` 跳过 verify | `core/vm/ssc_contracts_write.go` |
+| 2 | Worker `CommitTransactions` 并行分支 | `node/worker/worker.go` |
+| 3 | MischiefProxy 代理方法 | `ssc/mischief/proxy.go` |
+| 4 | state_processor.go 并行 | `core/state_processor.go` |
+
+## 设计文档
+
+- `docs/designs/active/DSN-33-verifycontext-cleanup.md` ✅
+- `docs/designs/active/DSN-34-parallel-exec-verify.md` ✅
+- `docs/designs/active/DSN-35-batch-parallel-verify.md` ✅（终版）
+
+## 实验数据
+
+rate=150 实验（并行 execVerify + Copy，无 batch）：
 
 ## 当前实验环境
 

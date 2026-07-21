@@ -11,7 +11,7 @@ import (
 )
 
 // NewSSCVMContext creates a new context for use in the SSCVM.
-func NewSSCVMContext(origin common.Address, txHash common.Hash, callIndex api.CallIndex, gasPrice *big.Int, header *block.Header, chain ChainContext, author *common.Address) vm.Context {
+func NewSSCVMContext(origin common.Address, txHash common.Hash, simNum int, callIndex api.CallIndex, gasPrice *big.Int, header *block.Header, chain ChainContext, author *common.Address) vm.Context {
 	// If we don't have an explicit author (i.e. not mining), extract from the header
 	var beneficiary common.Address
 	if author == nil {
@@ -40,6 +40,7 @@ func NewSSCVMContext(origin common.Address, txHash common.Hash, callIndex api.Ca
 		VRF:                   vrf,
 		TxType:                0,
 		CrossCallIndex:        callIndex,
+		SimulationNum:         simNum,
 		TxHash:                txHash,
 		CreateValidator:       CreateValidatorFn(header, chain),
 		EditValidator:         EditValidatorFn(header, chain),

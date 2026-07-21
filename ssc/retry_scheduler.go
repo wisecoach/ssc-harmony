@@ -163,6 +163,9 @@ var chainRetryStats struct {
 	SigPassiveAdd     atomic.Int64 // 进入被动池次数
 	SigPassiveWaken   atomic.Int64 // 被动池唤醒次数
 	SigPassiveTimeout atomic.Int64 // 被动池超时 close 数
+
+	// DAG 防环
+	SigSelfPatchSkip atomic.Int64 // scanPatchSubscribers 跳过自指 patch
 }
 
 func initChainRetryStats() {
@@ -220,6 +223,7 @@ func dumpChainRetryStats() {
 		Int64("retryCommitTryLockOk", chainRetryStats.SigRetryCommitTryLockOk.Swap(0)).
 		Int64("retryCommitTryLockFail", chainRetryStats.SigRetryCommitTryLockFail.Swap(0)).
 		Int64("retryCommitTryLockWounded", chainRetryStats.SigRetryCommitTryLockWounded.Swap(0)).
+		Int64("selfPatchSkip", chainRetryStats.SigSelfPatchSkip.Swap(0)).
 		Interface("chainLengthDist", lenCnt).
 		Interface("chainCommitDist", commitCnt).
 		Interface("chainDepthDist", depthCnt).
@@ -1463,9 +1467,25 @@ func (rs *retryScheduler) sendChainSignal(txHash common.Hash, retryTx *api.Retry
 	}
 }
 
-// readPatchChain 递归查 patches 链，读到就停。
+// readPatchChain 递归查 patches 链，读到就停。depth 用于检测异常深度（可能环）。
 func (rs *retryScheduler) readPatchChain(txHash common.Hash, simNum int,
 	address common.Address, key common.Hash) (common.Hash, bool) {
+
+	return rs.readPatchChainDepth(txHash, simNum, address, key, 0)
+}
+
+// readPatchChainDepth readPatchChain 的深度感知递归。
+func (rs *retryScheduler) readPatchChainDepth(txHash common.Hash, simNum int,
+	address common.Address, key common.Hash, depth int) (common.Hash, bool) {
+
+	if depth > 1000 {
+		utils.SSCLogger().Warn().
+			Str("txHash", txHash.Hex()).
+			Int("simNum", simNum).
+			Int("depth", depth).
+			Msg("[retryScheduler] readPatchChain: excessive depth, possible DAG cycle")
+		return common.Hash{}, false
+	}
 
 	patchVal, _ := rs.patches.Load(txHash)
 	pm, _ := patchVal.(*patchMap)
@@ -1491,7 +1511,7 @@ func (rs *retryScheduler) readPatchChain(txHash common.Hash, simNum int,
 
 	// 自己没有，遍历所有上游递归查
 	for _, up := range node.UpstreamTxList {
-		if val, found := rs.readPatchChain(up.TxHash, up.SimulationNum, address, key); found {
+		if val, found := rs.readPatchChainDepth(up.TxHash, up.SimulationNum, address, key, depth+1); found {
 			return val, true
 		}
 	}
@@ -1586,6 +1606,19 @@ func (rs *retryScheduler) RemoveOnChainPatch(txHash common.Hash) {
 // 返回 (value, found)，found=false 表示该 key 在上游 WriteSet 中不存在。
 // DAG 多上游：先查当前 node，再遍历所有上游递归查。
 func (rs *retryScheduler) ReadOnChainPatch(txHash common.Hash, simNum int, address common.Address, key common.Hash) (common.Hash, bool) {
+	return rs.readOnChainPatchDepth(txHash, simNum, address, key, 0)
+}
+
+func (rs *retryScheduler) readOnChainPatchDepth(txHash common.Hash, simNum int, address common.Address, key common.Hash, depth int) (common.Hash, bool) {
+	if depth > 1000 {
+		utils.SSCLogger().Warn().
+			Str("txHash", txHash.Hex()).
+			Int("simNum", simNum).
+			Int("depth", depth).
+			Msg("[retryScheduler] ReadOnChainPatch: excessive depth, possible DAG cycle")
+		return common.Hash{}, false
+	}
+
 	pmVal, _ := rs.onChainPatches.Load(txHash)
 	pm, _ := pmVal.(*patchMap)
 	if pm == nil {
@@ -1605,7 +1638,7 @@ func (rs *retryScheduler) ReadOnChainPatch(txHash common.Hash, simNum int, addre
 	}
 	// 遍历所有上游递归查
 	for _, up := range node.UpstreamTxList {
-		if val, found := rs.ReadOnChainPatch(up.TxHash, up.SimulationNum, address, key); found {
+		if val, found := rs.readOnChainPatchDepth(up.TxHash, up.SimulationNum, address, key, depth+1); found {
 			return val, true
 		}
 	}

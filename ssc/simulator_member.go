@@ -106,7 +106,7 @@ func (sim *Simulator) HandleCXTCall(req *api.CXTCallSSCRequest) *api.CXTCallResu
 		executionType = vm.SimulationReCall
 	}
 
-	sim.timerMgr.StartPoolTimer(txHash, req.Epochs, header.NumberU64(), sim.committee.SelfShard)
+	sim.timerMgr.StartPoolTimer(txHash, req.SimulationNum, req.Epochs, header.NumberU64(), sim.committee.SelfShard)
 
 	callNode := api.NewCallNode(req.TxHash, req.CallIndex, sim.committee.SelfShard)
 	simState.CallForest.Insert(callNode)
@@ -115,7 +115,7 @@ func (sim *Simulator) HandleCXTCall(req *api.CXTCallSSCRequest) *api.CXTCallResu
 	}()
 
 	// create sscvm instance — 需要 sscService 作为 api.Service
-	vmCtx := core.NewSSCVMContext(req.Caller, txHash, req.CallIndex, req.GasPrice, header, sim.bc, nil)
+	vmCtx := core.NewSSCVMContext(req.Caller, txHash, req.SimulationNum, req.CallIndex, req.GasPrice, header, sim.bc, nil)
 	sscvm := vm.NewSSCVM(vmCtx, stateDB, chainConfig, *vmConfig, sim.sscService, executionType)
 
 	utils.SSCLogger().Debug().Str("txHash", txHash.Hex()).Msgf("call contract with %s, callIndex=%s, simulationNum=%d",
@@ -998,7 +998,7 @@ func (sim *Simulator) HandleSimulateRequest(ctx context.Context, req *api.CXTSim
 	chainConfig := sim.bc.Config()
 	vmConfig := sim.bc.GetVMConfig()
 
-	sim.timerMgr.StartPoolTimer(txHash, req.Epochs, header.NumberU64(), sim.committee.SelfShard)
+	sim.timerMgr.StartPoolTimer(txHash, req.SimulationNum, req.Epochs, header.NumberU64(), sim.committee.SelfShard)
 
 	var (
 		gp            *core.GasPool
@@ -1040,7 +1040,7 @@ func (sim *Simulator) HandleSimulateRequest(ctx context.Context, req *api.CXTSim
 		Msg("simulate contract with sscvm")
 
 	var ret *api.CXTSimulationResult
-	vmCtx := core.NewSSCVMContext(msg.From(), tx.Hash(), api.CallIndex{}, tx.GasPrice(), header, sim.bc, req.Author)
+	vmCtx := core.NewSSCVMContext(msg.From(), tx.Hash(), 0, api.CallIndex{}, tx.GasPrice(), header, sim.bc, req.Author)
 	vmCtx.TxType = types.CXTransaction
 	sscvm := vm.NewSSCVM(vmCtx, stateDB, chainConfig, *vmConfig, sim.sscService, executionType)
 	result, err := core.NewSSCStateTransition(sscvm, msg, gp).TransitionDb()

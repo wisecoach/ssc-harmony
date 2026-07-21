@@ -313,6 +313,7 @@ type TimeoutConfig struct {
 	MaxRetriesTotal      uint64 `json:"max_retries_total" yaml:"max_retries_total"`             // max total retries before giving up
 	ForceSimulation      bool   `json:"force_simulation" yaml:"force_simulation"`               // continue execution on lock conflict, get full RWSet
 	EnableLockOnConflict bool   `json:"enable_lock_on_conflict" yaml:"enable_lock_on_conflict"` // lock conflict callState via lockStateWithExecution before CallForRetry
+	EnableParallelBatch  bool   `json:"enable_parallel_batch" yaml:"enable_parallel_batch"`     // batch parallel verify SimTxs (互斥 EnableLockOnConflict)
 }
 
 type ReputationConfig struct {

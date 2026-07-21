@@ -258,7 +258,11 @@ func (vm *SSCVM) Call(caller ContractRef, addr common.Address, input []byte, gas
 func (vm *SSCVM) CrossCall(targetShardId uint32, callerAddr common.Address, addr common.Address, input []byte, gas uint64, value *big.Int) (ret []byte, leftOverGas uint64, err error) {
 	// get result from simulation if ExecutionType is ExecutionVerify or LockExecution
 	if vm.ExecutionType == ExecutionVerify || vm.ExecutionType == LockExecution {
-		ret, leftOverGas, err = vm.SSCService.GetResult(vm.Context.TxHash, vm.Context.CrossCallIndex)
+		utils.SSCLogger().Info().
+			Str("txHash", vm.Context.TxHash.Hex()).
+			Str("callIndex", vm.Context.CrossCallIndex.ToString()).
+			Msg("CrossCall: calling GetResult for verify")
+		ret, leftOverGas, err = vm.SSCService.GetResult(vm.Context.TxHash, vm.Context.SimulationNum, vm.Context.CrossCallIndex)
 		return
 	}
 
@@ -783,9 +787,9 @@ func (vm *SSCVM) transfer_RV(from common.Address, to common.Address, amount *big
 func (vm *SSCVM) transfer_EV(from common.Address, to common.Address, amount *big.Int, transferType TransferType) {
 	txHash := vm.Context.TxHash
 	if transferType == Internal {
-		vm.SSCService.SubSimuBalance(txHash, vm.Context.CrossCallIndex, from, amount)
+		vm.SSCService.SubSimuBalance(txHash, vm.Context.SimulationNum, vm.Context.CrossCallIndex, from, amount)
 	}
-	vm.SSCService.AddSimuBalance(txHash, vm.Context.CrossCallIndex, to, amount)
+	vm.SSCService.AddSimuBalance(txHash, vm.Context.SimulationNum, vm.Context.CrossCallIndex, to, amount)
 }
 
 func (vm *SSCVM) CanTransfer(from common.Address, amount *big.Int, transferType TransferType) bool {

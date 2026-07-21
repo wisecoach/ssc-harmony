@@ -935,6 +935,7 @@ ssc_config:
     max_retries_total: 5
     force_simulation: true
     enable_lock_on_conflict: false
+    enable_parallel_batch: true
   chain: null
   reputation:
     sl_file_size: 1000

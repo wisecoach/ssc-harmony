@@ -167,7 +167,7 @@ func (w *Worker) CommitSSCTransactions(
 		sender := from.Hex()
 		txDur := time.Since(txStart)
 
-		utils.SSCLogger().Debug().
+		utils.SSCLogger().Info().
 			Str("txHash", tx.Hash().Hex()).
 			Str("sender", sender).
 			Uint64("nonce", tx.Nonce()).
@@ -175,6 +175,7 @@ func (w *Worker) CommitSSCTransactions(
 			Str("duration", txDur.String()).
 			Int("count", count).
 			Str("loop", "CommitSSCTransactions").
+			Str("txType", classifySSCtx(tx)).
 			Msg("SSC tx commit timing")
 
 		switch err {
@@ -315,10 +316,9 @@ func (w *Worker) CommitSortedTransactions(
 
 // CommitTransactions commits transactions for new block.
 func (w *Worker) CommitTransactions(
-	pendingSSCTxs map[common.Address]types.Transactions,
-	pendingNormal map[common.Address]types.Transactions,
+	pendingPoolTxs map[common.Address]types.PoolTransactions,
+	sscAddrSet map[common.Address]bool,
 	pendingStaking staking.StakingTransactions, coinbase common.Address,
-	pendingCRTxs map[common.Address]types.Transactions,
 ) error {
 	startTime := time.Now()
 	if w.current.gasPool == nil {
@@ -362,8 +362,50 @@ func (w *Worker) CommitTransactions(
 	remaining := 500
 	crTxn := 0
 	simTxn := 0
+	slTxn := 0
+	neTxn := 0
+	otherTxn := 0
 	normalTxn := 0
 	remainingTime := time.Millisecond * 1000
+
+	// 按 To() 地址 + sender 地址分类交易
+	//   To() == CxtCommitOrRollbackAddr → CR Tx（最高优先级）
+	//   To() == SimulationCommitAddr → SimTx（后调 BatchVerifySimulations）
+	//   To() == SLOpinionAddr → SL Upload Tx
+	//   To() == NewEpochAddr → NewEpoch Tx
+	//   sender in sscAddrSet → 其他 SSC Tx
+	//   else → plain tx (CommitSortedTransactions)
+	pendingCRTxs := make(map[common.Address]types.Transactions)
+	pendingSimTxs := make(map[common.Address]types.Transactions)
+	pendingSLTxs := make(map[common.Address]types.Transactions)
+	pendingNewEpochTxs := make(map[common.Address]types.Transactions)
+	pendingOtherSSCTxs := make(map[common.Address]types.Transactions)
+	pendingNormal := make(map[common.Address]types.Transactions)
+	for addr, poolTxs := range pendingPoolTxs {
+		_, isSSCAddr := sscAddrSet[addr]
+		for _, tx := range poolTxs {
+			t, ok := tx.(*types.Transaction)
+			if !ok {
+				continue
+			}
+			to := t.To()
+			if to == nil {
+				pendingNormal[addr] = append(pendingNormal[addr], t)
+			} else if bytes.Equal(to.Bytes(), vm.CxtCommitOrRollbackAddr.Bytes()) {
+				pendingCRTxs[addr] = append(pendingCRTxs[addr], t)
+			} else if bytes.Equal(to.Bytes(), vm.SimulationCommitAddr.Bytes()) {
+				pendingSimTxs[addr] = append(pendingSimTxs[addr], t)
+			} else if bytes.Equal(to.Bytes(), vm.SLOpinionAddr.Bytes()) {
+				pendingSLTxs[addr] = append(pendingSLTxs[addr], t)
+			} else if bytes.Equal(to.Bytes(), vm.NewEpochAddr.Bytes()) {
+				pendingNewEpochTxs[addr] = append(pendingNewEpochTxs[addr], t)
+			} else if isSSCAddr {
+				pendingOtherSSCTxs[addr] = append(pendingOtherSSCTxs[addr], t)
+			} else {
+				pendingNormal[addr] = append(pendingNormal[addr], t)
+			}
+		}
+	}
 
 	// 1. CommitOrRollbackTx 最高优先级
 	if len(pendingCRTxs) > 0 {
@@ -381,23 +423,84 @@ func (w *Worker) CommitTransactions(
 		remaining -= crTxn
 	}
 
-	// 2. 其他 SSC 交易
-	sscTxns := types.NewTransactionsByPriceAndNonce(w.current.signer, w.current.ethSigner, pendingSSCTxs)
-	normalTxns := types.NewTransactionsByPriceAndNonce(w.current.signer, w.current.ethSigner, pendingNormal)
-
-	sscTxAddrs := make([]common.Address, 0)
-	for address := range pendingSSCTxs {
-		sscTxAddrs = append(sscTxAddrs, address)
-	}
-	utils.Logger().Info().Uint64("blockNum", w.current.header.NumberU64()).Int("txn", len(pendingSSCTxs)).Interface("addrs", sscTxAddrs).Str("duration", time.Since(startTime).String()).Msg("Leader apply ssctxs for duration")
-	if remaining > 0 {
+	// 2. SimTx — 单独处理，处理完后调 BatchVerifySimulations
+	if len(pendingSimTxs) > 0 {
+		simNetTxns := types.NewTransactionsByPriceAndNonce(w.current.signer, w.current.ethSigner, pendingSimTxs)
+		utils.Logger().Info().Uint64("blockNum", w.current.header.NumberU64()).Int("txn", len(pendingSimTxs)).Msg("Leader apply SimTx txns")
 		before := len(w.current.txs)
 		beginTime := time.Now()
-		w.CommitSSCTransactions(sscTxns, coinbase, remaining, remainingTime)
+		w.CommitSSCTransactions(simNetTxns, coinbase, remaining, remainingTime)
 		remainingTime -= time.Since(beginTime)
 		simTxn = len(w.current.txs) - before
 		remaining -= simTxn
+
+		// SimTx 处理完成后，统一验证该块收集的 SimTxs
+		if w.sscService != nil && w.sscService.IsParallelBatchEnabled() {
+			type batchCollector interface {
+				PendingBatchSimulations() []*api.CXTSimulation
+			}
+			if collector, ok := w.sscService.(batchCollector); ok {
+				if simPtrs := collector.PendingBatchSimulations(); len(simPtrs) > 0 {
+					sims := make([]api.CXTSimulation, len(simPtrs))
+					for i, p := range simPtrs {
+						sims[i] = *p
+					}
+					utils.SSCLogger().Info().Int("batchSize", len(sims)).
+						Msg("BatchVerifySimulations: processing batch after SimTx")
+					w.sscService.BatchVerifySimulations(sims, w.current.state, w.current.header)
+				}
+			}
+		}
 	}
+
+	// 3. SL Upload Tx
+	if len(pendingSLTxs) > 0 {
+		slTxns := types.NewTransactionsByPriceAndNonce(w.current.signer, w.current.ethSigner, pendingSLTxs)
+		utils.Logger().Info().Uint64("blockNum", w.current.header.NumberU64()).Int("txn", len(pendingSLTxs)).Msg("Leader apply SL Upload txns")
+		if remaining > 0 {
+			before := len(w.current.txs)
+			beginTime := time.Now()
+			w.CommitSSCTransactions(slTxns, coinbase, remaining, remainingTime)
+			remainingTime -= time.Since(beginTime)
+			slTxn = len(w.current.txs) - before
+			remaining -= slTxn
+		}
+	}
+
+	// 4. NewEpoch Tx
+	if len(pendingNewEpochTxs) > 0 {
+		neTxns := types.NewTransactionsByPriceAndNonce(w.current.signer, w.current.ethSigner, pendingNewEpochTxs)
+		utils.Logger().Info().Uint64("blockNum", w.current.header.NumberU64()).Int("txn", len(pendingNewEpochTxs)).Msg("Leader apply NewEpoch txns")
+		if remaining > 0 {
+			before := len(w.current.txs)
+			beginTime := time.Now()
+			w.CommitSSCTransactions(neTxns, coinbase, remaining, remainingTime)
+			remainingTime -= time.Since(beginTime)
+			neTxn = len(w.current.txs) - before
+			remaining -= neTxn
+		}
+	}
+
+	// 5. 其他 SSC Tx
+	if len(pendingOtherSSCTxs) > 0 {
+		otherTxns := types.NewTransactionsByPriceAndNonce(w.current.signer, w.current.ethSigner, pendingOtherSSCTxs)
+		sscTxAddrs := make([]common.Address, 0)
+		for address := range pendingOtherSSCTxs {
+			sscTxAddrs = append(sscTxAddrs, address)
+		}
+		utils.Logger().Info().Uint64("blockNum", w.current.header.NumberU64()).Int("txn", len(pendingOtherSSCTxs)).Interface("addrs", sscTxAddrs).Str("duration", time.Since(startTime).String()).Msg("Leader apply other ssctxs for duration")
+		if remaining > 0 {
+			before := len(w.current.txs)
+			beginTime := time.Now()
+			w.CommitSSCTransactions(otherTxns, coinbase, remaining, remainingTime)
+			remainingTime -= time.Since(beginTime)
+			otherTxn = len(w.current.txs) - before
+			remaining -= otherTxn
+		}
+	}
+
+	// 6. Normal 交易
+	normalTxns := types.NewTransactionsByPriceAndNonce(w.current.signer, w.current.ethSigner, pendingNormal)
 
 	normalTxAddrs := make([]common.Address, 0)
 	for address := range pendingNormal {
@@ -449,6 +552,8 @@ func (w *Worker) CommitTransactions(
 		Int("newTxns", len(w.current.txs)).
 		Int("crTxn", crTxn).
 		Int("simTxn", simTxn).
+		Int("slTxn", slTxn).
+		Int("neTxn", neTxn).
 		Int("normalTxn", normalTxn).
 		Dur("duration", time.Since(startTime)).
 		Uint64("blockGasLimit", w.current.header.GasLimit()).
@@ -655,6 +760,26 @@ func (w *Worker) UpdateCurrent() (Environment, error) {
 // GetCurrentHeader returns the current header to propose
 func (w *Worker) GetCurrentHeader() *block.Header {
 	return w.current.header
+}
+
+// classifySSCtx 根据 To() 地址返回交易类型名称
+func classifySSCtx(tx *types.Transaction) string {
+	if tx.To() == nil {
+		return "normalTx"
+	}
+	addr := *tx.To()
+	switch addr {
+	case vm.SimulationCommitAddr:
+		return "SimTx"
+	case vm.CxtCommitOrRollbackAddr:
+		return "CRTx"
+	case vm.SLOpinionAddr:
+		return "SLTx"
+	case vm.NewEpochAddr:
+		return "NETx"
+	default:
+		return "otherSSC"
+	}
 }
 
 // makeCurrent creates a new environment for the current cycle.

@@ -175,6 +175,7 @@ type Context struct {
 
 	TxType         types.TransactionType
 	TxHash         common.Hash
+	SimulationNum  int
 	CrossCallIndex api.CallIndex
 
 	CreateValidator       CreateValidatorFunc

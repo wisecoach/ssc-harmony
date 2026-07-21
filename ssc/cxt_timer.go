@@ -11,6 +11,7 @@ import (
 
 type txInfo struct {
 	txHash        common.Hash
+	simNum        int
 	epochs        []api.Epoch
 	blockNum      uint64
 	originShardId uint32
@@ -43,7 +44,7 @@ type CXTTimerManager struct {
 
 // StartPoolTimer
 // from HandleSimulateRequest/HandleCXTCall to signSimulationCommit
-func (c *CXTTimerManager) StartPoolTimer(txHash common.Hash, epochs []api.Epoch, blockNum uint64, originShardId uint32) {
+func (c *CXTTimerManager) StartPoolTimer(txHash common.Hash, simNum int, epochs []api.Epoch, blockNum uint64, originShardId uint32) {
 	c.lock.Lock()
 	defer c.lock.Unlock()
 
@@ -66,6 +67,7 @@ func (c *CXTTimerManager) StartPoolTimer(txHash common.Hash, epochs []api.Epoch,
 		} else {
 			c.txs[txHash] = txInfo{
 				txHash:        txHash,
+				simNum:        simNum,
 				blockNum:      blockNum,
 				originShardId: originShardId,
 				poolTimeout:   poolTimeout,
@@ -95,7 +97,7 @@ func (c *CXTTimerManager) removePoolTx(txHash common.Hash) bool {
 	return false
 }
 
-func (c *CXTTimerManager) StartSp1Timer(txHash common.Hash, epochs []api.Epoch, blockNum uint64, originShardId uint32) {
+func (c *CXTTimerManager) StartSp1Timer(txHash common.Hash, simNum int, epochs []api.Epoch, blockNum uint64, originShardId uint32) {
 	c.lock.Lock()
 	defer c.lock.Unlock()
 
@@ -109,6 +111,7 @@ func (c *CXTTimerManager) StartSp1Timer(txHash common.Hash, epochs []api.Epoch, 
 		c.bkNum2txForSp1[sp1][txHash] = struct{}{}
 		c.txs[txHash] = txInfo{
 			txHash:        txHash,
+			simNum:        simNum,
 			blockNum:      blockNum,
 			originShardId: originShardId,
 			sp1:           sp1,

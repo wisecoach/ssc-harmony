@@ -419,7 +419,7 @@ func ApplyCXTTransaction(service api.Service, bc ChainContext, author *common.Ad
 	}
 	// if the transaction is a transaction need to be executed on chain
 	if vm.IsSSCAddrApplyOnChain(*tx.To()) {
-		vmCtx := NewSSCVMContext(msg.From(), tx.Hash(), api.CallIndex{}, tx.GasPrice(), header, bc, author)
+		vmCtx := NewSSCVMContext(msg.From(), tx.Hash(), 0, api.CallIndex{}, tx.GasPrice(), header, bc, author)
 		sscvm := vm.NewSSCVM(vmCtx, statedb, config, cfg, service, vm.Precompiled)
 		result, err := NewSSCStateTransition(sscvm, msg, gp).TransitionDb()
 		if err != nil {
@@ -478,7 +478,7 @@ func SimulateCXTransaction(service api.Service, bc ChainContext, author *common.
 	// SimulationCommit and CxtCommitOrRollback needs to be executed for every validator
 	if vm.IsSSCAddrApplyOnChain(*tx.To()) {
 		originNonce := statedb.GetNonce(msg.From())
-		vmCtx := NewSSCVMContext(msg.From(), tx.Hash(), api.CallIndex{}, tx.GasPrice(), header, bc, author)
+		vmCtx := NewSSCVMContext(msg.From(), tx.Hash(), 0, api.CallIndex{}, tx.GasPrice(), header, bc, author)
 		sscvm := vm.NewSSCVM(vmCtx, statedb, config, cfg, service, vm.Precompiled)
 		startTime := time.Now()
 		result, err := NewSSCStateTransition(sscvm, msg, gp).TransitionDb()
