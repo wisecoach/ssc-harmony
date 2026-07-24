@@ -1,0 +1,453 @@
+syntax = "proto3";
+package sscpb;
+
+option go_package = "./;sscpb";
+
+// ============================================================================
+// Common scalar types
+// ============================================================================
+
+// Empty is used for fire-and-forget RPC methods that return nothing.
+message Empty {}
+
+// Hash is a fixed-size byte slice (typically 32 bytes for common.Hash).
+message Hash { bytes val = 1; }
+
+// Address is a 20-byte EVM address.
+message Address { bytes val = 1; }
+
+// BigInt is a big-endian unsigned integer, matching big.Int.Bytes()/SetBytes().
+// Empty bytes means value 0. Negative values are not used in SSC.
+message BigInt { bytes val = 1; }
+
+// RLPBytes carries an RLP-encoded go-ethereum object (Transaction, Receipt, etc.).
+message RLPBytes { bytes data = 1; }
+
+// ============================================================================
+// Enums
+// ============================================================================
+
+enum SimulationCommitStatus {
+  SIM_COMMIT_OK = 0;
+  EXECUTION_FAILED = 1;
+  LOCK_CONFLICT = 2;
+  POOL_TIMEOUT = 3;
+}
+
+enum CXTCommitType {
+  TYPE_COMMIT = 0;
+  TYPE_ROLLBACK = 1;
+}
+
+enum CXTCommitReason {
+  REASON_SUCCESS = 0;
+  REASON_EXECUTION_FAILED = 1;
+  REASON_INVALID_SIMULATION = 2;
+  REASON_CONFLICT_RWSET_FAILED_LOCK = 3;
+  REASON_CONFLICT_RWSET_RECALL = 4;
+  REASON_CXT_TIMEOUT_FOR_SP1 = 5;
+  REASON_MAX_ON_CHAIN_RETRIES_EXCEEDED = 6;
+}
+
+enum InvalidSimulationType {
+  INVALID_SERIALIZATION = 0;
+  INVALID_SIGNATURE = 1;
+  INVALID_EXECUTION = 2;
+  CXT_TIMEOUT = 3;
+  MAX_RETRY_EXCEEDED = 4;
+}
+
+enum ConflictCondition {
+  CONDITION_SIMULATE = 0;
+  CONDITION_VERIFY = 1;
+}
+
+enum RetryStatus {
+  RETRY_ACTIVE = 0;
+  RETRY_CONSUMED = 1;
+  RETRY_PASSIVE = 2;
+  RETRY_WOUNDED = 3;
+}
+
+// ============================================================================
+// CallIndex — repeated int32, no wrapper message needed
+// ============================================================================
+
+// CallNodeData represents a node in the call tree.
+message CallNodeData {
+  repeated int32 call_index = 1;
+  uint32 shard_id = 2;
+  repeated CallNodeData children = 3;
+}
+
+// ============================================================================
+// Lock system types
+// ============================================================================
+
+message LockKey {
+  bytes address = 1;
+  bytes key = 2;
+}
+
+message StateKVPair {
+  bytes key = 1;
+  bytes value = 2;
+}
+
+message StateEntry {
+  bytes address = 1;
+  repeated StateKVPair state = 2;  // raw bytes key, no hex overhead
+  bytes balance = 3;               // nil = not present, empty = 0
+}
+
+message StateSet {
+  repeated StateEntry entries = 1;
+}
+
+message RWSet {
+  StateSet read_state = 1;
+  StateSet write_state = 2;
+  StateSet current_state = 3;
+}
+
+// ============================================================================
+// Message signatures
+// ============================================================================
+
+message BaseSSCMessage {
+  bytes signature = 1;
+  Address sender_addr = 2;
+  repeated uint64 epochs = 3;
+}
+
+message BaseBLSSignedMessage {
+  uint32 shard_id = 1;
+  bytes signatures = 2;
+  bytes bls_bitmap = 3;
+  repeated uint64 epochs = 4;
+}
+
+// ============================================================================
+// Simulation types
+// ============================================================================
+
+message CXTSimulationRequest {
+  uint64 block_num = 1;
+  repeated uint64 epochs = 2;
+  Hash tx_hash = 3;
+  int32 simulation_num = 4;
+  bytes author = 5;          // *Address — empty if nil
+  Hash block_hash = 6;
+  RLPBytes tx = 7;           // RLP-encoded *types.Transaction
+  Address from = 8;
+  uint64 gas_pool = 9;
+}
+
+message CXTSimulationResult {
+  BaseSSCMessage base = 1;
+  repeated uint32 related_shards = 2;
+  bytes result = 3;
+  RLPBytes receipt = 4;      // RLP-encoded *types.Receipt
+  uint64 used_gas = 5;
+  string err = 6;
+  CallNodeData tree_node = 7;
+  repeated LockKey conflict_keys = 8;
+}
+
+message CXTSimulationSSCResult {
+  repeated uint32 related_shards = 1;
+  bytes result = 2;
+  RLPBytes receipt = 3;
+  uint64 used_gas = 4;
+  string err = 5;
+  CallNodeData tree_node = 6;
+  repeated LockKey conflict_keys = 7;
+  BaseBLSSignedMessage base = 8;
+}
+
+message CXTSimulation {
+  int32 simulation_num = 1;
+  Hash tx_hash = 2;
+  uint64 nonce = 3;
+  Address sender = 4;
+  uint32 shard_id = 5;
+  uint32 origin_shard_id = 6;
+  repeated uint32 related_shards = 7;
+  repeated CXTCallState call_states = 8;
+  RWSet chain_patch = 9;
+  repeated TxSimKey upstream_tx_list = 10;
+  BaseBLSSignedMessage base = 11;
+}
+
+message CXTCallState {
+  repeated int32 call_index = 1;
+  CXTSimulationRequest top_request = 2;
+  CXTCallSSCRequest call_request = 3;
+  RWSet rw_set = 4;
+  repeated CXTCallSSCResult dependent_results = 5;
+  CXTCallSSCResult call_result = 6;
+  CXTSimulationSSCResult top_result = 7;
+}
+
+// ============================================================================
+// Cross-shard call types
+// ============================================================================
+
+message CXTCallRequest {
+  BaseSSCMessage base = 1;
+  uint32 origin_shard_id = 2;
+  uint32 from_shard_id = 3;
+  uint32 target_shard_id = 4;
+  int32 simulation_num = 5;
+  repeated uint32 related_shards = 6;
+  Hash tx_hash = 7;
+  uint64 nonce = 8;
+  bytes tx_sender = 9;
+  repeated int32 call_index = 10;
+  Address caller = 11;
+  Address addr = 12;
+  bytes input = 13;
+  uint64 gas = 14;
+  BigInt gas_price = 15;
+  BigInt value = 16;
+  bytes block_hash = 17;
+}
+
+message CXTCallSSCRequest {
+  uint32 origin_shard_id = 1;
+  uint32 from_shard_id = 2;
+  uint32 target_shard_id = 3;
+  int32 simulation_num = 4;
+  repeated uint32 related_shards = 5;
+  Hash tx_hash = 6;
+  uint64 nonce = 7;
+  bytes tx_sender = 8;
+  repeated int32 call_index = 9;
+  Address caller = 10;
+  Address addr = 11;
+  bytes input = 12;
+  uint64 gas = 13;
+  BigInt gas_price = 14;
+  BigInt value = 15;
+  BaseBLSSignedMessage base = 16;
+  Hash block_hash = 17;
+  uint64 block_num = 18;
+}
+
+message CXTCallResult {
+  Hash tx_hash = 1;
+  repeated int32 call_index = 2;
+  repeated uint32 related_shards = 3;
+  bytes result = 4;
+  uint64 left_over_gas = 5;
+  Hash block_hash = 6;
+  string err = 7;
+  CallNodeData tree_node = 8;
+  BaseSSCMessage base = 9;
+}
+
+message CXTCallSSCResult {
+  Hash tx_hash = 1;
+  repeated int32 call_index = 2;
+  repeated uint32 related_shards = 3;
+  bytes result = 4;
+  uint64 left_over_gas = 5;
+  Hash block_hash = 6;
+  string err = 7;
+  CallNodeData tree_node = 8;
+  BaseBLSSignedMessage base = 9;
+}
+
+// ============================================================================
+// Commit / Vote types
+// ============================================================================
+
+message SimulationCommit {
+  int32 simulation_num = 1;
+  Hash tx_hash = 2;
+  uint64 nonce = 3;
+  Address sender = 4;
+  repeated uint32 related_shards = 5;
+  bool commit = 6;
+  SimulationCommitStatus status = 7;
+  string reason = 8;
+  BaseBLSSignedMessage base = 9;
+}
+
+message CXTCommitVote {
+  BaseSSCMessage base = 1;
+  Hash tx_hash = 2;
+  int32 simulation_num = 3;
+  uint32 shard_id = 4;
+  uint32 origin_shard_id = 5;
+  CXTCommitType type = 6;
+  CXTCommitReason reason = 7;
+  bytes payload = 8;
+}
+
+message CXTCommitSSCVote {
+  Hash tx_hash = 1;
+  int32 simulation_num = 2;
+  uint32 shard_id = 3;
+  uint32 origin_shard_id = 4;
+  CXTCommitType type = 5;
+  CXTCommitReason reason = 6;
+  bytes payload = 7;
+  BaseBLSSignedMessage base = 8;
+}
+
+message CXTCommitProof {
+  BaseSSCMessage base = 1;
+  Hash tx_hash = 2;
+  int32 simulation_num = 3;
+  CXTCommitType type = 4;
+  CXTCommitReason reason = 5;
+  uint32 origin_shard = 6;
+  repeated uint32 related_shards = 7;
+  repeated CXTCommitSSCVote votes = 8;
+}
+
+// ============================================================================
+// Retry types
+// ============================================================================
+
+message TxSimKey {
+  Hash tx_hash = 1;
+  int32 simulation_num = 2;
+}
+
+message RetrySignal {
+  Hash tx_hash = 1;
+  uint32 from_shard = 2;
+  uint64 epoch = 3;
+  int32 simulation_num = 4;
+  ConflictCondition condition = 5;
+  bool ready = 6;
+  RWSet chain_patch = 7;
+}
+
+message RetrySignals {
+  uint32 origin_shard = 1;
+  uint32 from_shard = 2;
+  uint64 epoch = 3;
+  repeated RetrySignal signals = 4;
+}
+
+message RetryTx {
+  Hash tx_hash = 1;
+  repeated uint64 epochs = 2;
+  Address sender = 3;
+  uint64 nonce = 4;
+  uint64 gas_price = 5;
+  uint32 origin_shard_id = 6;
+  repeated LockKey read_set = 7;
+  repeated LockKey write_set = 8;
+  repeated uint32 related_shards = 9;
+  int32 simulation_num = 10;
+  ConflictCondition condition = 11;
+  RetryStatus status = 12;
+}
+
+message RetryCommitResp {
+  Hash tx_hash = 1;
+  bool locked = 2;
+  bool on_chain_lock_conflict = 3;
+}
+
+// ============================================================================
+// Other types
+// ============================================================================
+
+message Priority {
+  uint64 nonce = 1;
+  uint32 origin_shard_id = 2;
+  Hash tx_hash = 3;
+}
+
+message ChainNode {
+  Hash tx_hash = 1;
+  int32 simulation_num = 2;
+  RWSet patch = 3;
+  repeated TxSimKey upstream_tx_list = 4;
+}
+
+message NewEpoch {
+  bytes committee = 1;  // JSON-serialized ShardSimulateCommittee
+}
+
+message HandleNewEpochRequest {
+  NewEpoch new_epoch = 1;
+  uint64 block_num = 2;
+}
+
+message SLTestRequest {
+  bytes test_file = 1;
+  int32 difficulty = 2;
+}
+
+message SLTestResult {
+  uint64 result = 1;
+  string error = 2;
+}
+
+// ============================================================================
+// gRPC Service definitions
+// ============================================================================
+
+service SSCShardService {
+  // Leader → Members (broadcast), returns signed result
+  rpc StartSimulateCXTransaction(CXTSimulationRequest) returns (CXTSimulationSSCResult);
+
+  // Leader → Member, member executes simulation
+  rpc HandleSimulateRequest(CXTSimulationRequest) returns (CXTSimulationResult);
+
+  // Member calls back to leader of target shard for cross-shard call
+  rpc RequestCallCXT(CXTCallRequest) returns (CXTCallSSCResult);
+
+  // Leader → Member, handle cross-shard call execution
+  rpc HandleCXTCall(CXTCallSSCRequest) returns (CXTCallResult);
+
+  // Leader → Members, request BLS signing of a simulation commit
+  rpc SignSimulationCommit(SimulationCommit) returns (Bytes);
+  rpc SignCXTSimulation(CXTSimulation) returns (Bytes);
+
+  // Member → Leader, submit commit vote
+  rpc HandleCommitVote(CXTCommitVote) returns (Empty);
+
+  // Reputation / SL test
+  rpc SLTest(SLTestRequest) returns (SLTestResult);
+
+  // Retry pool management
+  rpc AddRetryTx(RetryTx) returns (Empty);
+  rpc AddToPassivePool(Hash) returns (Empty);
+  rpc RetryCommit(Hash) returns (RetryCommitResp);
+  rpc RetryCancel(Hash) returns (Empty);
+
+  // Epoch transition
+  rpc HandleNewEpoch(HandleNewEpochRequest) returns (Empty);
+}
+
+service SSCCrossService {
+  // Cross-shard: leader → target shard leader, execute SSC call
+  rpc HandleCXTSSCCall(CXTCallSSCRequest) returns (CXTCallSSCResult);
+
+  // Cross-shard: commit simulation to related shards
+  rpc CommitSimulation(SimulationCommit) returns (Empty);
+
+  // Cross-shard: handle commit SSC vote from another shard
+  rpc HandleCXTCommitSSCVote(CXTCommitSSCVote) returns (Empty);
+
+  // Cross-shard: handle commit proof
+  rpc HandleCXTCommitProof(CXTCommitProof) returns (Empty);
+
+  // Cross-shard: signal re-simulation
+  rpc SignalReSimulation(RetrySignals) returns (Empty);
+
+  // Cross-shard: handle retry signal (with ChainPatch)
+  rpc HandleRetrySignal(RetrySignal) returns (Empty);
+}
+
+// Helper message for methods that return raw bytes (SignSimulationCommit, SignCXTSimulation).
+message Bytes {
+  bytes val = 1;
+}

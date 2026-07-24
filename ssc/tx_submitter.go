@@ -4,7 +4,9 @@ import (
 	"context"
 	"encoding/json"
 	"math/big"
+	"sync"
 	"sync/atomic"
+	"time"
 
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/harmony-one/harmony/core"
@@ -13,7 +15,7 @@ import (
 	"github.com/harmony-one/harmony/hmy"
 	"github.com/harmony-one/harmony/internal/utils"
 	"github.com/harmony-one/harmony/ssc/api"
-	"github.com/harmony-one/harmony/ssc/lm"
+	"github.com/harmony-one/harmony/ssc/perf"
 	"github.com/pkg/errors"
 )
 
@@ -78,7 +80,6 @@ type TxPriorityQueue struct {
 
 func NewTxSubmitter(selfShard uint32, simSigner, crSigner api.TxSigner, nodeAPI hmy.NodeAPI, config *api.Config) api.TxSubmitter {
 	t := &txSubmitter{
-		lock:      lm.NewMutex(),
 		selfShard: selfShard,
 		simSigner: simSigner,
 		crSigner:  crSigner,
@@ -101,7 +102,7 @@ func NewTxSubmitter(selfShard uint32, simSigner, crSigner api.TxSigner, nodeAPI 
 }
 
 type txSubmitter struct {
-	lock      lm.Mutex
+	lock      sync.Mutex
 	selfShard uint32
 	simSigner api.TxSigner
 	crSigner  api.TxSigner
@@ -351,6 +352,10 @@ func (t *txSubmitter) submitWithRetry(
 	retryCount int,
 	signer api.TxSigner,
 ) error {
+	t0 := time.Now()
+	defer func() {
+		perf.RecordPkg("txSubmitter", "submitWithRetry", "total", time.Since(t0))
+	}()
 	tx := txBuilder(nonce, gasPrice)
 	txHash := tx.Hash()
 	if needed, _ := vm.IntrinsicGas(tx.Data(), false, false, false, false); needed > tx.GasLimit() {

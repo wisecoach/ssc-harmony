@@ -10,6 +10,7 @@ import (
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/harmony-one/harmony/internal/utils"
 	"github.com/harmony-one/harmony/ssc/api"
+	"github.com/harmony-one/harmony/ssc/perf"
 	"github.com/pkg/errors"
 )
 
@@ -138,6 +139,10 @@ func (s *stateLocker) RLockable(key api.LockKey, txHash common.Hash) error {
 
 // Lockable 检查写锁是否可以获取（不产生实际上锁）。
 func (s *stateLocker) Lockable(key api.LockKey, txHash common.Hash) error {
+	t0 := time.Now()
+	defer func() {
+		perf.RecordPkg("stateLock", "Lockable", "checkLock", time.Since(t0))
+	}()
 	// 检查全局 lockedStates（sync.Map，无锁）
 	if err := s.globalCheckLock(key, txHash, false); err != nil {
 		s.sscService.stats.LockableFailBase.Add(1)
@@ -269,6 +274,10 @@ func (s *stateLocker) RevertToSnapshot(targetId int) {
 // CommitTx 提交一个交易，释放其在 pendingStates 中的所有锁。
 // 改后：使用 per-tx 锁（txLocks[txHash]），不同 txHash 不争抢。
 func (s *stateLocker) CommitTx(txHash common.Hash) error {
+	t0 := time.Now()
+	defer func() {
+		perf.RecordPkg("stateLock", "CommitTx", "commitTx", time.Since(t0))
+	}()
 	lk := s.getTxLock(txHash)
 	tLockWait := time.Now()
 	lk.Lock()
@@ -315,6 +324,10 @@ func (s *stateLocker) CommitTx(txHash common.Hash) error {
 
 // RollbackTx 回滚一个交易，恢复 stateDB 中的值并释放锁。
 func (s *stateLocker) RollbackTx(txHash common.Hash) error {
+	t0 := time.Now()
+	defer func() {
+		perf.RecordPkg("stateLock", "RollbackTx", "rollbackTx", time.Since(t0))
+	}()
 	lk := s.getTxLock(txHash)
 	tLockWait := time.Now()
 	lk.Lock()

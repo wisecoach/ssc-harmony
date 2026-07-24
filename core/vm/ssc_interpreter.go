@@ -21,6 +21,9 @@ type SSCVMInterpreter struct {
 
 	readOnly   bool   // Whether to throw on stateful modifications
 	returnData []byte // Last CALL's return data for subsequent reuse
+
+	// opCount counts total opcodes executed in this Run() invocation
+	opCount uint64
 }
 
 // NewEVMInterpreter returns a new instance of the Interpreter.
@@ -103,6 +106,9 @@ func (in *SSCVMInterpreter) Run(contract *Contract, input []byte, readOnly bool)
 		// enough Stack items available to perform the operation.
 		op = contract.GetOp(pc)
 		operation := in.cfg.JumpTable[op]
+		in.opCount++
+		in.vm.opCount++
+
 		if !operation.valid {
 			return nil, fmt.Errorf("invalid opcode 0x%x, pc=%d", int(op), pc)
 		}

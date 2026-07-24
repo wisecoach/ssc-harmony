@@ -1,12 +1,12 @@
 package ssc
 
 import (
+	"sync"
 	"time"
 
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/harmony-one/harmony/internal/utils"
 	"github.com/harmony-one/harmony/ssc/api"
-	"github.com/harmony-one/harmony/ssc/lm"
 )
 
 type txInfo struct {
@@ -20,7 +20,7 @@ type txInfo struct {
 
 func NewTimerManager(config *api.TimeoutConfig, service *sscService) *CXTTimerManager {
 	return &CXTTimerManager{
-		lock:                   lm.NewMutex(),
+		lock:                   sync.Mutex{},
 		service:                service,
 		selfShard:              service.SelfShard,
 		bkNum2txForSp1:         make(map[uint64]map[common.Hash]struct{}),
@@ -31,7 +31,7 @@ func NewTimerManager(config *api.TimeoutConfig, service *sscService) *CXTTimerMa
 }
 
 type CXTTimerManager struct {
-	lock                   lm.Mutex
+	lock                   sync.Mutex
 	service                *sscService
 	selfShard              uint32
 	bkNum2txForSp1         map[uint64]map[common.Hash]struct{}

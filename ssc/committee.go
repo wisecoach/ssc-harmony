@@ -18,7 +18,6 @@ import (
 	"github.com/harmony-one/harmony/crypto/bls"
 	"github.com/harmony-one/harmony/internal/utils"
 	"github.com/harmony-one/harmony/ssc/api"
-	"github.com/harmony-one/harmony/ssc/lm"
 	"github.com/pkg/errors"
 )
 
@@ -29,8 +28,8 @@ type CommitteeMechanism struct {
 	shardNum          uint32
 	lastEpochBlockNum uint64
 	CurrentEpoch      api.Epoch
-	cmLock            lm.RWMutex
-	epochWaitLock     lm.RWMutex
+	cmLock            sync.RWMutex
+	epochWaitLock     sync.RWMutex
 
 	Committees         map[uint32]map[api.Epoch]*api.ShardSimulateCommittee
 	LatestCommittees   map[uint32]*api.ShardSimulateCommittee
@@ -53,7 +52,7 @@ func NewCommitteeMechanism(ctx context.Context, selfAddr common.Address, selfSha
 		SelfShard:        selfShard,
 		shardNum:         0,
 		CurrentEpoch:     0,
-		cmLock:           lm.NewRWMutex(),
+		cmLock:           sync.RWMutex{},
 		Committees:       make(map[uint32]map[api.Epoch]*api.ShardSimulateCommittee),
 		LatestCommittees: make(map[uint32]*api.ShardSimulateCommittee),
 		isMember:         make(map[api.Epoch]bool),

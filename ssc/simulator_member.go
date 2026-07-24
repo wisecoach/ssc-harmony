@@ -13,6 +13,7 @@ import (
 	"github.com/harmony-one/harmony/core/vm"
 	"github.com/harmony-one/harmony/internal/utils"
 	"github.com/harmony-one/harmony/ssc/api"
+	"github.com/harmony-one/harmony/ssc/perf"
 )
 
 // ========================================================================
@@ -74,6 +75,7 @@ func (sim *Simulator) HandleCXTCall(req *api.CXTCallSSCRequest) *api.CXTCallResu
 
 	defer func() {
 		utils.SSCLogger().Debug().Str("txHash", txHash.Hex()).Str("callIndex", req.CallIndex.ToString()).Dur("cost", time.Since(startTime)).Msg("handle cxt call, end")
+		perf.RecordPkg("simMember", "HandleCXTCall", "total", time.Since(startTime))
 	}()
 
 	header := sim.bc.GetHeaderByHash(req.BlockHash)
@@ -935,6 +937,7 @@ func (sim *Simulator) HandleSimulateRequest(ctx context.Context, req *api.CXTSim
 	utils.SSCLogger().Info().Str("txHash", txHash.Hex()).Int("simulationNum", req.SimulationNum).Msg("handle simulate request, start")
 	defer func() {
 		utils.SSCLogger().Debug().Str("txHash", txHash.Hex()).Dur("cost", time.Since(startTime)).Msg("handle simulate request, end")
+		perf.RecordPkg("simMember", "HandleSimulateRequest", "total", time.Since(startTime))
 	}()
 	simuState, callState, err := sim.startSimulation(req)
 	if err != nil {

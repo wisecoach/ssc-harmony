@@ -7,6 +7,7 @@ import (
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/harmony-one/harmony/internal/utils"
 	"github.com/harmony-one/harmony/ssc/api"
+	"github.com/harmony-one/harmony/ssc/perf"
 )
 
 // CommitterStateAccessor 封装 Committer 需要的 simulationState 原子读写操作。
@@ -120,6 +121,7 @@ func (c *Committer) CommitOrRollbackWithProof(commitProofBytes []byte, stateDB a
 		Str("closeTx", tCloseTx.String()).
 		Str("total", total.String()).
 		Msg("CommitOrRollbackWithProof timing breakdown")
+	perf.RecordPkg("committer", "CommitOrRollbackWithProof", "total", total)
 
 	return nil
 }

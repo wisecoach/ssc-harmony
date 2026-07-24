@@ -167,7 +167,7 @@ func (w *Worker) CommitSSCTransactions(
 		sender := from.Hex()
 		txDur := time.Since(txStart)
 
-		utils.SSCLogger().Debug().
+		utils.SSCLogger().Info().
 			Str("txHash", tx.Hash().Hex()).
 			Str("sender", sender).
 			Uint64("nonce", tx.Nonce()).
@@ -390,7 +390,7 @@ func (w *Worker) CommitTransactions(
 		sscTxAddrs = append(sscTxAddrs, address)
 	}
 	utils.Logger().Info().Uint64("blockNum", w.current.header.NumberU64()).Int("txn", len(pendingSSCTxs)).Interface("addrs", sscTxAddrs).Str("duration", time.Since(startTime).String()).Msg("Leader apply ssctxs for duration")
-	if remaining > 0 {
+	if remaining > 0 && remainingTime > 0 {
 		before := len(w.current.txs)
 		beginTime := time.Now()
 		w.CommitSSCTransactions(sscTxns, coinbase, remaining, remainingTime)
@@ -404,7 +404,7 @@ func (w *Worker) CommitTransactions(
 		normalTxAddrs = append(normalTxAddrs, address)
 	}
 	utils.Logger().Info().Uint64("blockNum", w.current.header.NumberU64()).Int("txn", len(pendingNormal)).Interface("addrs", normalTxAddrs).Str("duration", time.Since(startTime).String()).Msg("Leader apply txs for duration")
-	if remaining > 0 {
+	if remaining > 0 && remainingTime > 0 {
 		before := len(w.current.txs)
 		beginTime := time.Now()
 		w.CommitSortedTransactions(normalTxns, coinbase, remaining, remainingTime)
@@ -522,7 +522,7 @@ func (w *Worker) commitTransaction(
 				}
 			}
 		}
-		utils.SSCLogger().Debug().
+		utils.SSCLogger().Info().
 			Str("txHash", tx.Hash().Hex()).
 			Uint64("blockNum", w.current.header.NumberU64()).
 			Str("txType", txType).

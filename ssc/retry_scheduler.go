@@ -12,6 +12,7 @@ import (
 	"github.com/harmony-one/harmony/core/types"
 	"github.com/harmony-one/harmony/internal/utils"
 	"github.com/harmony-one/harmony/ssc/api"
+	"github.com/harmony-one/harmony/ssc/perf"
 	"github.com/pkg/errors"
 )
 
@@ -489,6 +490,14 @@ func (rs *retryScheduler) AddToRetry(tx *api.RetryTx) {
 
 // OnBlockCommitted 在区块提交后调用，尝试提升重试池中的交易
 func (rs *retryScheduler) OnBlockCommitted(block *types.Block) {
+	t0 := time.Now()
+	t0Stale := t0
+	t0Cache := t0
+
+	defer func() {
+		perf.RecordPkg("retryScheduler", "OnBlockCommitted", "total", time.Since(t0))
+	}()
+
 	// 首先处理临时锁并获取释放的 key
 	releasedKeys := rs.tempLockView.OnBlockCommitted(block)
 
@@ -508,7 +517,11 @@ func (rs *retryScheduler) OnBlockCommitted(block *types.Block) {
 		rs.staleTxs.Delete(txHash)
 		return true
 	})
+	perf.RecordPkg("retryScheduler", "OnBlockCommitted", "staleCleanup", time.Since(t0Stale))
+
 	currentBlock := block.NumberU64()
+	t0Cache = time.Now()
+
 	// 缓存当前区块的 stateDB
 	// - 信号聚合时预检本分片 stateDB 锁状态（原有用途）
 	// - RetryCommit Phase 2 的 CheckLock（DSN-25 新增）
@@ -522,7 +535,9 @@ func (rs *retryScheduler) OnBlockCommitted(block *types.Block) {
 			rs.cachedBlockHash = block.Hash()
 		}
 	}
+	perf.RecordPkg("retryScheduler", "OnBlockCommitted", "cacheState", time.Since(t0Cache))
 
+	t0Query := time.Now()
 	shard2SignalReadyNum := make(map[uint32]int)
 	shard2Epoch2RetrySignals := make(map[uint32]map[api.Epoch]*api.RetrySignals)
 	for i := uint32(0); i < rs.state.ShardNum(); i++ {
@@ -536,7 +551,9 @@ func (rs *retryScheduler) OnBlockCommitted(block *types.Block) {
 	var selected int
 	var reservedKeys int
 	candidates := rs.querySubscribers(releasedKeys)
+	perf.RecordPkg("retryScheduler", "OnBlockCommitted", "querySubscribers", time.Since(t0Query))
 
+	t0Sort := time.Now()
 	// 按优先级排序：nonce 越小优先级越高
 	type prioTx struct {
 		txHash common.Hash
@@ -558,7 +575,9 @@ func (rs *retryScheduler) OnBlockCommitted(block *types.Block) {
 	sort.SliceStable(sorted, func(i, j int) bool {
 		return sorted[i].tx.Nonce < sorted[j].tx.Nonce
 	})
+	perf.RecordPkg("retryScheduler", "OnBlockCommitted", "sortCandidates", time.Since(t0Sort))
 
+	t0Reserve := time.Now()
 	// Reservation: 选中一笔 tx 后，锁定其所有 key，跳过依赖这些 key 的其他 tx
 	reservedKeySet := make(map[api.LockKey]struct{})
 	var selectedTx []prioTx
@@ -591,6 +610,7 @@ func (rs *retryScheduler) OnBlockCommitted(block *types.Block) {
 			reservedKeySet[key] = struct{}{}
 		}
 	}
+	perf.RecordPkg("retryScheduler", "OnBlockCommitted", "reservation", time.Since(t0Reserve))
 
 	utils.SSCLogger().Debug().
 		Int("candidateCount", len(candidates)).
@@ -598,6 +618,7 @@ func (rs *retryScheduler) OnBlockCommitted(block *types.Block) {
 		Int("reservedKeys", len(reservedKeySet)).
 		Msg("[retryScheduler] OnBlockCommitted: reservation completed")
 
+	t0CheckLock := time.Now()
 	for _, pt := range selectedTx {
 		txHash := pt.txHash
 		tx := pt.tx
@@ -654,7 +675,9 @@ func (rs *retryScheduler) OnBlockCommitted(block *types.Block) {
 		}
 		signals.Signals = append(signals.Signals, signal)
 	}
+	perf.RecordPkg("retryScheduler", "OnBlockCommitted", "stateCheckLock", time.Since(t0CheckLock))
 
+	t0Send := time.Now()
 	// 提交 promoted 交易到下一轮模拟
 	for _, epoch2Signals := range shard2Epoch2RetrySignals {
 		for _, signals := range epoch2Signals {
@@ -667,7 +690,9 @@ func (rs *retryScheduler) OnBlockCommitted(block *types.Block) {
 			}
 		}
 	}
+	perf.RecordPkg("retryScheduler", "OnBlockCommitted", "sendSignals", time.Since(t0Send))
 
+	t0Wound := time.Now()
 	// 恢复被 Wound 的交易（OnBlockCommitted 时重新激活）
 	var recoveredWounded []common.Hash
 	rs.woundedRetryTxs.Range(func(txHashVal, _ interface{}) bool {
@@ -685,7 +710,9 @@ func (rs *retryScheduler) OnBlockCommitted(block *types.Block) {
 		recoveredWounded = append(recoveredWounded, txHash)
 		return true
 	})
+	perf.RecordPkg("retryScheduler", "OnBlockCommitted", "woundedRecovery", time.Since(t0Wound))
 
+	t0HotKey := time.Now()
 	// 统计本区块 retryPool 的热 key 重复度：每个 key 被多少笔 tx 写
 	hotKeyStats := make(map[api.LockKey]int)
 	hotKeyReadStats := make(map[api.LockKey]int)
@@ -716,7 +743,12 @@ func (rs *retryScheduler) OnBlockCommitted(block *types.Block) {
 			hotWriteKeys++
 		}
 	}
+	_ = maxWriteContention
+	_ = maxReadContention
+	_ = hotWriteKeys
+	perf.RecordPkg("retryScheduler", "OnBlockCommitted", "hotKeyStats", time.Since(t0HotKey))
 
+	t0LockWait := time.Now()
 	// v2: 扫描 LockWait Pool — 使用已缓存的 currentStateDB 检查 stateDB 解锁
 	// currentStateDB 在 lock 外已缓存，这里只做 map 操作（在 rs.mu.Lock() 保护下）
 	if currentStateDB != nil {
@@ -761,7 +793,12 @@ func (rs *retryScheduler) OnBlockCommitted(block *types.Block) {
 			rs.state.CloseTransaction(txHash, false, api.PoolTimeout.String())
 		}
 	}
+	perf.RecordPkg("retryScheduler", "OnBlockCommitted", "lockWaitScan", time.Since(t0LockWait))
 
+	// 清理 expiredLockWait 中使用的变量
+	_ = expiredLockWait
+
+	t0Stats := time.Now()
 	// TLV + all system stats snapshot (Info level for experiment analysis)
 	wLocks, rLocks, txSets, wounded := rs.tempLockView.Stats()
 
@@ -774,10 +811,10 @@ func (rs *retryScheduler) OnBlockCommitted(block *types.Block) {
 	rs.consumedPatches.Range(func(_, _ any) bool { consumedCount++; return true })
 
 	// 重试系统
-	var retryCount, passiveCount, staleCount, reSimInFlightCount, woundedRetryCount int
+	var retryCount, passiveCount, staleCount2, reSimInFlightCount, woundedRetryCount int
 	rs.retryPool.Range(func(_, _ any) bool { retryCount++; return true })
 	rs.passivePool.Range(func(_, _ any) bool { passiveCount++; return true })
-	rs.staleTxs.Range(func(_, _ any) bool { staleCount++; return true })
+	rs.staleTxs.Range(func(_, _ any) bool { staleCount2++; return true })
 	rs.reSimInFlight.Range(func(_, _ any) bool { reSimInFlightCount++; return true })
 	rs.woundedRetryTxs.Range(func(_, _ any) bool { woundedRetryCount++; return true })
 
@@ -791,6 +828,10 @@ func (rs *retryScheduler) OnBlockCommitted(block *types.Block) {
 	if rs.state != nil && rs.state.LockStatesStats != nil {
 		globalLocked, globalRLocked, globalFinished, globalLockStart = rs.state.LockStatesStats()
 	}
+	perf.RecordPkg("retryScheduler", "OnBlockCommitted", "statsRange", time.Since(t0Stats))
+
+	_ = staleCount2
+	_ = wLocks
 
 	utils.SSCLogger().Info().
 		Uint64("blockNum", currentBlock).
@@ -808,7 +849,7 @@ func (rs *retryScheduler) OnBlockCommitted(block *types.Block) {
 		// Retry
 		Int("retryPool", retryCount).
 		Int("passivePool", passiveCount).
-		Int("staleTxs", staleCount).
+		Int("staleTxs", staleCount2).
 		Int("reSimInFlight", reSimInFlightCount).
 		Int("woundedRetryTxs", woundedRetryCount).
 		Int("lockWait", rs.lockWait.Len()).
@@ -1200,8 +1241,6 @@ func (rs *retryScheduler) RetryCommit(txHash common.Hash) *api.RetryCommitResp {
 
 	// Check if PatchPool has already consumed patches for this tx via OnPatchPoolUpdated.
 	// If so, the retryTx already has covering patches — skip TLV/stateDB locks.
-	// Otherwise, the just-committed SimTx's TLV locks would block TryLock even though
-	// the patches were already consumed and chain signal sent.
 	if _, consumed := rs.consumedPatches.Load(txHash); consumed {
 		chainRetryStats.SigRetryCommitPatchHit.Add(1)
 		rs.tempLockView.ClearWounded(txHash)
@@ -1220,7 +1259,9 @@ func (rs *retryScheduler) RetryCommit(txHash common.Hash) *api.RetryCommitResp {
 	// ──────────────────────────────────────────────
 	// Phase 1: TempLockView 锁竞争
 	// ──────────────────────────────────────────────
+	t0TLV := time.Now()
 	locked, wounded := rs.tempLockView.TryLockWithPriority(txHash, priority, retryTx.ReadSet, retryTx.WriteSet)
+	perf.RecordPkg("retryScheduler", "RetryCommit", "tlvTryLock", time.Since(t0TLV))
 	if wounded {
 		chainRetryStats.SigRetryCommitTryLockWounded.Add(1)
 		utils.SSCLogger().Debug().Str("txHash", txHash.Hex()).Msg("retryCommit: wounded by higher priority tx")
@@ -1238,11 +1279,14 @@ func (rs *retryScheduler) RetryCommit(txHash common.Hash) *api.RetryCommitResp {
 		// 取 ReadSet ∪ WriteSet 作为冲突 key 集（与 OnPatchPoolUpdated 对齐），
 		// 查 PatchPool 是否有 Patch 联合覆盖全部 key。
 		// 如果可以覆盖，则直接跳过 TLV 锁，用 Patch 中的值进行重试模拟。
+		t0Dag1 := time.Now()
 		allKeys := make([]api.LockKey, 0, len(retryTx.ReadSet)+len(retryTx.WriteSet))
 		allKeys = append(allKeys, retryTx.ReadSet...)
 		allKeys = append(allKeys, retryTx.WriteSet...)
 		patches := rs.findCoveringSet(allKeys)
+		perf.RecordPkg("retryScheduler", "RetryCommit", "dagSearchPhase1b", time.Since(t0Dag1))
 		if len(patches) > 0 {
+			t0Cons := time.Now()
 			var consumedTxHashes []common.Hash
 			var merged *api.RWSet
 			allConsumed := true
@@ -1256,6 +1300,7 @@ func (rs *retryScheduler) RetryCommit(txHash common.Hash) *api.RetryCommitResp {
 				merged = mergeRWSet(patch, merged)
 			}
 			if allConsumed {
+				perf.RecordPkg("retryScheduler", "RetryCommit", "dagConsumePhase1b", time.Since(t0Cons))
 				chainRetryStats.SigRetryCommitPatchHit.Add(1)
 				rs.state.SetChainPatch(txHash, merged)
 				rs.consumedPatches.Store(txHash, consumedTxHashes)
@@ -1279,6 +1324,7 @@ func (rs *retryScheduler) RetryCommit(txHash common.Hash) *api.RetryCommitResp {
 	// Phase 2: stateDB 真实锁检查
 	// ──────────────────────────────────────────────
 	// 优先使用 OnBlockCommitted 缓存的 stateDB（DSN-25）：与 StartReSimulation 使用同一版本
+	t0State := time.Now()
 	stateDB, ok := rs.getCachedStateDB()
 	if !ok {
 		// 缓存不可用（启动初期）→ fallback 到 live bc.State()
@@ -1310,6 +1356,7 @@ func (rs *retryScheduler) RetryCommit(txHash common.Hash) *api.RetryCommitResp {
 			conflictKeys = append(conflictKeys, key)
 		}
 	}
+	perf.RecordPkg("retryScheduler", "RetryCommit", "stateCheckLock", time.Since(t0State))
 	if tCheckLockDur := time.Since(tCheckLock); tCheckLockDur > 50*time.Millisecond {
 		utils.SSCLogger().Warn().Str("txHash", txHash.Hex()).
 			Dur("checkLock", tCheckLockDur).
@@ -1337,13 +1384,16 @@ func (rs *retryScheduler) RetryCommit(txHash common.Hash) *api.RetryCommitResp {
 	// DAG: 找一组 Patch 联合覆盖全部冲突 key
 	// 限制最多使用 maxPatches 个 Patch，避免过多 Patch 组合导致 state 不一致 → SimTx 失败
 	const maxPatches = 1
-	patches := rs.findCoveringSet(conflictKeys)
-	if len(patches) > 0 && len(patches) <= maxPatches {
+	t0Dag2 := time.Now()
+	patches2 := rs.findCoveringSet(conflictKeys)
+	perf.RecordPkg("retryScheduler", "RetryCommit", "dagSearchPhase2b", time.Since(t0Dag2))
+	if len(patches2) > 0 && len(patches2) <= maxPatches {
 		// 原子消费：逐个 TryConsume，任一失败则全部 Release
+		t0Cons2 := time.Now()
 		var consumedTxHashes []common.Hash
 		var merged *api.RWSet
 		allConsumed := true
-		for _, node := range patches {
+		for _, node := range patches2 {
 			patch := rs.tryConsumePatch(node.TxHash, txHash, priority)
 			if patch == nil {
 				allConsumed = false
@@ -1359,15 +1409,16 @@ func (rs *retryScheduler) RetryCommit(txHash common.Hash) *api.RetryCommitResp {
 			}
 			chainRetryStats.SigRetryCommitPatchMiss.Add(1)
 		} else {
+			perf.RecordPkg("retryScheduler", "RetryCommit", "dagConsumePhase2b", time.Since(t0Cons2))
 			// 全部消费成功
 			chainRetryStats.SigRetryCommitPatchHit.Add(1)
 			rs.state.SetChainPatch(txHash, merged)
 			rs.consumedPatches.Store(txHash, consumedTxHashes)
 			rs.tempLockView.ClearWounded(txHash)
-			utils.SSCLogger().Debug().Str("txHash", txHash.Hex()).
-				Int("patchCount", len(patches)).
-				Int("coveredKeys", len(conflictKeys)).
-				Msg("retryCommit: found DAG patches in PatchPool, skipping lock conflict")
+						utils.SSCLogger().Debug().Str("txHash", txHash.Hex()).
+							Int("patchCount", len(patches2)).
+							Int("coveredKeys", len(conflictKeys)).
+							Msg("retryCommit: found DAG patches in PatchPool, skipping lock conflict")
 			return &api.RetryCommitResp{Locked: true, TxHash: txHash}
 		}
 	}
@@ -1538,6 +1589,25 @@ func (rs *retryScheduler) GetUpstreamTxRef(txHash common.Hash) []api.TxSimKey {
 		}
 	}
 	return nil
+}
+
+// AddPatch 将 SimTx 的 ChainPatch 以 ChainNode 形式存入链下 patches。
+// Leader 在提交 SimTx 前调用，供本地 chainNextSim 即刻查询。
+func (rs *retryScheduler) AddPatch(txHash common.Hash, simNum int, chainPatch *api.RWSet, upstreamTxList []api.TxSimKey) {
+	pmVal, _ := rs.patches.LoadOrStore(txHash, &patchMap{m: make(map[int]*api.ChainNode)})
+	pm := pmVal.(*patchMap)
+	pm.mu.Lock()
+	pm.m[simNum] = &api.ChainNode{
+		TxHash:         txHash,
+		SimulationNum:  simNum,
+		Patch:          chainPatch,
+		UpstreamTxList: upstreamTxList,
+	}
+	pm.mu.Unlock()
+	utils.SSCLogger().Debug().Str("txHash", txHash.Hex()).
+		Int("simNum", simNum).
+		Int("upstreamCount", len(upstreamTxList)).
+		Msg("AddPatch: stored to leader-local patches")
 }
 
 // AddOnChainPatch 将 SimTx 的 ChainPatch 以 ChainNode 形式存入 onChainPatches。

@@ -17,6 +17,7 @@ import (
 	"github.com/harmony-one/harmony/core/vm"
 	"github.com/harmony-one/harmony/internal/utils"
 	"github.com/harmony-one/harmony/ssc/api"
+	"github.com/harmony-one/harmony/ssc/perf"
 )
 
 // VerifyCommunicator 封装 Verifier 需要的跨节点通信和签名能力。
@@ -91,6 +92,8 @@ type callVerifyContext struct {
 	currentState     *api.StateSet
 	callFrame        *api.CallFrame
 	dependentResults []*api.CXTCallSSCResult
+	simuStateCount   int
+	simuStateDur     time.Duration
 }
 
 // loadSubCtx 从根上下文的内嵌 subCtx 中加载子验证上下文。
@@ -252,12 +255,6 @@ func (v *Verifier) VerifySimulation(simulationBytes []byte, stateDB api.StateDB,
 	tVs0 := time.Now()
 	var tVsPatch, tVsLockCheck, tVsExec, tVsLockState time.Duration
 
-	// v6: 所有节点收到 SimTx 后，将 ChainPatch 存入 onChainPatches
-	if simulation.ChainPatch != nil {
-		v.retrySchd.AddOnChainPatch(txHash, simulation.SimulationNum, simulation.ChainPatch,
-			simulation.UpstreamTxList)
-	}
-
 	if v.committee.SelfShard == simulation.OriginShardId {
 		v.timerMgr.StartSp1Timer(txHash, simulation.Epochs, header.NumberU64(), v.committee.SelfShard)
 	}
@@ -279,7 +276,20 @@ func (v *Verifier) VerifySimulation(simulationBytes []byte, stateDB api.StateDB,
 	}
 
 	defer func() {
+		if tVsExec > time.Millisecond*100 {
+			utils.SSCLogger().Info().Str("txHash", txHash.String()).
+				Int("size", len(simulationBytes)).
+				Int("callStates", len(simulation.CallStates)).
+				Dur("total", time.Since(tVs0)).
+				Dur("chainPatch", tVsPatch).
+				Dur("lockCheck", tVsLockCheck).
+				Dur("execVerify", tVsExec).
+				Dur("lockState", tVsLockState).
+				Msg("VerifySimulation timing breakdown, abnormal")
+		}
 		utils.SSCLogger().Info().Str("txHash", txHash.String()).
+			Int("size", len(simulationBytes)).
+			Int("callStates", len(simulation.CallStates)).
 			Dur("total", time.Since(tVs0)).
 			Dur("chainPatch", tVsPatch).
 			Dur("lockCheck", tVsLockCheck).
@@ -414,6 +424,7 @@ CallStates:
 		}
 	}
 	tVsLockCheck = time.Since(tVs0)
+	perf.RecordPkg("verify", "VerifySimulation", "lockCheck", tVsLockCheck)
 
 	// execErr 为 nil 才需要继续执行 Phase 2/3
 	if execErr == nil {
@@ -466,6 +477,7 @@ CallStates:
 
 		// Phase 2.5: 检查 execVerify 结果
 		tVsExec = time.Since(tVs0)
+		perf.RecordPkg("verify", "VerifySimulation", "execVerify", tVsExec)
 		for _, r := range results {
 			if r.err != nil {
 				execErr = r.err
@@ -571,7 +583,14 @@ CallStates:
 		for _, callState := range simulation.CallStates {
 			v.lockStateWithRWSet(txHash, callState, stateDB)
 		}
+
+		// 验证通过后将 ChainPatch 存入 onChainPatches，供下游链式交易查询
+		if simulation.ChainPatch != nil {
+			v.retrySchd.AddOnChainPatch(txHash, simulation.SimulationNum, simulation.ChainPatch,
+				simulation.UpstreamTxList)
+		}
 		tVsLockState = time.Since(tVs0)
+		perf.RecordPkg("verify", "VerifySimulation", "lockState", tVsLockState)
 		if v.committee.SelfShard == simulation.OriginShardId && v.committee.IsLeader(simulation.Epochs[v.committee.SelfShard]) {
 			v.stats.setCxtStage(txHash, 4)
 		}
@@ -643,7 +662,7 @@ func (v *Verifier) callForRetry(txHash common.Hash, simulation *api.CXTSimulatio
 		return
 	}
 	v.stats.setCxtStage(txHash, 4)
-	v.retrySchd.CallForRetry(&api.RetryTx{
+	go v.retrySchd.CallForRetry(&api.RetryTx{
 		TxHash:        txHash,
 		Epochs:        simulation.Epochs,
 		RelatedShards: simulation.RelatedShards,
@@ -731,9 +750,19 @@ func (v *Verifier) verifyExecuteForCallState(simulation *api.CXTSimulation, txHa
 	vmCtx := core.NewSSCVMContext(origin, txHash, callIndex, gasPrice, header, v.bc, nil)
 	sscvm := vm.NewSSCVM(vmCtx, stateDB, chainConfig, *vmConfig, v.vmService, vm.ExecutionVerify)
 
+	tCall0 := time.Now()
 	var ret []byte
 	var err error
 	ret, _, err = sscvm.Call(sender, addr, input, gas, value)
+	tCall := time.Since(tCall0)
+	execCtx := v.loadSubCtx(txHash, callIndex)
+	utils.SSCLogger().Debug().Str("txHash", txHash.Hex()).
+		Dur("call", tCall).
+		Str("addr", addr.Hex()).
+		Int("inputLen", len(input)).
+		Int("simuStateCount", execCtx.simuStateCount).
+		Dur("simuStateDur", execCtx.simuStateDur).
+		Msg("verifyExecuteForCallState: sscvm.Call timing")
 	if err != nil {
 		utils.SSCLogger().Error().Err(err).Str("txHash", txHash.Hex()).Msg("verify callState failed")
 		return err
@@ -743,7 +772,7 @@ func (v *Verifier) verifyExecuteForCallState(simulation *api.CXTSimulation, txHa
 		return fmt.Errorf("simulation result is not equal to execution result, expected: %v, got: %v", simuRet, ret)
 	}
 	// 从子上下文读取执行结果
-	execCtx := v.loadSubCtx(txHash, callIndex)
+	execCtx = v.loadSubCtx(txHash, callIndex)
 	if execCtx != nil {
 		if !execCtx.currentState.Equal(callState.RWSet.WriteState) {
 			return fmt.Errorf("simulation write set is not equal to execution write set, callIndex=%v, pc=%d, expected: %v, got: %v",
@@ -1005,10 +1034,13 @@ func (v *Verifier) GetSimuState(txHash common.Hash, callIndex api.CallIndex, add
 func (v *Verifier) SetSimuState(txHash common.Hash, callIndex api.CallIndex, address common.Address, key common.Hash, value common.Hash) error {
 	// 优先查子上下文（并行验证阶段）
 	if subCtx := v.loadSubCtx(txHash, callIndex); subCtx != nil {
+		t0 := time.Now()
 		if subCtx.currentState.State[address] == nil {
 			subCtx.currentState.State[address] = make(map[common.Hash]common.Hash)
 		}
 		subCtx.currentState.State[address][key] = value
+		subCtx.simuStateCount++
+		subCtx.simuStateDur += time.Since(t0)
 		return nil
 	}
 

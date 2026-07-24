@@ -12,6 +12,7 @@ import (
 	"github.com/harmony-one/harmony/core/vm"
 	"github.com/harmony-one/harmony/internal/utils"
 	"github.com/harmony-one/harmony/ssc/api"
+	"github.com/harmony-one/harmony/ssc/perf"
 )
 
 // =============================================================================
@@ -65,6 +66,8 @@ func (sim *Simulator) StartSimulateCXTransaction(req *api.CXTSimulationRequest) 
 			Str("commitSend", tCommitSend.String()).
 			Str("total", time.Since(t0).String()).
 			Msg("StartSimulateCXTransaction timing breakdown")
+		perf.RecordPkg("simLeader", "StartSimulateCXTransaction", "total",
+			time.Since(t0))
 	}()
 
 	func() {
@@ -666,6 +669,8 @@ func (sim *Simulator) StartReSimulation(txHash common.Hash, simulationNum int) {
 			Str("commitSend", tCommitSend.String()).
 			Str("total", time.Since(t0).String()).
 			Msg("StartReSimulation timing breakdown")
+		perf.RecordPkg("simLeader", "StartReSimulation", "total",
+			time.Since(t0))
 	}()
 
 	txState, err := sim.state.GetTxState(txHash)
@@ -952,6 +957,10 @@ func (sim *Simulator) HandleCXTSSCCall(req *api.CXTCallSSCRequest) *api.CXTCallS
 	startTime := time.Now()
 	header := sim.bc.CurrentHeader()
 	req.BlockHash = header.Hash()
+
+	defer func() {
+		perf.RecordPkg("simLeader", "HandleCXTSSCCall", "total", time.Since(startTime))
+	}()
 	req.BlockNum = header.NumberU64()
 	utils.SSCLogger().Debug().Str("txHash", req.TxHash.String()).Str("callIndex", req.CallIndex.ToString()).Msg("handle cxt ssc call, start")
 	committee := sim.committee.GetCommittee(req.Epochs[sim.committee.SelfShard], sim.committee.SelfShard)

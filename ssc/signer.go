@@ -27,10 +27,10 @@ type blsSignerMgr struct {
 
 func NewBLSSignerMgr(shardId uint32, selfAddr common.Address, key *bls.PrivateKeyWrapper) api.BLSSignerMgr {
 	mgr := &blsSignerMgr{}
-	// mgr.sscSigner = &fakeBLSSigner{}
-	// mgr.validatorSigner = &fakeBLSSigner{}
-	mgr.sscSigner = newBLSSigner(shardId, selfAddr, key)
-	mgr.validatorSigner = newBLSSigner(shardId, selfAddr, key)
+	mgr.sscSigner = &fakeBLSSigner{}
+	mgr.validatorSigner = &fakeBLSSigner{}
+	// mgr.sscSigner = newBLSSigner(shardId, selfAddr, key)
+	// mgr.validatorSigner = newBLSSigner(shardId, selfAddr, key)
 	return mgr
 }
 
@@ -84,7 +84,7 @@ func (f *fakeBLSSigner) Verify(msg api.BLSSignedMessage) error {
 	return nil
 }
 
-func (f *fakeBLSSigner) UpdatePubKeys(shardID uint32, epoch api.Epoch, addr2Index map[common.Address]int, pubKeys []bls.PublicKeyWrapper) {
+func (f *fakeBLSSigner) UpdatePubKeys(shardID uint32, epoch api.Epoch, changed bool, addr2Index map[common.Address]int, pubKeys []bls.PublicKeyWrapper, threshold int) {
 }
 
 type blsSigner struct {

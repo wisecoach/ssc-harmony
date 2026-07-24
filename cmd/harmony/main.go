@@ -265,8 +265,8 @@ func setupNodeLog(config harmonyconfig.HarmonyConfig) {
 	utils.SetLogVerbosity(log.Lvl(verbosity))
 	// utils.SetLogVerbosity(log.LvlDebug)
 	utils.SetLogVerbosity(log.LvlInfo)
-	// utils.SetSSCLogVerbosity(log.LvlDebug)
-	utils.SetSSCLogVerbosity(log.LvlInfo)
+	utils.SetSSCLogVerbosity(log.LvlDebug)
+	// utils.SetSSCLogVerbosity(log.LvlInfo)
 	// utils.SetLogVerbosity(log.LvlWarn)
 	if config.Log.Context != nil {
 		ip := config.Log.Context.IP

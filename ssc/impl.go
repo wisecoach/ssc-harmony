@@ -18,7 +18,7 @@ import (
 	"github.com/harmony-one/harmony/core/types"
 	"github.com/harmony-one/harmony/internal/utils"
 	"github.com/harmony-one/harmony/ssc/api"
-	"github.com/harmony-one/harmony/ssc/lm"
+	"github.com/harmony-one/harmony/ssc/perf"
 )
 
 type pendingCXTRequest struct {
@@ -136,7 +136,7 @@ type sscService struct {
 	// executionVerifyContexts map[common.Hash]*api.ExecutionVerifyContext
 	// txLockedSimNum          map[common.Hash]int   // moved to Verifier
 
-	commitLock   lm.RWMutex // cmLock for commitStates
+	commitLock   sync.RWMutex // cmLock for commitStates
 	commitStates map[common.Hash]*api.CommitState
 
 	ctx          context.Context
@@ -158,7 +158,7 @@ func newBaseService(ctx context.Context, config *api.Config, cm *CommitteeMechan
 	signerMgr api.BLSSignerMgr, bc core.BlockChain, txSigner api.TxSigner, comm *Comm) *sscService {
 	// 设置 worker 数量和信号量上限
 	numWorkers := config.SimulationLimit // worker 数量
-	numWorkers = 30
+	numWorkers = 3
 
 	service := &sscService{
 		CommitteeMechanism: cm,
@@ -168,7 +168,7 @@ func newBaseService(ctx context.Context, config *api.Config, cm *CommitteeMechan
 		Config:             config,
 		bc:                 bc,
 		stats:              newSimulationStats(),
-		commitLock:         lm.NewRWMutex(),
+		commitLock:         sync.RWMutex{},
 		commitStates:       make(map[common.Hash]*api.CommitState),
 		ctx:                ctx,
 		chainHeadCh:        make(chan core.ChainHeadEvent, 10),
@@ -260,11 +260,21 @@ func newBaseService(ctx context.Context, config *api.Config, cm *CommitteeMechan
 			CreateTxState: func(txHash common.Hash, txState *api.TxState) {
 				service.txStates.Store(txHash, txState)
 			},
-			GetCommitStates: func() map[common.Hash]*api.CommitState {
-				return service.commitStates
+			InitCommitState: func(txHash common.Hash) *api.CommitState {
+				service.commitLock.Lock()
+				defer service.commitLock.Unlock()
+				if service.commitStates[txHash] == nil {
+					service.commitStates[txHash] = &api.CommitState{
+						CommitVotes:     make(map[int]map[uint32][]*api.CXTCommitVote),
+						CommitSSCVotes:  make(map[int]map[uint32]*api.CXTCommitSSCVote),
+						RollbackVotes:   make(map[uint32][]*api.CXTCommitVote),
+						RollbackSSCVote: nil,
+					}
+				}
+				return service.commitStates[txHash]
 			},
-			GetCommitLock: func() *lm.RWMutex {
-				return &service.commitLock
+			GetCommitState: func(txHash common.Hash) *api.CommitState {
+				return service.commitStates[txHash]
 			},
 			GetFinishedTxs: func() map[common.Hash]bool {
 				return nil
@@ -394,6 +404,10 @@ func (s *sscService) BlockCommitted(block *types.Block) error {
 	}
 	s.retryScheduler.OnBlockCommitted(block)
 	tOnBlockCommitted = time.Since(t0)
+
+	// 所有模块的 Record() 已完成，flush + reset PerfAggregator
+	perf.GetAggregator().OnBlockCommitted(block)
+
 	return nil
 }
 
@@ -863,9 +877,9 @@ func (s *sscService) CommitSimulation(commit *api.SimulationCommit) {
 	s.buildSignaturesForSimulation(tx.Ctx, simulation)
 	tBuildSignatures = time.Since(t0)
 
-	// 提交 SimTx 后，所有节点收到后入 onChainPatches
-	// Leader 在提交前先入，确保本地即刻可用
-	s.retryScheduler.AddOnChainPatch(txHash, commit.SimulationNum, simulation.ChainPatch, upstreamTxList)
+	// 提交 SimTx 前，先入链下 patches（供 leader 本地 chainNextSim 查询用）
+	// 链上 onChainPatches 在 VerifySimulation 验证通过后存入
+	s.retryScheduler.AddPatch(txHash, commit.SimulationNum, simulation.ChainPatch, upstreamTxList)
 	tOnChainPatch = time.Since(t0)
 
 	err = s.txSubmitter.SubmitSimulationTx(simulation)

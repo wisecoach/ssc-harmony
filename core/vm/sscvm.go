@@ -74,6 +74,10 @@ type SSCVM struct {
 	StateDB *state.DB
 	// Depth is the current call Stack
 	depth int
+	// callCount counts total SSCVM.Call invocations (including nested) for this VM instance
+	callCount int
+	// opCount counts total opcodes executed in vm.run across all calls in this VM instance
+	opCount uint64
 	// SSC Service used to implement the Cross-Shard Transaction
 	SSCService api.Service
 
@@ -147,6 +151,18 @@ func (vm *SSCVM) Interpreter() Interpreter {
 // execution error or failed value transfer.
 func (vm *SSCVM) Call(caller ContractRef, addr common.Address, input []byte, gas uint64, value *big.Int) (ret []byte, leftOverGas uint64, err error) {
 	startTime := time.Now()
+	vm.callCount++
+
+	// Log every SSCVM.Call depth for depth distribution analysis
+	// (Debug level, so won't spam production logs; only used for targeted analysis)
+	if vm.ExecutionType == ExecutionVerify {
+		utils.SSCLogger().Debug().
+			Str("txHash", vm.Context.TxHash.Hex()).
+			Int("depth", vm.depth).
+			Int("callCount", vm.callCount).
+			Msg("SSCVM.Call entry depth")
+	}
+
 	if vm.vmConfig.NoRecursion && vm.depth > 0 {
 		return nil, gas, nil
 	}
@@ -171,13 +187,6 @@ func (vm *SSCVM) Call(caller ContractRef, addr common.Address, input []byte, gas
 	targetShardId := vm.SSCService.GetShardID(addr)
 	isCrossCall := targetShardId != vm.Context.ShardID
 
-	utils.SSCLogger().Debug().
-		Str("ExecutionType", vm.ExecutionType.String()).
-		Str("txHash", vm.Context.TxHash.Hex()).
-		Str("callIndex", vm.Context.CrossCallIndex.ToString()).
-		Msgf("Call: caller=%s, addr=%s, targetShardId=%d, isCrossCall=%t",
-			caller.Address().Hex(), addr.Hex(), targetShardId, isCrossCall)
-
 	if isCrossCall {
 		return vm.CrossCall(targetShardId, caller.Address(), addr, input, gas, value)
 	}
@@ -187,6 +196,7 @@ func (vm *SSCVM) Call(caller ContractRef, addr common.Address, input []byte, gas
 		return nil, gas, ErrInsufficientBalance
 	}
 
+	tPreState := time.Now()
 	var (
 		to       = AccountRef(addr)
 		snapshot int
@@ -239,7 +249,36 @@ func (vm *SSCVM) Call(caller ContractRef, addr common.Address, input []byte, gas
 	contract := NewContract(vm.Context.TxHash, caller, to, value, gas)
 	contract.SetCallCode(&addr, codeHash, code)
 
+	tRun0 := time.Now()
 	ret, err = vm.run(contract, input, false)
+	tRun := time.Since(tRun0)
+	tPreStateDur := time.Since(tPreState)
+	tTotal := time.Since(startTime)
+	if vm.ExecutionType == ExecutionVerify {
+		if tTotal > 100*time.Millisecond {
+			utils.SSCLogger().Info().Str("txHash", vm.Context.TxHash.Hex()).
+				Str("ExecutionType", vm.ExecutionType.String()).
+				Str("addr", addr.Hex()).
+				Int("depth", vm.depth).
+				Int("callCount", vm.callCount).
+				Uint64("opCount", vm.opCount).
+				Dur("preState", tPreStateDur).
+				Dur("run", tRun).
+				Dur("total", tTotal).
+				Msg("SSCVM.Call timing (slow)")
+		} else {
+			utils.SSCLogger().Info().Str("txHash", vm.Context.TxHash.Hex()).
+				Str("ExecutionType", vm.ExecutionType.String()).
+				Str("addr", addr.Hex()).
+				Int("depth", vm.depth).
+				Int("callCount", vm.callCount).
+				Uint64("opCount", vm.opCount).
+				Dur("preState", tPreStateDur).
+				Dur("run", tRun).
+				Dur("total", tTotal).
+				Msg("SSCVM.Call timing")
+		}
+	}
 
 	// When an error was returned by the EVM or when setting the creation code
 	// above we revert to the snapshot and consume any gas remaining. Additionally

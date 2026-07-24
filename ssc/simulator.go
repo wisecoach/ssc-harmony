@@ -14,7 +14,6 @@ import (
 	"github.com/harmony-one/harmony/core"
 	"github.com/harmony-one/harmony/internal/utils"
 	"github.com/harmony-one/harmony/ssc/api"
-	"github.com/harmony-one/harmony/ssc/lm"
 )
 
 // SimulatorStateAccessor 封装 Simulator 需要的 sscService 公共状态访问。
@@ -30,10 +29,10 @@ type SimulatorStateAccessor struct {
 	SetSimulationNum func(txHash common.Hash, num int)
 	// CreateTxState 创建新的 TxState（在 startSimulation 时调用）
 	CreateTxState func(txHash common.Hash, txState *api.TxState)
-	// GetCommitStates 获取 commitStates 指针（用于写入 CommitState）
-	GetCommitStates func() map[common.Hash]*api.CommitState
-	// GetCommitLock 获取 commitLock（用于写入 CommitState）
-	GetCommitLock func() *lm.RWMutex
+	// InitCommitState 初始化 txHash 对应的 CommitState（内部加锁）
+	InitCommitState func(txHash common.Hash) *api.CommitState
+	// GetCommitState 获取 txHash 对应的 CommitState（只读，调用方确保 txHash 存在）
+	GetCommitState func(txHash common.Hash) *api.CommitState
 	// GetFinishedTxs 获取 finishedTxs 指针
 	GetFinishedTxs func() map[common.Hash]bool
 
@@ -63,7 +62,7 @@ type Simulator struct {
 	simStates sync.Map // key: common.Hash, value: *api.SimulationState
 
 	// 自管理存储：call 同步
-	syncLock            lm.Mutex
+	syncLock            sync.Mutex
 	callStatesInWaiting map[common.Hash][]*api.SimulationCallState
 
 	// 自管理存储：simulation 结果通知（per-tx sync.Map）
@@ -428,6 +427,7 @@ func (sim *Simulator) worker(id int) {
 			utils.SSCLogger().Debug().Int("workerId", id).Msg("worker stopped")
 			return
 		}
+
 		// 队列等待统计
 		waitTime := time.Since(task.pushTime)
 		sim.stats.QueueWaitTotalNs.Add(waitTime.Nanoseconds())
@@ -660,21 +660,7 @@ func (sim *Simulator) startSimulation(req *api.CXTSimulationRequest) (*api.TxSta
 	callState.DB = db
 
 	// 初始化 commitStates
-	commitStates := sim.state.GetCommitStates()
-	commitLock := sim.state.GetCommitLock()
-	func() {
-		commitLock.Lock()
-		defer commitLock.Unlock()
-		commitState := commitStates[txHash]
-		if commitState == nil {
-			commitStates[txHash] = &api.CommitState{
-				CommitVotes:     make(map[int]map[uint32][]*api.CXTCommitVote),
-				CommitSSCVotes:  make(map[int]map[uint32]*api.CXTCommitSSCVote),
-				RollbackVotes:   make(map[uint32][]*api.CXTCommitVote),
-				RollbackSSCVote: nil,
-			}
-		}
-	}()
+	sim.state.InitCommitState(txHash)
 
 	// 更新 SimulationState
 	simState, ok := sim.GetSimState(txHash)
