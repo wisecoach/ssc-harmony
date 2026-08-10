@@ -594,6 +594,13 @@ CallStates:
 		if v.committee.SelfShard == simulation.OriginShardId && v.committee.IsLeader(simulation.Epochs[v.committee.SelfShard]) {
 			v.stats.setCxtStage(txHash, 4)
 		}
+		// [vsCommit] 记录 VerifySimulation 成功的时间点（含 blockNum），用于分析跨 shard 时间差
+		utils.SSCLogger().Info().Str("txHash", txHash.Hex()).
+			Uint32("shardId", v.committee.SelfShard).
+			Uint32("originShard", simulation.OriginShardId).
+			Int("simulationNum", simulation.SimulationNum).
+			Uint64("blockNum", header.NumberU64()).
+			Msg("[vsCommit] VerifySimulation success")
 		utils.SSCLogger().Debug().Str("txHash", txHash.Hex()).
 			Int("simulationNum", simulation.SimulationNum).
 			Uint32("shardId", v.committee.SelfShard).

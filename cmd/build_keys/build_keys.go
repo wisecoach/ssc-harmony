@@ -300,15 +300,17 @@ func buildConfig(config ShardConfig) {
 			pub := crypto.FromECDSAPub(&key.PrivateKey.PublicKey)
 			pubHex := common.Bytes2Hex(pub)
 			localValidators = append(localValidators, &api.Member{
-				Address:   common.HexToAddress(v.EthAddr),
-				Endpoint:  fmt.Sprintf("http://127.0.0.1:%d", 9500+40*int(i)+j*2),
-				BLSPubKey: v.BLSPublicKey,
-				PubKey:    pubHex,
+				Address:     common.HexToAddress(v.EthAddr),
+				Endpoint:    fmt.Sprintf("http://127.0.0.1:%d", 9500+40*int(i)+j*2),
+				SSCEndpoint: fmt.Sprintf("127.0.0.1:%d", 8500+40*int(i)+j*2),
+				BLSPubKey:   v.BLSPublicKey,
+				PubKey:      pubHex,
 			})
 			devValidators = append(devValidators, &api.Member{
-				Address:   common.HexToAddress(v.EthAddr),
-				PubKey:    pubHex,
-				Endpoint:  fmt.Sprintf("http://%s:%d", devServers.IPs[nodeCnt/config.validatorPerNode], 9500+40*int(i)+j*2),
+				Address:     common.HexToAddress(v.EthAddr),
+				PubKey:      pubHex,
+				Endpoint:    fmt.Sprintf("http://%s:%d", devServers.IPs[nodeCnt/config.validatorPerNode], 9500+40*int(i)+j*2),
+				SSCEndpoint: fmt.Sprintf("%s:%d", devServers.IPs[nodeCnt/config.validatorPerNode], 8500+40*int(i)+j*2),
 				BLSPubKey: v.BLSPublicKey,
 			})
 			nodeCnt++

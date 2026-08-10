@@ -193,10 +193,11 @@ func NewGenesisSpec(netType nodeconfig.NetworkType, shardID uint32, configPath s
 					}
 					for _, member := range committeeShard0.Members {
 						committee.Members = append(committee.Members, &api.Member{
-							Address:   member.Address,
-							PubKey:    member.PubKey,
-							Endpoint:  strings.Replace(member.Endpoint, "9500", fmt.Sprintf("%d", 9500+i*40), 1),
-							BLSPubKey: member.BLSPubKey,
+							Address:     member.Address,
+							PubKey:      member.PubKey,
+							Endpoint:    strings.Replace(member.Endpoint, "9500", fmt.Sprintf("%d", 9500+i*40), 1),
+							SSCEndpoint: strings.Replace(member.SSCEndpoint, "8500", fmt.Sprintf("%d", 8500+i*40), 1),
+							BLSPubKey:   member.BLSPubKey,
 						})
 					}
 					gen.SSCConfig.Committees = append(gen.SSCConfig.Committees, committee)

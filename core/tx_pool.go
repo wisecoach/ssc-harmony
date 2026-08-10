@@ -682,6 +682,21 @@ func (pool *TxPool) Pending() (map[common.Address]types.PoolTransactions, error)
 	pending := make(map[common.Address]types.PoolTransactions)
 	for addr, list := range pool.pending {
 		pending[addr] = list.Flatten()
+		if list.Len() > 0 {
+			queueTx := pool.queue[addr]
+			queueFrom := uint64(0)
+			queueTo := uint64(0)
+			if queueTx != nil && queueTx.Len() > 0 {
+				queueTxs := queueTx.Flatten()
+				length := queueTxs.Len()
+				queueFrom = queueTxs[0].Nonce()
+				queueTo = queueTxs[length-1].Nonce()
+			}
+			utils.SSCLogger().Info().Str("addr", addr.Hex()).
+				Msgf("Pending transaction, pending=[%d, %d], queue=[%d, %d]",
+					pending[addr][0].Nonce(), pending[addr][pending[addr].Len()-1].Nonce(),
+					queueFrom, queueTo)
+		}
 	}
 	return pending, nil
 }

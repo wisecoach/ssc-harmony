@@ -27,8 +27,8 @@ type blsSignerMgr struct {
 
 func NewBLSSignerMgr(shardId uint32, selfAddr common.Address, key *bls.PrivateKeyWrapper) api.BLSSignerMgr {
 	mgr := &blsSignerMgr{}
-	mgr.sscSigner = &fakeBLSSigner{}
-	mgr.validatorSigner = &fakeBLSSigner{}
+	mgr.sscSigner = &fakeBLSSigner{selfAddr: selfAddr}
+	mgr.validatorSigner = &fakeBLSSigner{selfAddr: selfAddr}
 	// mgr.sscSigner = newBLSSigner(shardId, selfAddr, key)
 	// mgr.validatorSigner = newBLSSigner(shardId, selfAddr, key)
 	return mgr
@@ -66,10 +66,12 @@ func newBLSSigner(shardId uint32, selfAddr common.Address, key *bls.PrivateKeyWr
 }
 
 type fakeBLSSigner struct {
+	shardId  uint32
+	selfAddr common.Address
 }
 
 func (f *fakeBLSSigner) Address() common.Address {
-	return common.Address{}
+	return f.selfAddr
 }
 
 func (f *fakeBLSSigner) Sign(msg api.MessageToSign) ([]byte, error) {

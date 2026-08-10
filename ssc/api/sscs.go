@@ -69,6 +69,7 @@ type TxSubmitter interface {
 	SubmitEmptyTx() error
 	SubmitNewEpoch(newEpoch *NewEpoch) error
 	SubmitUploadOpinions(uploadOpinions *SelfOpinions) error
+	OnBlockCommitted(block *types.Block)
 }
 
 type StateDB interface {

@@ -27,6 +27,7 @@ import (
 	"github.com/harmony-one/harmony/consensus"
 	"github.com/harmony-one/harmony/core"
 	"github.com/harmony-one/harmony/core/types"
+	"google.golang.org/grpc"
 	"github.com/harmony-one/harmony/crypto/bls"
 	harmonyconfig "github.com/harmony-one/harmony/internal/configs/harmony"
 	nodeconfig "github.com/harmony-one/harmony/internal/configs/node"
@@ -139,6 +140,9 @@ type Node struct {
 	psCtx    context.Context
 	psCancel func()
 	registry *registry.Registry
+
+	// sscGrpcServer is the gRPC server for SSC internal RPC.
+	sscGrpcServer *grpc.Server
 }
 
 func (node *Node) SetSSCService(sscService api.Service) {

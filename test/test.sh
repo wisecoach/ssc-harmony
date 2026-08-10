@@ -1,5 +1,8 @@
 #!/bin/bash
 
+# 清理上次实验残留的 pprof viewer 进程，确保端口可用
+pkill -f "go tool pprof -http=" 2>/dev/null || true
+
 cd ../ssc-cli/cli
 node deploySSCCTest.js
 cd -

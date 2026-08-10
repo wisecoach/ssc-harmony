@@ -481,6 +481,12 @@ func (p *pendingUnlockCache) applyTo(locker *stateLocker) {
 
 		// 从 globalLockedStates（sync.Map）删除该 tx 的所有写锁
 		c2ls := mgr.lockedStates.getCallIndex2LockedStates(txHash)
+		if c2ls == nil {
+			// BUG-12 诊断: 跨块 rollback/commit 时反向写索引缺失 → applyTo 静默跳过, 锁可能永久残留
+			utils.SSCLogger().Warn().Str("txHash", txHash.Hex()).
+				Int("globalWriteLocks", countGlobalWriteLocks(mgr, txHash)).
+				Msg("[applyTo] reverse write-index nil for tx, locks may remain in globalLockedStates")
+		}
 		if c2ls != nil {
 			for callIndex, lockKeyMap := range c2ls {
 				for lockKey := range lockKeyMap {
@@ -514,4 +520,17 @@ func (p *pendingUnlockCache) applyTo(locker *stateLocker) {
 		delete(mgr.lockedStates.callIndex2lockedState, txHash)
 		delete(mgr.lockedStates.callIndex2rlockedState, txHash)
 	}
+}
+
+// BUG-12 诊断辅助: 统计 globalLockedStates 中由指定 txHash 持有 (lockedBy==txHash) 的写锁数量。
+// 用于 applyTo 反向索引缺失时判断该交易是否仍残留在全局锁中。
+func countGlobalWriteLocks(mgr *stateLockManager, txHash common.Hash) int {
+	n := 0
+	mgr.globalLockedStates.Range(func(_, v interface{}) bool {
+		if ls, ok := v.(*lockedState); ok && ls.lockedBy == txHash {
+			n++
+		}
+		return true
+	})
+	return n
 }

@@ -1,18 +1,25 @@
 package node
 
 import (
+	"fmt"
+	"net"
+	"strconv"
+
 	"github.com/harmony-one/harmony/consensus/quorum"
 	"github.com/harmony-one/harmony/consensus/votepower"
 	"github.com/harmony-one/harmony/core/types"
 	"github.com/harmony-one/harmony/crypto/bls"
 	"github.com/harmony-one/harmony/eth/rpc"
 	"github.com/harmony-one/harmony/hmy"
+	"github.com/harmony-one/harmony/internal/configs/node"
 	"github.com/harmony-one/harmony/internal/tikv"
+	"github.com/harmony-one/harmony/internal/utils"
 	"github.com/harmony-one/harmony/rosetta"
 	hmy_rpc "github.com/harmony-one/harmony/rpc"
 	rpc_common "github.com/harmony-one/harmony/rpc/common"
 	"github.com/harmony-one/harmony/rpc/filters"
 	"github.com/libp2p/go-libp2p/core/peer"
+	"google.golang.org/grpc"
 )
 
 // IsCurrentlyLeader exposes if node is currently the leader node
@@ -67,12 +74,54 @@ func (node *Node) StartRPC() error {
 	// Gather all the possible APIs to surface
 	apis := node.APIs(harmony)
 
-	return hmy_rpc.StartServers(harmony, apis, node.NodeConfig.RPCServer, node.HarmonyConfig.RPCOpt)
+	if err := hmy_rpc.StartServers(harmony, apis, node.NodeConfig.RPCServer, node.HarmonyConfig.RPCOpt); err != nil {
+		return err
+	}
+
+	// Start SSC gRPC server alongside JSON-RPC
+	return node.StartSSCGrpc()
 }
 
 // StopRPC stop RPC service
 func (node *Node) StopRPC() error {
-	return hmy_rpc.StopServers()
+	if err := hmy_rpc.StopServers(); err != nil {
+		return err
+	}
+	node.StopSSCGrpc()
+	return nil
+}
+
+// StartSSCGrpc starts the SSC gRPC server on a port derived from the P2P port.
+// The gRPC port = P2P port - 500 (e.g. P2P 9000 → gRPC 8500).
+func (node *Node) StartSSCGrpc() error {
+	if node.SSCService == nil {
+		// Not all nodes run SSC; skip silently.
+		return nil
+	}
+	p2pPort, _ := strconv.Atoi(node.SelfPeer.Port)
+	grpcPort := nodeconfig.GetSSCGrpcPortFromBase(p2pPort)
+
+	lis, err := net.Listen("tcp", fmt.Sprintf(":%d", grpcPort))
+	if err != nil {
+		return err
+	}
+	node.sscGrpcServer = grpc.NewServer()
+	hmy_rpc.RegisterSSCGrpcServer(node.sscGrpcServer, node.SSCService)
+	go func() {
+		if err := node.sscGrpcServer.Serve(lis); err != nil {
+			utils.Logger().Error().Err(err).Msg("SSC gRPC server stopped")
+		}
+	}()
+	utils.Logger().Info().Int("port", grpcPort).Msg("SSC gRPC server started")
+	return nil
+}
+
+// StopSSCGrpc stops the SSC gRPC server gracefully.
+func (node *Node) StopSSCGrpc() {
+	if node.sscGrpcServer != nil {
+		node.sscGrpcServer.GracefulStop()
+		node.sscGrpcServer = nil
+	}
 }
 
 // StartRosetta start rosetta service

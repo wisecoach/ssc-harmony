@@ -6,7 +6,6 @@ import (
 
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/harmony-one/harmony/common/math"
-	"github.com/harmony-one/harmony/internal/utils"
 )
 
 // SSCVMInterpreter represents an SSCVM interpreter
@@ -166,10 +165,6 @@ func (in *SSCVMInterpreter) Run(contract *Contract, input []byte, readOnly bool)
 			mem.Resize(memorySize)
 		}
 
-		if op.String() == "SSTORE" {
-			utils.SSCLogger().Debug().Str("txHash", in.vm.Context.TxHash.Hex()).
-				Msgf("executing opcode, pc=%d, op=%s, executionType=%s", pc, op.String(), in.vm.ExecutionType)
-		}
 		// execute the operation
 		res, err = operation.execute(&pc, in, contract, mem, stack)
 
@@ -186,12 +181,8 @@ func (in *SSCVMInterpreter) Run(contract *Contract, input []byte, readOnly bool)
 
 		switch {
 		case err != nil:
-			utils.SSCLogger().Error().Err(err).Str("txHash", in.vm.Context.TxHash.Hex()).
-				Uint64("pc", pc).Str("opcode", op.String()).Msg("error during execution")
 			return nil, err
 		case operation.reverts:
-			utils.SSCLogger().Error().Str("reason", common.Bytes2Hex(ret)).Err(ErrExecutionReverted).Str("txHash", in.vm.Context.TxHash.Hex()).
-				Uint64("pc", pc).Str("opcode", op.String()).Msg("error during execution")
 			return res, ErrExecutionReverted
 		case operation.halts:
 			return res, nil
@@ -199,8 +190,6 @@ func (in *SSCVMInterpreter) Run(contract *Contract, input []byte, readOnly bool)
 			pc++
 		}
 	}
-	utils.SSCLogger().Debug().Str("txHash", in.vm.Context.TxHash.Hex()).
-		Uint64("pc", pc).Str("opcode", op.String()).Msg("finished execution")
 	return nil, nil
 }
 

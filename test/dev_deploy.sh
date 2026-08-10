@@ -23,7 +23,7 @@ validator_per_node=${VALIDATOR_PER_NODE:-4}
 exam="shard=${shard}_validator=${validator}_ssc=${ssc}_delay=${delay}_rate=${rate}${cc_suffix}_vpn=${validator_per_node}"
 log_folder="${PROJECT_ROOT}/tmp_log/$exam"
 LOG_FILE="$log_folder/r.log"
-RECOMPILE=true
+RECOMPILE=false
 MIN=3
 NETWORK=exprnet
 needed_servers=$((shard * validator / validator_per_node))
@@ -64,7 +64,7 @@ function call_for_validator() {
 }
 
 function clean() {
-    call_for_servers "./test/kill_node.sh; rm -rf tmp_log* 2> /dev/null; rm *.rlp 2> /dev/null; rm -rf .dht* 2> /dev/null; mkdir -p ${log_folder}; touch $LOG_FILE"
+    call_for_servers "./test/kill_node.sh; rm -rf tmp_log* 2> /dev/null; rm *.rlp 2> /dev/null; rm -rf .dht* 2> /dev/null; rm -f /tmp/*.key 2> /dev/null; mkdir -p ${log_folder}; touch $LOG_FILE"
 }
 
 function preset() {

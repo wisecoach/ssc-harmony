@@ -576,7 +576,7 @@ func (sim *Simulator) startCXT(txHash common.Hash, simulationNum int, originShar
 
 	if topRequest != nil {
 		newTx.Nonce = topRequest.Tx.Nonce()
-		newTx.TxSender, _ = topRequest.Tx.SenderAddress()
+		newTx.TxSender = topRequest.From
 		newTx.Epochs = topRequest.Epochs
 	}
 	if callRequest != nil {

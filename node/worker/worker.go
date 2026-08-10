@@ -92,8 +92,8 @@ func newWorker(config *params.ChainConfig, chain, beacon core.BlockChain) *Worke
 		factory:  blockfactory.NewFactory(config),
 		chain:    chain,
 		beacon:   beacon,
-		gasFloor: 8000000000,
-		gasCeil:  12000000000,
+		gasFloor: 800781240,
+		gasCeil:  800781240,
 	}
 }
 
@@ -138,6 +138,14 @@ func (w *Worker) CommitSSCTransactions(
 		// Retrieve the next transaction and abort if all done
 		tx := txs.Peek()
 		if tx == nil {
+			// 记录循环退出时的关键状态，诊断悖论
+			utils.SSCLogger().Warn().
+				Int("processed", count).
+				Uint64("blockNum", w.current.header.NumberU64()).
+				Uint64("gasLeft", w.current.gasPool.Gas()).
+				Str("loop", "CommitSSCTransactions").
+				Dur("elapsed", time.Since(startTime)).
+				Msg("CommitSSCTransactions: Peek returned nil, stopping loop")
 			break
 		}
 		// Error may be ignored here. The error has already been checked
@@ -359,7 +367,7 @@ func (w *Worker) CommitTransactions(
 
 	// HARMONY TXNS
 	// 单块所有交易上限（总 300 笔）
-	remaining := 500
+	remaining := 1000
 	crTxn := 0
 	simTxn := 0
 	normalTxn := 0
@@ -384,12 +392,36 @@ func (w *Worker) CommitTransactions(
 	// 2. 其他 SSC 交易
 	sscTxns := types.NewTransactionsByPriceAndNonce(w.current.signer, w.current.ethSigner, pendingSSCTxs)
 	normalTxns := types.NewTransactionsByPriceAndNonce(w.current.signer, w.current.ethSigner, pendingNormal)
-
-	sscTxAddrs := make([]common.Address, 0)
+	sscTxNums := make(map[common.Address]int)
+	txAddrs := make([]common.Address, 0)
 	for address := range pendingSSCTxs {
-		sscTxAddrs = append(sscTxAddrs, address)
+		txAddrs = append(txAddrs, address)
+		sscTxNums[address] = pendingSSCTxs[address].Len()
 	}
-	utils.Logger().Info().Uint64("blockNum", w.current.header.NumberU64()).Int("txn", len(pendingSSCTxs)).Interface("addrs", sscTxAddrs).Str("duration", time.Since(startTime).String()).Msg("Leader apply ssctxs for duration")
+	utils.SSCLogger().Info().Uint64("blockNum", w.current.header.NumberU64()).Int("txn", len(pendingSSCTxs)).Interface("txNums", sscTxNums).Str("duration", time.Since(startTime).String()).Msg("Leader apply ssctxs for duration")
+	// 打印每个 SSC 地址的 pending 交易数和 nonce 范围（诊断：悖论 — 每块只处理 ~186 笔 SimTx）
+	for _, addr := range txAddrs {
+		if txs, ok := pendingSSCTxs[addr]; ok && len(txs) > 0 {
+			minNonce, maxNonce := txs[0].Nonce(), txs[0].Nonce()
+			for _, tx := range txs[1:] {
+				n := tx.Nonce()
+				if n < minNonce {
+					minNonce = n
+				}
+				if n > maxNonce {
+					maxNonce = n
+				}
+			}
+			utils.SSCLogger().Info().
+				Uint64("blockNum", w.current.header.NumberU64()).
+				Str("addr", addr.Hex()).
+				Int("pendingCnt", len(txs)).
+				Uint64("minNonce", minNonce).
+				Uint64("maxNonce", maxNonce).
+				Uint64("chainNonce", w.current.state.GetNonce(addr)).
+				Msg("[pendingSSC] stats")
+		}
+	}
 	if remaining > 0 && remainingTime > 0 {
 		before := len(w.current.txs)
 		beginTime := time.Now()
@@ -412,38 +444,6 @@ func (w *Worker) CommitTransactions(
 		normalTxn = len(w.current.txs) - before
 		remaining -= normalTxn
 	}
-
-	// STAKING - only beaconchain process staking transaction
-	// if w.chain.ShardID() == shard.BeaconChainShardID {
-	//	for _, tx := range pendingStaking {
-	//		// If we don't have enough gas for any further transactions then we're done
-	//		if w.current.gasPool.Gas() < params.TxGas {
-	//			utils.Logger().Info().Uint64("have", w.current.gasPool.Gas()).Uint64("want", params.TxGas).Msg("Not enough gas for further transactions")
-	//			break
-	//		}
-	//		// Check whether the tx is replay protected. If we're not in the EIP155 hf
-	//		// phase, start ignoring the sender until we do.
-	//		if tx.Protected() && !w.config.IsEIP155(w.current.header.Epoch()) {
-	//			utils.Logger().Info().Str("hash", tx.Hash().Hex()).Str("eip155Epoch", w.config.EIP155Epoch.String()).Msg("Ignoring reply protected transaction")
-	//			continue
-	//		}
-	//
-	//		// Start executing the transaction
-	//		w.current.state.Prepare(tx.Hash(), common.Hash{}, len(w.current.txs)+len(w.current.stakingTxs))
-	//		// THESE CODE ARE DUPLICATED AS ABOVE>>
-	//		if err := w.commitStakingTransaction(tx, coinbase); err != nil {
-	//			txID := tx.Hash().Hex()
-	//			utils.Logger().Error().Err(err).
-	//				Str("stakingTxID", txID).
-	//				Interface("stakingTx", tx).
-	//				Msg("Failed committing staking transaction")
-	//		} else {
-	//			utils.Logger().Info().Str("stakingTxId", tx.Hash().Hex()).
-	//				Uint64("txGasLimit", tx.GasLimit()).
-	//				Msg("Successfully committed staking transaction")
-	//		}
-	//	}
-	// }
 
 	utils.SSCLogger().Warn().
 		Int("newTxns", len(w.current.txs)).

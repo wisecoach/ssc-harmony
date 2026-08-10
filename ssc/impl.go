@@ -147,6 +147,9 @@ type sscService struct {
 	// tx block trace: 记录各阶段块高度用于分析延迟
 	txTraces  map[common.Hash]*TxBlockTrace
 	traceLock sync.Mutex // 保护 txTraces，不借用 Simulator.simuLock
+
+	// 当前块号缓存（BlockCommitted 时更新，避免关闭后调用 bc.CurrentHeader）
+	currentBlockNum uint64
 }
 
 func (s *sscService) GetShardID(address common.Address) uint32 {
@@ -384,6 +387,9 @@ func (s *sscService) BindBlockChain(bcValue *atomic.Value) {
 func (s *sscService) BlockCommitted(block *types.Block) error {
 	t0 := time.Now()
 	var tTimerMgr, tHandleBlock, tOnBlockCommitted time.Duration
+
+	// 缓存当前块号，供 closeTransaction 等后续路径使用（避免 bc 关闭后取不到）
+	s.currentBlockNum = block.NumberU64()
 	defer func() {
 		utils.SSCLogger().Debug().
 			Uint64("blockNum", block.NumberU64()).
@@ -404,6 +410,9 @@ func (s *sscService) BlockCommitted(block *types.Block) error {
 	}
 	s.retryScheduler.OnBlockCommitted(block)
 	tOnBlockCommitted = time.Since(t0)
+
+	// 通知 txSubmitter：块已确认，释放 inFlight 计数
+	s.txSubmitter.OnBlockCommitted(block)
 
 	// 所有模块的 Record() 已完成，flush + reset PerfAggregator
 	perf.GetAggregator().OnBlockCommitted(block)
@@ -682,6 +691,12 @@ func (s *sscService) HandleCommitVote(vote *api.CXTCommitVote) {
 				return
 			}
 			s.commitStates[txHash].CommitVotes[vote.SimulationNum][vote.ShardId] = append(s.commitStates[txHash].CommitVotes[vote.SimulationNum][vote.ShardId], vote)
+			utils.SSCLogger().Info().Str("txHash", txHash.Hex()).
+				Uint32("voteShard", vote.ShardId).
+				Uint32("originShard", vote.OriginShardId).
+				Int("voteCount", len(s.commitStates[txHash].CommitVotes[vote.SimulationNum][vote.ShardId])).
+				Int("threshold", threshold).
+				Msg("[voteRecv] commit vote received")
 			utils.SSCLogger().Debug().Str("txHash", txHash.Hex()).Msgf("received %s vote from shard %d, [%d/%d]",
 				vote.Type.String(), vote.OriginShardId, len(s.commitStates[txHash].CommitVotes[vote.SimulationNum][vote.ShardId]), threshold)
 			reachThreshold = len(s.commitStates[txHash].CommitVotes[vote.SimulationNum][vote.ShardId]) == threshold
@@ -776,8 +791,16 @@ func (s *sscService) aggregateSSCCommitVote(votes []*api.CXTCommitVote, sscOrVal
 	return sscResult
 }
 
+// CommitSimulation handles the simulation commit from leader, called when a SimTx is
+// received by each shard leader
 func (s *sscService) CommitSimulation(commit *api.SimulationCommit) {
 	txHash := commit.TxHash
+	// [commitSimStart] 各 shard leader 收到 SimTx 的时刻
+	utils.SSCLogger().Info().Str("txHash", txHash.Hex()).
+		Uint32("shardId", s.SelfShard).
+		Int("simNum", commit.SimulationNum).
+		Uint64("blockNum", s.bc.CurrentHeader().NumberU64()).
+		Msg("[commitSimStart] CommitSimulation called")
 	utils.SSCLogger().Debug().Str("txHash", txHash.Hex()).
 		Int("simNum", commit.SimulationNum).
 		Bool("commit", commit.Commit).
@@ -885,6 +908,12 @@ func (s *sscService) CommitSimulation(commit *api.SimulationCommit) {
 	err = s.txSubmitter.SubmitSimulationTx(simulation)
 	tSubmitTx = time.Since(t0)
 	s.recordTraceBlock(txHash, StageSimulationTxSubmit, s.bc.CurrentHeader().NumberU64())
+	// [simTxSubmit] SimTx 提交时间点，配合 [vsCommit] 计算 submit→verify 的 shard 间时间差
+	utils.SSCLogger().Info().Str("txHash", txHash.Hex()).
+		Uint32("shardId", s.SelfShard).
+		Uint64("blockNum", s.bc.CurrentHeader().NumberU64()).
+		Int("simulationNum", commit.SimulationNum).
+		Msg("[simTxSubmit] SimTx submitted to local tx pool")
 	if err != nil {
 		utils.SSCLogger().Error().Err(err).Msg("failed to submit simulation tx")
 		return
@@ -1059,6 +1088,12 @@ func (s *sscService) HandleCXTCommitSSCVote(vote *api.CXTCommitSSCVote) {
 		}
 	}()
 
+	utils.SSCLogger().Info().Str("txHash", txHash.Hex()).
+		Uint32("fromShard", vote.ShardId).
+		Uint32("originShard", vote.OriginShardId).
+		Int("sscVoteCount", len(sscVotes)).
+		Int("relatedShardCount", len(relatedShards)).
+		Msg("[sscVoteRecv] ssc commit vote received")
 	utils.SSCLogger().Debug().Str("txHash", txHash.Hex()).Msgf("received %s ssc vote [%d/%d], %d in %v, simulationNum=%d",
 		vote.Type, len(sscVotes), len(relatedShards), vote.ShardId, relatedShards, vote.SimulationNum)
 
@@ -1218,6 +1253,58 @@ func (s *sscService) closeTransaction(txHash common.Hash, commitOrRollback bool,
 	// A09: Clean up passive pool
 	s.retryScheduler.RemoveFromPassivePool(txHash)
 
+	// 交易全生命周期耗时分析
+	s.traceLock.Lock()
+	trace, hasTrace := s.txTraces[txHash]
+	if !hasTrace {
+		trace = &TxBlockTrace{
+			TxHash:       txHash,
+			SimulateTime: time.Now(),
+		}
+		s.txTraces[txHash] = trace
+	}
+	if trace.CommitOrRollbackTime.IsZero() {
+		trace.CommitOrRollbackTime = time.Now()
+	}
+	if trace.CommitOrRollbackBlockNum == 0 && s.currentBlockNum != 0 {
+		trace.CommitOrRollbackBlockNum = s.currentBlockNum
+	}
+	if trace.SimulateTime != trace.CommitOrRollbackTime {
+		totalLife := trace.CommitOrRollbackTime.Sub(trace.SimulateTime)
+		var simToSubmit, submitToCommit, commitToCRSubmit, crSubmitToCR time.Duration
+		if !trace.SimulationTxSubmitTime.IsZero() {
+			simToSubmit = trace.SimulationTxSubmitTime.Sub(trace.SimulateTime)
+		}
+		if !trace.SimulationTxSubmitTime.IsZero() && !trace.SimulationTxCommitTime.IsZero() {
+			submitToCommit = trace.SimulationTxCommitTime.Sub(trace.SimulationTxSubmitTime)
+		}
+		if !trace.SimulationTxCommitTime.IsZero() && !trace.CommitOrRollbackTxSubmitTime.IsZero() {
+			commitToCRSubmit = trace.CommitOrRollbackTxSubmitTime.Sub(trace.SimulationTxCommitTime)
+		}
+		if !trace.CommitOrRollbackTxSubmitTime.IsZero() && !trace.CommitOrRollbackTime.IsZero() {
+			crSubmitToCR = trace.CommitOrRollbackTime.Sub(trace.CommitOrRollbackTxSubmitTime)
+		}
+		utils.SSCLogger().Info().Str("txHash", txHash.Hex()).
+			Dur("simToSubmit", simToSubmit).
+			Dur("submitToCommit", submitToCommit).
+			Dur("commitToCRSubmit", commitToCRSubmit).
+			Dur("crSubmitToCR", crSubmitToCR).
+			Dur("totalLife", totalLife).
+			Int("simToSubmitGap", blockGap(trace.SimulateBlockNum, trace.SimulationTxSubmitBlockNum)).
+			Int("submitToCommitGap", blockGap(trace.SimulationTxSubmitBlockNum, trace.SimulationTxCommitBlockNum)).
+			Int("commitToCRGap", blockGap(trace.SimulationTxCommitBlockNum, trace.CommitOrRollbackTxSubmitBlockNum)).
+			Int("crSubmitToCRGap", blockGap(trace.CommitOrRollbackTxSubmitBlockNum, trace.CommitOrRollbackBlockNum)).
+			Int("totalGap", blockGap(trace.SimulateBlockNum, trace.CommitOrRollbackBlockNum)).
+			Bool("commit", commitOrRollback).
+			Uint64("simBlock", trace.SimulateBlockNum).
+			Uint64("submitBlock", trace.SimulationTxSubmitBlockNum).
+			Uint64("commitBlock", trace.SimulationTxCommitBlockNum).
+			Uint64("crSubmitBlock", trace.CommitOrRollbackTxSubmitBlockNum).
+			Uint64("crBlock", trace.CommitOrRollbackBlockNum).
+			Msg("[txLife] transaction lifetime breakdown")
+	}
+	s.traceLock.Unlock()
+
 	totalClose := time.Since(t0close)
 
 	utils.SSCLogger().Debug().Str("txHash", txHash.Hex()).
@@ -1227,6 +1314,17 @@ func (s *sscService) closeTransaction(txHash common.Hash, commitOrRollback bool,
 		Str("verCleanup", tVerCleanup.String()).
 		Str("totalClose", totalClose.String()).
 		Msg("closeTransaction timing breakdown")
+}
+
+// blockGap 计算两个块号之间的间隔（-1 表示未记录，0 表示同一块内完成）
+func blockGap(from, to uint64) int {
+	if from == 0 || to == 0 {
+		return -1
+	}
+	if to < from {
+		return -1
+	}
+	return int(to - from)
 }
 
 func (s *sscService) closeTransactions(txs map[common.Hash]bool) {

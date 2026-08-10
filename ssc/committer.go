@@ -55,7 +55,26 @@ func (c *Committer) CommitOrRollbackWithProof(commitProofBytes []byte, stateDB a
 	txHash := commitProof.TxHash
 
 	if c.state.IsTxFinished(txHash) {
-		utils.SSCLogger().Debug().Str("txHash", txHash.Hex()).Msg("cxt has committed or rollback")
+		// BUG-12: tx 已 close（Closed=true），但仍需按 CR 语义释放其在全局锁中的残留锁。
+		// 背景：早期 generation 的 rollback/close（如 ReasonCxtTimeoutForSp1/PoolTimeout）只置 Closed=true、
+		//   不释放其他 generation 在 target 分片已 merge 到全局的锁；此 CR 是这些锁的唯一合法释放入口，
+		//   命中 IsTxFinished 若直接 return 则锁永不释放（累积到 globalLocked，LOCK_STALE 无限增长）。
+		// 解决：命中 IsTxFinished 仍调用 CommitTx/RollbackTx，让块尾 applyTo 通过全局反向索引释放剩余锁。
+		//   对已释放锁幂等（no-op），符合"链上回滚/提交释放锁"约束。
+		utils.SSCLogger().Info().Str("txHash", txHash.String()).
+			Msgf("cxt has committed or rollback; force-releasing residual locks via %s",
+				func() string { if commitProof.Type == api.Commit { return "CommitTx" }; return "RollbackTx" }())
+		if commitProof.Type == api.Commit {
+			if err := stateDB.CommitTx(txHash); err != nil {
+				utils.SSCLogger().Error().Str("txHash", txHash.String()).Err(err).
+					Msg("failed to force-commit residual locks (BUG-12)")
+			}
+		} else if commitProof.Type == api.Rollback {
+			if err := stateDB.RollbackTx(txHash); err != nil {
+				utils.SSCLogger().Error().Str("txHash", txHash.String()).Err(err).
+					Msg("failed to force-rollback residual locks (BUG-12)")
+			}
+		}
 		return nil
 	}
 	tIsFinished := time.Since(t0)

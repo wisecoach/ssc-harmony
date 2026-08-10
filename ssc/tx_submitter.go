@@ -1,6 +1,7 @@
 package ssc
 
 import (
+	"container/heap"
 	"context"
 	"encoding/json"
 	"math/big"
@@ -29,6 +30,8 @@ const (
 	NewEpochTx         TxType = "NewEpochTx"
 )
 
+const maxFlightLimit int32 = 1000
+
 // Priority 返回交易类型的优先级（1-5，越大优先级越高）
 func (t TxType) Priority() int {
 	switch t {
@@ -47,8 +50,8 @@ func (t TxType) Priority() int {
 	}
 }
 
-// txTypeToChannelIndex 将交易类型映射到对应的 channel 索引（0=最高优先级）
-func txTypeToChannelIndex(txType TxType) int {
+// txTypeToHeapIndex 将交易类型映射到 heap 索引（0=最高优先级）
+func txTypeToHeapIndex(txType TxType) int {
 	switch txType {
 	case NewEpochTx: // 优先级 5 -> 索引 0（最高）
 		return 0
@@ -61,7 +64,7 @@ func txTypeToChannelIndex(txType TxType) int {
 	case EmptyTx: // 优先级 1 -> 索引 4（最低）
 		return 4
 	default:
-		return 4 // 未知类型放入最低优先级
+		return 4
 	}
 }
 
@@ -70,12 +73,52 @@ type txTask struct {
 	txBuilder    func(nonce uint64, gasPrice *big.Int) *types.Transaction
 	txType       TxType
 	originTxHash common.Hash
+	nonce        uint64 // 排序用的 nonce（SimTx 已在 CXTSimulation.Nonce 中，非 SimTx 在入堆时快照）
+	shardId      uint32 // 排序用的 shardId
 	done         chan error
 }
 
 // TxPriorityQueue 优先级队列，包含 5 个独立 channel（索引 0=最高优先级）
 type TxPriorityQueue struct {
 	queues [5]chan *txTask
+}
+
+// taskHeap MinHeap，按 (nonce 小优先, shardId 小优先) 排序
+type taskHeap struct {
+	items []*txTask
+}
+
+func newTaskHeap() *taskHeap {
+	return &taskHeap{items: make([]*txTask, 0)}
+}
+
+func (h *taskHeap) Len() int { return len(h.items) }
+
+func (h *taskHeap) Less(i, j int) bool {
+	a, b := h.items[i], h.items[j]
+	// 1. nonce 小优先
+	if a.nonce != b.nonce {
+		return a.nonce < b.nonce
+	}
+	// 2. shardId 小优先
+	return a.shardId < b.shardId
+}
+
+func (h *taskHeap) Swap(i, j int) {
+	h.items[i], h.items[j] = h.items[j], h.items[i]
+}
+
+func (h *taskHeap) Push(x interface{}) {
+	h.items = append(h.items, x.(*txTask))
+}
+
+func (h *taskHeap) Pop() interface{} {
+	old := h.items
+	n := len(old)
+	item := old[n-1]
+	old[n-1] = nil // avoid memory leak
+	h.items = old[0 : n-1]
+	return item
 }
 
 func NewTxSubmitter(selfShard uint32, simSigner, crSigner api.TxSigner, nodeAPI hmy.NodeAPI, config *api.Config) api.TxSubmitter {
@@ -94,8 +137,17 @@ func NewTxSubmitter(selfShard uint32, simSigner, crSigner api.TxSigner, nodeAPI 
 				make(chan *txTask, 256), // 索引 4: EmptyTx (优先级 1)
 			},
 		},
-		ctx: context.Background(),
+		heaps: [5]*taskHeap{
+			newTaskHeap(),
+			newTaskHeap(),
+			newTaskHeap(),
+			newTaskHeap(),
+			newTaskHeap(),
+		},
+		submittedTxHashes: make(map[common.Hash]struct{}),
+		ctx:               context.Background(),
 	}
+	t.signal = sync.NewCond(&t.mu)
 	// 启动后台提交协程
 	go t.processQueue()
 	return t
@@ -117,6 +169,14 @@ type txSubmitter struct {
 	pendingCount   atomic.Int64 // 队列中待处理的任务数
 	completedCount atomic.Int64 // 已完成的任务总数（成功 + 失败）
 	failedCount    atomic.Int64 // 失败的任务数
+
+	// 排序 Buffer + Flight 控制
+	heaps             [5]*taskHeap            // 5 个独立 MinHeap（按类型索引）
+	mu                sync.Mutex              // 保护 heaps + signal 的条件变量
+	signal            *sync.Cond              // 条件变量：等待新 task 或 flight 空位
+	inFlight          atomic.Int32            // 已提交到 TxPool 但未被块确认的交易数
+	submittedTxHashes map[common.Hash]struct{} // 已提交但未确认的 txHash（锁保护）
+	submittedLock     sync.Mutex
 }
 
 // getSigner 根据交易类型返回对应的签名器
@@ -144,6 +204,7 @@ func (t *txSubmitter) incNonce(txType TxType) {
 	}
 }
 
+// SubmitSimulationTx 将 SimulationTx 任务放入优先级队列，阻塞等待处理完成
 func (t *txSubmitter) SubmitSimulationTx(simulation *api.CXTSimulation) error {
 	task := &txTask{
 		txBuilder: func(nonce uint64, gasPrice *big.Int) *types.Transaction {
@@ -154,16 +215,20 @@ func (t *txSubmitter) SubmitSimulationTx(simulation *api.CXTSimulation) error {
 		},
 		txType:       SimulationTx,
 		originTxHash: simulation.TxHash,
+		nonce:        simulation.Nonce,
+		shardId:      simulation.ShardId,
 		done:         make(chan error, 1),
 	}
 	utils.Logger().Info().
 		Str("txHash", simulation.TxHash.Hex()).
 		Uint64("Nonce", t.GetNonce(SimulationTx)).
 		Int64("pendingCnt", t.pendingCount.Load()).
+		Int("simulationNum", simulation.SimulationNum).
+		Uint64("blockNum", t.nodeAPI.Blockchain().CurrentBlock().NumberU64()).
 		Str("originTxHash", simulation.TxHash.Hex()).
 		Msg("[SimulationTx] submitting")
 	t.pendingCount.Add(1)
-	t.queue.queues[txTypeToChannelIndex(SimulationTx)] <- task
+	t.queue.queues[txTypeToHeapIndex(SimulationTx)] <- task
 	err := <-task.done
 	if err != nil {
 		t.failedCount.Add(1)
@@ -185,6 +250,8 @@ func (t *txSubmitter) SubmitSimulationTxWithSigner(simulation *api.CXTSimulation
 		},
 		txType:       TxType(signerType),
 		originTxHash: simulation.TxHash,
+		nonce:        simulation.Nonce,
+		shardId:      simulation.ShardId,
 		done:         make(chan error, 1),
 	}
 	utils.Logger().Info().
@@ -193,7 +260,7 @@ func (t *txSubmitter) SubmitSimulationTxWithSigner(simulation *api.CXTSimulation
 		Str("signerType", signerType).
 		Msg("[SimulationTx] submitting with CR signer (hot key chain)")
 	t.pendingCount.Add(1)
-	t.queue.queues[txTypeToChannelIndex(TxType(signerType))] <- task
+	t.queue.queues[txTypeToHeapIndex(TxType(signerType))] <- task
 	err := <-task.done
 	if err != nil {
 		t.failedCount.Add(1)
@@ -203,6 +270,7 @@ func (t *txSubmitter) SubmitSimulationTxWithSigner(simulation *api.CXTSimulation
 	return err
 }
 
+// SubmitCommitOrRollbackTx 将 CommitOrRollbackTx 任务放入优先级队列
 func (t *txSubmitter) SubmitCommitOrRollbackTx(proof *api.CXTCommitProof) error {
 	task := &txTask{
 		txBuilder: func(nonce uint64, gasPrice *big.Int) *types.Transaction {
@@ -211,18 +279,20 @@ func (t *txSubmitter) SubmitCommitOrRollbackTx(proof *api.CXTCommitProof) error 
 		},
 		txType:       CommitOrRollbackTx,
 		originTxHash: proof.TxHash,
+		nonce:        0, // nonce 在 processTask 中分配
+		shardId:      t.selfShard,
 		done:         make(chan error, 1),
 	}
 	t.pendingCount.Add(1)
-	t.queue.queues[txTypeToChannelIndex(CommitOrRollbackTx)] <- task
+	t.queue.queues[txTypeToHeapIndex(CommitOrRollbackTx)] <- task
 	go func() {
 		err := <-task.done
 		if err != nil {
 			t.failedCount.Add(1)
 		}
+		t.completedCount.Add(1)
+		t.pendingCount.Add(-1)
 	}()
-	t.completedCount.Add(1)
-	t.pendingCount.Add(-1)
 	return nil
 }
 
@@ -235,21 +305,24 @@ func (t *txSubmitter) SubmitEmptyTx() error {
 		},
 		txType:       EmptyTx,
 		originTxHash: common.Hash{},
+		nonce:        0,
+		shardId:      t.selfShard,
 		done:         make(chan error, 1),
 	}
 	t.pendingCount.Add(1)
-	t.queue.queues[txTypeToChannelIndex(EmptyTx)] <- task
+	t.queue.queues[txTypeToHeapIndex(EmptyTx)] <- task
 	go func() {
 		err := <-task.done
 		if err != nil {
 			t.failedCount.Add(1)
 		}
+		t.completedCount.Add(1)
+		t.pendingCount.Add(-1)
 	}()
-	t.completedCount.Add(1)
-	t.pendingCount.Add(-1)
 	return nil
 }
 
+// SubmitNewEpoch 将 NewEpochTx 任务放入优先级队列
 func (t *txSubmitter) SubmitNewEpoch(newEpoch *api.NewEpoch) error {
 	task := &txTask{
 		txBuilder: func(nonce uint64, gasPrice *big.Int) *types.Transaction {
@@ -258,21 +331,24 @@ func (t *txSubmitter) SubmitNewEpoch(newEpoch *api.NewEpoch) error {
 		},
 		txType:       NewEpochTx,
 		originTxHash: common.Hash{},
+		nonce:        0,
+		shardId:      t.selfShard,
 		done:         make(chan error, 1),
 	}
 	t.pendingCount.Add(1)
-	t.queue.queues[txTypeToChannelIndex(NewEpochTx)] <- task
+	t.queue.queues[txTypeToHeapIndex(NewEpochTx)] <- task
 	go func() {
 		err := <-task.done
 		if err != nil {
 			t.failedCount.Add(1)
 		}
+		t.completedCount.Add(1)
+		t.pendingCount.Add(-1)
 	}()
-	t.completedCount.Add(1)
-	t.pendingCount.Add(-1)
 	return nil
 }
 
+// SubmitUploadOpinions 将 UploadOpinionsTx 任务放入优先级队列
 func (t *txSubmitter) SubmitUploadOpinions(uploadOpinions *api.SelfOpinions) error {
 	task := &txTask{
 		txBuilder: func(nonce uint64, gasPrice *big.Int) *types.Transaction {
@@ -281,65 +357,133 @@ func (t *txSubmitter) SubmitUploadOpinions(uploadOpinions *api.SelfOpinions) err
 		},
 		txType:       UploadOpinionsTx,
 		originTxHash: common.Hash{},
+		nonce:        0,
+		shardId:      t.selfShard,
 		done:         make(chan error, 1),
 	}
 	t.pendingCount.Add(1)
-	t.queue.queues[txTypeToChannelIndex(UploadOpinionsTx)] <- task
+	t.queue.queues[txTypeToHeapIndex(UploadOpinionsTx)] <- task
 	go func() {
 		err := <-task.done
 		if err != nil {
 			t.failedCount.Add(1)
 		}
+		t.completedCount.Add(1)
+		t.pendingCount.Add(-1)
 	}()
-	t.completedCount.Add(1)
-	t.pendingCount.Add(-1)
 	return nil
 }
 
-// processQueue 后台协程，按优先级处理交易队列
-// 总是优先处理高优先级 channel 中的任务
+// processQueue 后台协程：两个 goroutine 各司其职
+//
+// drainer goroutine: 从 chan 收 task → push 到对应 heap，然后 Broadcast 通知 worker
+// worker goroutine:  按优先级遍历 heap → pop → 提交，flight 满时 Wait
+//
+// 外部 OnBlockCommitted 调用 ReleaseFlight 释放 inFlight 后也会 Broadcast
 func (t *txSubmitter) processQueue() {
+	// drainer: chan → heap
+	go func() {
+		for {
+			t.drainOne()
+		}
+	}()
+
+	// worker: heap → 同步提交
+	t.mu.Lock()
+	defer t.mu.Unlock()
 	for {
-		// 按优先级从高到低轮询（索引 0=最高优先级）
-		var task *txTask
-		for i := 0; i < 5; i++ {
-			select {
-			case task = <-t.queue.queues[i]:
-				goto process
-			default:
-				// 当前 channel 为空，继续检查下一个
-			}
-		}
-		// 所有 channel 都为空，阻塞等待任意 channel
-		select {
-		case task = <-t.queue.queues[0]:
-		case task = <-t.queue.queues[1]:
-		case task = <-t.queue.queues[2]:
-		case task = <-t.queue.queues[3]:
-		case task = <-t.queue.queues[4]:
-		}
-	process:
-		if task != nil {
-			t.processTask(task)
+		// submitNext 要求调用时已持有 t.mu，返回时也持有 t.mu
+		for t.submitNext() {
 		}
 	}
 }
 
+// drainOne 阻塞等待任意 chan，收到后 push 到对应 heap 并 Broadcast
+func (t *txSubmitter) drainOne() {
+	var task *txTask
+	select {
+	case task = <-t.queue.queues[0]:
+	case task = <-t.queue.queues[1]:
+	case task = <-t.queue.queues[2]:
+	case task = <-t.queue.queues[3]:
+	case task = <-t.queue.queues[4]:
+	}
+	t.pushToHeap(task)
+	t.signal.Broadcast()
+}
+
+// submitNext 严格按优先级从高到低检查 heap，有任务且 flight 有空位则提交一笔
+//
+// 必须在 t.mu 锁内调用。调用后 mu 可能被释放又重获（processTask 期间短暂释放）。
+// 返回 true = 提交了一笔（mu 已重获），false = 所有 heap 空或 flight 满（mu 已重获）。
+func (t *txSubmitter) submitNext() bool {
+	for i := 0; i < 5; i++ {
+		for t.heaps[i].Len() > 0 && t.inFlight.Load() < maxFlightLimit {
+			task := heap.Pop(t.heaps[i]).(*txTask)
+			t.inFlight.Add(1)
+			t.mu.Unlock()
+			err := t.processTask(task)
+			t.mu.Lock()
+			if err != nil {
+				// 提交失败，把 inFlight 还回去
+				t.inFlight.Add(-1)
+			}
+			// 一笔提交后回到外层，给其他优先级机会
+			return true
+		}
+	}
+	// 所有 heap 空 or flight 满，等待
+	for {
+		// 检查所有 heap 和 inFlight（防 Broadcast 在 Wait 前到达导致信号丢失）
+		hasWork := false
+		for i := 0; i < 5; i++ {
+			if t.heaps[i].Len() > 0 && t.inFlight.Load() < maxFlightLimit {
+				hasWork = true
+				break
+			}
+		}
+		if hasWork {
+			return true
+		}
+		t.signal.Wait()
+		// Wait 返回后重获 mu，回到 for 开头重检查条件
+	}
+}
+
+// pushToHeap 将 task 放入对应类型的 heap（上限 10000）
+func (t *txSubmitter) pushToHeap(task *txTask) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	heapIdx := txTypeToHeapIndex(task.txType)
+	if t.heaps[heapIdx].Len() >= 10000 {
+		utils.SSCLogger().Warn().
+			Int("heapIdx", heapIdx).
+			Str("txType", string(task.txType)).
+			Msg("[TxSubmitter] heap full, dropping task")
+		if task.done != nil {
+			task.done <- errors.New("heap full")
+		}
+		return
+	}
+	heap.Push(t.heaps[heapIdx], task)
+}
+
 // processTask 处理单个交易任务，负责 nonce 分配和重试
-func (t *txSubmitter) processTask(task *txTask) {
+func (t *txSubmitter) processTask(task *txTask) error {
 	t.lock.Lock()
 	currentNonce := t.getNonce(task.txType)
 	signer := t.getSigner(task.txType)
 	if signer == nil {
 		t.lock.Unlock()
 		task.done <- errors.New("signer not configured for tx type: " + string(task.txType))
-		return
+		return errors.New("signer not configured for tx type: " + string(task.txType))
 	}
 	gasPrice := new(big.Int).Set(t.config.SimulationCommitGasPrice)
 	t.lock.Unlock()
 
 	err := t.submitWithRetry(task.txBuilder, task.txType, task.originTxHash, currentNonce, gasPrice, 0, signer)
 	task.done <- err
+	return err
 }
 
 // submitWithRetry 处理交易提交重试，支持 gasPrice 递增和 nonce 调整
@@ -417,7 +561,14 @@ func (t *txSubmitter) submitWithRetry(
 		}
 	}
 
-	// 提交成功，递增对应类型的 nonce
+	// 提交成功，记录 txHash 到 submittedTxHashes
+	// BUG: 必须用 signedTx.Hash()（签名后），OnBlockCommitted 用 block.Transactions()[i].Hash()（也是签名后）匹配。
+	// 若用 tx.Hash()（raw 未签名），区块内交易 hash 不同 → matched 恒 0 → inFlight 涨满 maxFlightLimit → worker 停止提交 → 交易冻结。
+	t.submittedLock.Lock()
+	t.submittedTxHashes[signedTx.Hash()] = struct{}{}
+	t.submittedLock.Unlock()
+
+	// 递增对应类型的 nonce
 	t.lock.Lock()
 	if t.getNonce(txType) == nonce {
 		t.incNonce(txType)
@@ -438,6 +589,31 @@ func (t *txSubmitter) increaseGasPrice(currentGasPrice *big.Int) *big.Int {
 		increase = big.NewInt(1e9)
 	}
 	return new(big.Int).Add(currentGasPrice, increase)
+}
+
+// OnBlockCommitted 块确认回调：匹配块中交易减 submittedTxHashes 和 inFlight
+func (t *txSubmitter) OnBlockCommitted(block *types.Block) {
+	matched := 0
+	t.submittedLock.Lock()
+	for _, tx := range block.Transactions() {
+		txHash := tx.Hash()
+		if _, ok := t.submittedTxHashes[txHash]; ok {
+			delete(t.submittedTxHashes, txHash)
+			matched++
+		}
+	}
+	remain := len(t.submittedTxHashes)
+	t.submittedLock.Unlock()
+
+	t.inFlight.Add(-int32(matched))
+	t.signal.Broadcast()
+
+	utils.SSCLogger().Info().
+		Uint64("blockNum", block.NumberU64()).
+		Int("matched", matched).
+		Int32("inFlight", t.inFlight.Load()).
+		Int("submittedTxHashesRemain", remain).
+		Msg("[TxSubmitter] OnBlockCommitted")
 }
 
 // GetNonce 获取指定交易类型的当前 nonce（用于调试/监控）

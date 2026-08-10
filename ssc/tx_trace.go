@@ -2,6 +2,7 @@ package ssc
 
 import (
 	"fmt"
+	"time"
 
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/harmony-one/harmony/internal/utils"
@@ -18,7 +19,7 @@ const (
 	StageCommitOrRollback                           // 4: CommitOrRollbackWithProof executed on-chain
 )
 
-// TxBlockTrace 记录交易各阶段的块高度，用于分析阶段间块跨度
+// TxBlockTrace 记录交易各阶段的块高度和时间，用于分析阶段间耗时
 type TxBlockTrace struct {
 	TxHash common.Hash
 
@@ -28,21 +29,44 @@ type TxBlockTrace struct {
 	SimulationTxCommitBlockNum       uint64 // 模拟提交交易上链执行（VerifySimulation）
 	CommitOrRollbackTxSubmitBlockNum uint64 // 提交 commit/rollback 交易入池
 	CommitOrRollbackBlockNum         uint64 // commit/rollback 交易上链执行
+
+	// 各阶段到达的墙上时钟时间（用于计算阶段间耗时，不受空块影响）
+	SimulateTime                 time.Time
+	SimulationTxSubmitTime       time.Time
+	SimulationTxCommitTime       time.Time
+	CommitOrRollbackTxSubmitTime time.Time
+	CommitOrRollbackTime         time.Time
 }
 
-// Record 记录某个阶段对应的块高度
+// Record 记录某个阶段对应的块高度和当前时间
 func (t *TxBlockTrace) Record(stage TraceStage, blockNum uint64) {
+	now := time.Now()
 	switch stage {
 	case StageSimulateCX:
 		t.SimulateBlockNum = blockNum
+		if t.SimulateTime.IsZero() {
+			t.SimulateTime = now
+		}
 	case StageSimulationTxSubmit:
 		t.SimulationTxSubmitBlockNum = blockNum
+		if t.SimulationTxSubmitTime.IsZero() {
+			t.SimulationTxSubmitTime = now
+		}
 	case StageSimulationTxCommit:
 		t.SimulationTxCommitBlockNum = blockNum
+		if t.SimulationTxCommitTime.IsZero() {
+			t.SimulationTxCommitTime = now
+		}
 	case StageCommitOrRollbackTxSubmit:
 		t.CommitOrRollbackTxSubmitBlockNum = blockNum
+		if t.CommitOrRollbackTxSubmitTime.IsZero() {
+			t.CommitOrRollbackTxSubmitTime = now
+		}
 	case StageCommitOrRollback:
 		t.CommitOrRollbackBlockNum = blockNum
+		if t.CommitOrRollbackTime.IsZero() {
+			t.CommitOrRollbackTime = now
+		}
 	}
 }
 

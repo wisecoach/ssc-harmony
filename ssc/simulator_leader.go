@@ -100,7 +100,7 @@ func (sim *Simulator) StartSimulateCXTransaction(req *api.CXTSimulationRequest) 
 	header := sim.bc.CurrentHeader()
 	req.BlockHash = header.Hash()
 	req.BlockNum = header.NumberU64()
-	// sim.recordTraceBlock(txHash, StageSimulateCX, header.NumberU64()) — omitted
+	sim.sscService.recordTraceBlock(txHash, StageSimulateCX, header.NumberU64())
 	committee := sim.committee.GetCommittee(req.Epochs[sim.committee.SelfShard], sim.committee.SelfShard)
 	n := committee.Number
 	t := committee.Threshold

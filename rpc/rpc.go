@@ -2,9 +2,10 @@ package rpc
 
 import (
 	"fmt"
-	"github.com/harmony-one/harmony/internal/utils"
 	"net"
 	"strings"
+
+	"github.com/harmony-one/harmony/internal/utils"
 
 	"github.com/harmony-one/harmony/eth/rpc"
 	"github.com/harmony-one/harmony/hmy"
@@ -208,10 +209,10 @@ func getAPIs(hmy *hmy.Harmony, config nodeconfig.RPCServerConfig) []rpc.API {
 		NewPrivateDebugAPI(hmy, V2),
 	}
 
-	publicAPIs = append(publicAPIs,
-		NewPublicSSCCrossAPI(hmy.NodeAPI.GetSSCService(), SSC, config.RateLimiterEnabled, config.RequestsPerSecond),
-		NewPublicSSCShardAPI(hmy.NodeAPI.GetSSCService(), SSC, config.RateLimiterEnabled, config.RequestsPerSecond),
-	)
+	// publicAPIs = append(publicAPIs,
+	// 	NewPublicSSCCrossAPI(hmy.NodeAPI.GetSSCService(), SSC, config.RateLimiterEnabled, config.RequestsPerSecond),
+	// 	NewPublicSSCShardAPI(hmy.NodeAPI.GetSSCService(), SSC, config.RateLimiterEnabled, config.RequestsPerSecond),
+	// )
 
 	if config.DebugEnabled {
 		apis := append(publicAPIs, publicDebugAPIs...)

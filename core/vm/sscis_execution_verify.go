@@ -77,24 +77,11 @@ func opCall_SSC_EV(pc *uint64, inp Interpreter, contract *Contract, memory *Memo
 	if isCrossCall {
 		ret, returnGas, err = interpreter.vm.SSCService.GetResult(interpreter.vm.Context.TxHash, interpreter.vm.Context.CrossCallIndex)
 		if err != nil {
-			utils.SSCLogger().Error().Err(err).
-				Str("ExecutionType", interpreter.vm.ExecutionType.String()).
-				Str("txHash", interpreter.vm.Context.TxHash.Hex()).
-				Str("callIndex", interpreter.vm.Context.CrossCallIndex.ToString()).
-				Msgf("Cross call failed, shard: %d->%d", interpreter.vm.Context.ShardID, targetShardId)
 			return nil, err
 		}
 	} else {
 		ret, returnGas, err = interpreter.vm.Call(contract, toAddr, args, gas, value)
 	}
-
-	utils.SSCLogger().Debug().
-		Str("ExecutionType", interpreter.vm.ExecutionType.String()).
-		Str("txHash", interpreter.vm.Context.TxHash.Hex()).
-		Str("callIndex", interpreter.vm.Context.CrossCallIndex.ToString()).
-		Bool("isCrossCall", isCrossCall).
-		Uint64("pc", *pc).
-		Msgf("ec_call, index=%v, result=%v, err=%v", args[35], ret, err)
 
 	if err != nil {
 		stack.push(interpreter.intPool.getZero())

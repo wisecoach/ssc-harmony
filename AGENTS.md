@@ -126,12 +126,18 @@ See `harmony-experiment-runner` skill for the complete debug loop:
 4. Analyze results
 ```
 
-### 4.3 Test
+### 4.3 Test — ⚠️ 禁止本地 go test / make test
+
+> **规则**：本项目**不做本地 `go test` / `make test`**——没有本地测试环境，且存在引用旧 API 的陈旧 `*_test.go`（如 `ssc/simulation_test.go`、`ssc/simulation_params_test.go`，最后更新于 `fb77273b6`），`go test` 会把它们编进测试二进制导致编译失败（这是**预存问题**，与改动无关，别被它误导）。
+
+**代码验证的正确方式**（本地）：
 
 ```bash
-make test          # Full Go test suite
-cd ssc && go test  # SSC-specific tests
+go build ./ssc/...    # ✅ 编译全部生产代码 + 改动，这是本地的验证入口
+go vet ./ssc/...      # ✅ 类型/静态检查（如遇 BLS CGo 报错，grep -v bls.h 过滤）
 ```
+
+**行为验证的唯一方式**：远程部署重编译 binary（见 4.2）→ 跑实验 → 分析日志。改代码后的验收**永远靠远程实验结果，不是本地测试套件**。
 
 ### 4.4 Log Analysis
 

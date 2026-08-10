@@ -1043,7 +1043,7 @@ func (sim *Simulator) HandleSimulateRequest(ctx context.Context, req *api.CXTSim
 		Msg("simulate contract with sscvm")
 
 	var ret *api.CXTSimulationResult
-	vmCtx := core.NewSSCVMContext(msg.From(), tx.Hash(), api.CallIndex{}, tx.GasPrice(), header, sim.bc, req.Author)
+	vmCtx := core.NewSSCVMContext(req.From, tx.Hash(), api.CallIndex{}, tx.GasPrice(), header, sim.bc, req.Author)
 	vmCtx.TxType = types.CXTransaction
 	sscvm := vm.NewSSCVM(vmCtx, stateDB, chainConfig, *vmConfig, sim.sscService, executionType)
 	result, err := core.NewSSCStateTransition(sscvm, msg, gp).TransitionDb()

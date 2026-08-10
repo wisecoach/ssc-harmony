@@ -116,6 +116,10 @@ const (
 
 	// prometheusHTTPPortOffset is the port offset for prometheus HTTP requests
 	prometheusHTTPPortOffset = 900
+
+	// sscGrpcPortOffset is the port offset for SSC gRPC requests
+	// P2P port 9000 → gRPC 8500 = 9000 - 500
+	sscGrpcPortOffset = -500
 )
 
 // GetDefaultBootNodes get the default bootnode with the given network type
@@ -187,4 +191,9 @@ func GetWSAuthPortFromBase(basePort int) int {
 // GetPrometheusHTTPPortFromBase return the prometheus HTTP port from base port
 func GetPrometheusHTTPPortFromBase(basePort int) int {
 	return basePort + prometheusHTTPPortOffset
+}
+
+// GetSSCGrpcPortFromBase return the SSC gRPC port from P2P base port
+func GetSSCGrpcPortFromBase(basePort int) int {
+	return basePort + sscGrpcPortOffset
 }

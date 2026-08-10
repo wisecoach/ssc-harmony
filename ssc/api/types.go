@@ -270,10 +270,11 @@ type Candidate struct {
 
 // Member is the member of the committee
 type Member struct {
-	Address   common.Address
-	PubKey    string
-	Endpoint  string
-	BLSPubKey string
+	Address     common.Address `json:"address"`
+	PubKey      string         `json:"pubkey"`
+	Endpoint    string         `json:"endpoint"`    // JSON-RPC endpoint for external API
+	SSCEndpoint string         `json:"sscendpoint"` // gRPC endpoint for SSC internal RPC
+	BLSPubKey   string         `json:"blspubkey"`
 }
 
 type ShardSimulateCommitteeConfig struct {
@@ -295,15 +296,15 @@ type ChainConfig struct {
 
 // ShardSimulateCommittee (SSC) is the committee of the shard simulation
 type ShardSimulateCommittee struct {
-	ShardID            uint32
-	Epoch              Epoch
-	Members            []*Member
-	Threshold          int
-	Validators         []*Member
-	ValidatorThreshold int
-	Number             int
-	MemberIndex        map[common.Address]int `json:"-"`
-	ValidatorIndex     map[common.Address]int `json:"-"`
+	ShardID            uint32                     `json:"shardid" yaml:"shardid"`
+	Epoch              Epoch                      `json:"epoch" yaml:"epoch"`
+	Members            []*Member                  `json:"members" yaml:"members"`
+	Threshold          int                        `json:"threshold" yaml:"threshold"`
+	Validators         []*Member                  `json:"validators" yaml:"validators"`
+	ValidatorThreshold int                        `json:"validatorthreshold" yaml:"validatorthreshold"`
+	Number             int                        `json:"number" yaml:"number"`
+	MemberIndex        map[common.Address]int      `json:"-" yaml:"-"`
+	ValidatorIndex     map[common.Address]int      `json:"-" yaml:"-"`
 }
 
 type TimeoutConfig struct {

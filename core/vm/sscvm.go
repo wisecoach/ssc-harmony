@@ -2,17 +2,13 @@ package vm
 
 import (
 	"math/big"
-	"reflect"
-	"strconv"
 	"strings"
 	"sync/atomic"
-	"time"
 
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/crypto"
 	"github.com/harmony-one/harmony/core/state"
 	"github.com/harmony-one/harmony/internal/params"
-	"github.com/harmony-one/harmony/internal/utils"
 	"github.com/harmony-one/harmony/ssc/api"
 	"github.com/pkg/errors"
 )
@@ -150,18 +146,7 @@ func (vm *SSCVM) Interpreter() Interpreter {
 // the necessary steps to create accounts and reverses the state in case of an
 // execution error or failed value transfer.
 func (vm *SSCVM) Call(caller ContractRef, addr common.Address, input []byte, gas uint64, value *big.Int) (ret []byte, leftOverGas uint64, err error) {
-	startTime := time.Now()
 	vm.callCount++
-
-	// Log every SSCVM.Call depth for depth distribution analysis
-	// (Debug level, so won't spam production logs; only used for targeted analysis)
-	if vm.ExecutionType == ExecutionVerify {
-		utils.SSCLogger().Debug().
-			Str("txHash", vm.Context.TxHash.Hex()).
-			Int("depth", vm.depth).
-			Int("callCount", vm.callCount).
-			Msg("SSCVM.Call entry depth")
-	}
 
 	if vm.vmConfig.NoRecursion && vm.depth > 0 {
 		return nil, gas, nil
@@ -173,13 +158,6 @@ func (vm *SSCVM) Call(caller ContractRef, addr common.Address, input []byte, gas
 	}
 
 	if IsWriteCapablePrecompiledSSCContract(addr) {
-		defer utils.SSCLogger().Debug().
-			Str("ExecutionType", vm.ExecutionType.String()).
-			Str("txHash", vm.Context.TxHash.Hex()).
-			Str("callIndex", vm.Context.CrossCallIndex.ToString()).
-			Dur("cost", time.Since(startTime)).
-			Msgf("callSSCPrecompiledContract: caller=%s, addr=%s",
-				caller.Address().Hex(), addr.Hex())
 		return vm.callSSCPrecompiledContract(caller, addr, input, gas, value)
 	}
 
@@ -196,7 +174,6 @@ func (vm *SSCVM) Call(caller ContractRef, addr common.Address, input []byte, gas
 		return nil, gas, ErrInsufficientBalance
 	}
 
-	tPreState := time.Now()
 	var (
 		to       = AccountRef(addr)
 		snapshot int
@@ -226,10 +203,6 @@ func (vm *SSCVM) Call(caller ContractRef, addr common.Address, input []byte, gas
 			writeCapablePrecompiles = WriteCapablePrecompiledSSCContracts
 		}
 		if (len(writeCapablePrecompiles) == 0 || writeCapablePrecompiles[addr] == nil) && precompiles[addr] == nil && vm.ChainConfig().IsS3(vm.Context.EpochNumber) && value.Sign() == 0 {
-			utils.SSCLogger().Error().Str("txHash", vm.Context.TxHash.Hex()).
-				Str("callIndex", vm.Context.CrossCallIndex.ToString()).
-				Msgf("Call: caller=%s, addr=%s, targetShardId=%d, isCrossCall=%t",
-					caller.Address().Hex(), addr.Hex(), targetShardId, isCrossCall)
 			return nil, gas, nil
 		}
 		vm.StateDB.CreateAccount(addr)
@@ -249,36 +222,7 @@ func (vm *SSCVM) Call(caller ContractRef, addr common.Address, input []byte, gas
 	contract := NewContract(vm.Context.TxHash, caller, to, value, gas)
 	contract.SetCallCode(&addr, codeHash, code)
 
-	tRun0 := time.Now()
 	ret, err = vm.run(contract, input, false)
-	tRun := time.Since(tRun0)
-	tPreStateDur := time.Since(tPreState)
-	tTotal := time.Since(startTime)
-	if vm.ExecutionType == ExecutionVerify {
-		if tTotal > 100*time.Millisecond {
-			utils.SSCLogger().Info().Str("txHash", vm.Context.TxHash.Hex()).
-				Str("ExecutionType", vm.ExecutionType.String()).
-				Str("addr", addr.Hex()).
-				Int("depth", vm.depth).
-				Int("callCount", vm.callCount).
-				Uint64("opCount", vm.opCount).
-				Dur("preState", tPreStateDur).
-				Dur("run", tRun).
-				Dur("total", tTotal).
-				Msg("SSCVM.Call timing (slow)")
-		} else {
-			utils.SSCLogger().Info().Str("txHash", vm.Context.TxHash.Hex()).
-				Str("ExecutionType", vm.ExecutionType.String()).
-				Str("addr", addr.Hex()).
-				Int("depth", vm.depth).
-				Int("callCount", vm.callCount).
-				Uint64("opCount", vm.opCount).
-				Dur("preState", tPreStateDur).
-				Dur("run", tRun).
-				Dur("total", tTotal).
-				Msg("SSCVM.Call timing")
-		}
-	}
 
 	// When an error was returned by the EVM or when setting the creation code
 	// above we revert to the snapshot and consume any gas remaining. Additionally
@@ -329,7 +273,6 @@ func (vm *SSCVM) callSSCPrecompiledContract(caller ContractRef, addr common.Addr
 	vm.Transfer(caller.Address(), to.Address(), value, Internal)
 	ret, err = vm.run(contract, input, false)
 	if err != nil {
-		utils.SSCLogger().Error().Err(err).Str("txHash", vm.Context.TxHash.Hex()).Msgf("callSSCPrecompiledContract: caller=%s, addr=%s", caller.Address().Hex(), addr.Hex())
 		vm.StateDB.RevertToSnapshot(snapshot)
 		if err != ErrExecutionReverted {
 			contract.UseGas(contract.Gas)
@@ -340,7 +283,6 @@ func (vm *SSCVM) callSSCPrecompiledContract(caller ContractRef, addr common.Addr
 
 func (vm *SSCVM) CallFromOtherShard(fromShard uint32, caller ContractRef, addr common.Address, input []byte, gas uint64, value *big.Int) (ret []byte, leftOverGas uint64, err error) {
 	if vm.vmConfig.NoRecursion && vm.depth > 0 {
-		utils.SSCLogger().Error().Str("txHash", vm.Context.TxHash.Hex()).Msgf("callFromOtherShard: caller=%s, addr=%s", caller.Address().Hex(), addr.Hex())
 		return nil, gas, nil
 	}
 
@@ -356,9 +298,6 @@ func (vm *SSCVM) CallFromOtherShard(fromShard uint32, caller ContractRef, addr c
 	targetShardId := vm.SSCService.GetShardID(addr)
 	sscContract := IsWriteCapablePrecompiledSSCContract(addr)
 	if targetShardId != vm.Context.ShardID && !sscContract {
-		utils.SSCLogger().Error().Err(ErrNotTargetShard).Str("txHash", vm.Context.TxHash.Hex()).
-			Str("callIndex", vm.Context.CrossCallIndex.ToString()).
-			Msgf("not the target shard for cross-call, targetShardId=%d, currentShardId=%d, addr=%s, shardNum=%d", targetShardId, vm.Context.ShardID, addr.Hex(), vm.SSCService.ShardNum())
 		return nil, gas, ErrNotTargetShard
 	}
 
@@ -395,7 +334,6 @@ func (vm *SSCVM) CallFromOtherShard(fromShard uint32, caller ContractRef, addr c
 			writeCapablePrecompiles = WriteCapablePrecompiledSSCContracts
 		}
 		if (len(writeCapablePrecompiles) == 0 || writeCapablePrecompiles[addr] == nil) && precompiles[addr] == nil && vm.ChainConfig().IsS3(vm.Context.EpochNumber) && value.Sign() == 0 {
-			utils.SSCLogger().Error().Str("txHash", vm.Context.TxHash.Hex()).Msgf("create a new account without any value, caller=%s, addr=%s", caller.Address().Hex(), addr.Hex())
 			return nil, gas, nil
 		}
 		vm.StateDB.CreateAccount(addr)
@@ -414,12 +352,6 @@ func (vm *SSCVM) CallFromOtherShard(fromShard uint32, caller ContractRef, addr c
 	// The contract is a scoped environment for this execution context only.
 	contract := NewContract(vm.Context.TxHash, caller, to, value, gas)
 	contract.SetCallCode(&addr, codeHash, code)
-
-	utils.SSCLogger().Debug().Str("txHash", vm.Context.TxHash.Hex()).Str("callIndex", vm.Context.CrossCallIndex.ToString()).
-		Str("fromShard", strconv.Itoa(int(fromShard))).Str("toShard", strconv.Itoa(int(targetShardId))).
-		Str("from", caller.Address().Hex()).Str("to", addr.Hex()).
-		Uint64("gas", gas).Str("value", value.String()).
-		Msgf("callFromOtherShard, code_size: %d", len(code))
 
 	ret, err = vm.run(contract, input, false)
 
@@ -455,12 +387,6 @@ func (vm *SSCVM) CallCode(caller ContractRef, addr common.Address, input []byte,
 	}
 
 	if IsWriteCapablePrecompiledSSCContract(addr) {
-		utils.SSCLogger().Debug().
-			Str("ExecutionType", vm.ExecutionType.String()).
-			Str("txHash", vm.Context.TxHash.Hex()).
-			Str("callIndex", vm.Context.CrossCallIndex.ToString()).
-			Msgf("callSSCPrecompiledContract: caller=%s, addr=%s",
-				caller.Address().Hex(), addr.Hex())
 		return vm.callSSCPrecompiledContract(caller, addr, input, gas, value)
 	}
 
@@ -512,12 +438,6 @@ func (vm *SSCVM) DelegateCall(caller ContractRef, addr common.Address, input []b
 	}
 
 	if IsWriteCapablePrecompiledSSCContract(addr) {
-		utils.SSCLogger().Debug().
-			Str("ExecutionType", vm.ExecutionType.String()).
-			Str("txHash", vm.Context.TxHash.Hex()).
-			Str("callIndex", vm.Context.CrossCallIndex.ToString()).
-			Msgf("callSSCPrecompiledContract: caller=%s, addr=%s",
-				caller.Address().Hex(), addr.Hex())
 		return vm.callSSCPrecompiledContract(caller, addr, input, gas, big.NewInt(0))
 	}
 
@@ -559,12 +479,6 @@ func (vm *SSCVM) StaticCall(caller ContractRef, addr common.Address, input []byt
 	}
 
 	if IsWriteCapablePrecompiledSSCContract(addr) {
-		utils.SSCLogger().Debug().
-			Str("ExecutionType", vm.ExecutionType.String()).
-			Str("txHash", vm.Context.TxHash.Hex()).
-			Str("callIndex", vm.Context.CrossCallIndex.ToString()).
-			Msgf("callSSCPrecompiledContract: caller=%s, addr=%s",
-				caller.Address().Hex(), addr.Hex())
 		return vm.callSSCPrecompiledContract(caller, addr, input, gas, big.NewInt(0))
 	}
 
@@ -613,7 +527,6 @@ func (vm *SSCVM) Run(contract *Contract, input []byte, readOnly bool) ([]byte, e
 }
 
 func (vm *SSCVM) run(contract *Contract, input []byte, readOnly bool) ([]byte, error) {
-	startTime := time.Now()
 	if contract.CodeAddr != nil {
 		precompiles := PrecompiledContractsHomestead
 		// assign empty write capable precompiles till they are available in the fork
@@ -660,10 +573,6 @@ func (vm *SSCVM) run(contract *Contract, input []byte, readOnly bool) ([]byte, e
 		// it's used to cross-call for harmony, we don't need to RunWriteCapablePrecompiledContract
 		if len(writeCapablePrecompiles) > 0 {
 			if p := writeCapablePrecompiles[*contract.CodeAddr]; p != nil {
-				defer utils.SSCLogger().Debug().Str("txHash", vm.Context.TxHash.Hex()).
-					Str("executionType", vm.ExecutionType.String()).
-					Dur("duration", time.Since(startTime)).
-					Msgf("RunWriteCapablePrecompiledContract: %s, contractType: %s", contract.CodeAddr.Hex(), reflect.TypeOf(p).Elem().Name())
 				if readOnly {
 					return nil, errWriteProtection
 				}
