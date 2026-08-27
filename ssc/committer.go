@@ -25,6 +25,9 @@ type Committer struct {
 	committee *CommitteeMechanism
 	stats     *SimulationStats
 	state     CommitterStateAccessor
+
+	// traceSvc — 指向所属 sscService，用于补全 tx block trace 的 StageCommitOrRollback 埋点
+	traceSvc *sscService
 }
 
 func NewCommitter(
@@ -63,7 +66,12 @@ func (c *Committer) CommitOrRollbackWithProof(commitProofBytes []byte, stateDB a
 		//   对已释放锁幂等（no-op），符合"链上回滚/提交释放锁"约束。
 		utils.SSCLogger().Info().Str("txHash", txHash.String()).
 			Msgf("cxt has committed or rollback; force-releasing residual locks via %s",
-				func() string { if commitProof.Type == api.Commit { return "CommitTx" }; return "RollbackTx" }())
+				func() string {
+					if commitProof.Type == api.Commit {
+						return "CommitTx"
+					}
+					return "RollbackTx"
+				}())
 		if commitProof.Type == api.Commit {
 			if err := stateDB.CommitTx(txHash); err != nil {
 				utils.SSCLogger().Error().Str("txHash", txHash.String()).Err(err).
@@ -124,6 +132,13 @@ func (c *Committer) CommitOrRollbackWithProof(commitProofBytes []byte, stateDB a
 
 	if c.committee.SelfShard == commitProof.OriginShard && c.committee.IsLeader(commitProof.Epochs[c.committee.SelfShard]) {
 		c.stats.setCxtStage(txHash, 6)
+	}
+
+	// 补全 tx block trace：StageCommitOrRollback（CR 上链执行）阶段
+	// closeTransaction 也会设置 CommitOrRollbackTime，但这里通过 recordTraceBlock
+	// 同时记录块号并输出 debug "tx trace: stage=4"，与 [txLife] 口径一致。
+	if c.traceSvc != nil {
+		c.traceSvc.recordTraceBlock(txHash, StageCommitOrRollback, blockNum)
 	}
 
 	// v6: CR 完成后所有节点清理 onChainPatches

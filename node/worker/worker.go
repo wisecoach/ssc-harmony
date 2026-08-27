@@ -426,9 +426,17 @@ func (w *Worker) CommitTransactions(
 		before := len(w.current.txs)
 		beginTime := time.Now()
 		w.CommitSSCTransactions(sscTxns, coinbase, remaining, remainingTime)
-		remainingTime -= time.Since(beginTime)
+		simPhaseCost := time.Since(beginTime)
+		remainingTime -= simPhaseCost
 		simTxn = len(w.current.txs) - before
 		remaining -= simTxn
+		// debug：每块 SimTx 阶段耗时 + 剩余时间预算，用于观察 1s 预算是否被吃满（SimTx 排队主因）
+		utils.SSCLogger().Debug().
+			Uint64("blockNum", w.current.header.NumberU64()).
+			Int("simTxn", simTxn).
+			Dur("simPhaseCost", simPhaseCost).
+			Dur("remainingTime", remainingTime).
+			Msg("[BlockBudget] SimTx phase budget usage")
 	}
 
 	normalTxAddrs := make([]common.Address, 0)

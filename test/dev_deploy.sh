@@ -23,7 +23,6 @@ validator_per_node=${VALIDATOR_PER_NODE:-4}
 exam="shard=${shard}_validator=${validator}_ssc=${ssc}_delay=${delay}_rate=${rate}${cc_suffix}_vpn=${validator_per_node}"
 log_folder="${PROJECT_ROOT}/tmp_log/$exam"
 LOG_FILE="$log_folder/r.log"
-RECOMPILE=false
 MIN=3
 NETWORK=exprnet
 needed_servers=$((shard * validator / validator_per_node))
@@ -68,15 +67,15 @@ function clean() {
 }
 
 function preset() {
-    if ${RECOMPILE}; then
-      scripts/go_executable_build.sh -S || exit 1
+    # 强制重新编译（不允许跳过）：确保 bin/harmony 始终含最新源码改动
+    echo "=== [preset] 强制重新编译 harmony (RECOMPILE 不可跳过) ==="
+    scripts/go_executable_build.sh -S || exit 1
 
-      # upload binary to servers
-      for SERVER in "${SERVERS[@]}"; do
-          echo "Uploading binary to $SERVER"
-          rsync -av -e "ssh -p 10022" ./bin "$SERVER:$WORK_DIR/"
-      done
-    fi
+    # upload binary to servers
+    for SERVER in "${SERVERS[@]}"; do
+        echo "Uploading binary to $SERVER"
+        rsync -av -e "ssh -p 10022" ./bin "$SERVER:$WORK_DIR/"
+    done
 }
 
 function launch_bootnode() {

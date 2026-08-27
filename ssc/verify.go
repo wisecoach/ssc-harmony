@@ -130,6 +130,10 @@ type Verifier struct {
 	// 自管理的独立存储
 	executionVerifyContexts sync.Map // key: common.Hash → *api.ExecutionVerifyContext（含内嵌 subCtx）
 	txLockedSimNum          sync.Map // key: common.Hash, value: *lockedSimNumEntry (num 创建后不可变)
+
+	// traceSvc — 指向所属 sscService，用于补全 tx block trace 的阶段埋点
+	// （StageSimulationTxCommit 等需要写入 sscService.txTraces，而 recordTraceBlock 是 sscService 的方法）
+	traceSvc *sscService
 }
 
 func NewVerifier(
@@ -601,6 +605,12 @@ CallStates:
 			Int("simulationNum", simulation.SimulationNum).
 			Uint64("blockNum", header.NumberU64()).
 			Msg("[vsCommit] VerifySimulation success")
+		// 补全 tx block trace：SimulationTxCommit（SimTx 上链执行 VerifySimulation）阶段
+		// 此前该阶段从未记录，导致 [txLife] 的 submitToCommit / commitToCRSubmit 恒为 0，
+		// 无法看到 SimTx 在交易池排队的时间（BUG-13 §6.1 定位的主瓶颈段）。
+		if v.traceSvc != nil {
+			v.traceSvc.recordTraceBlock(txHash, StageSimulationTxCommit, header.NumberU64())
+		}
 		utils.SSCLogger().Debug().Str("txHash", txHash.Hex()).
 			Int("simulationNum", simulation.SimulationNum).
 			Uint32("shardId", v.committee.SelfShard).

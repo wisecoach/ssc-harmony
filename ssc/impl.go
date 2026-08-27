@@ -161,7 +161,7 @@ func newBaseService(ctx context.Context, config *api.Config, cm *CommitteeMechan
 	signerMgr api.BLSSignerMgr, bc core.BlockChain, txSigner api.TxSigner, comm *Comm) *sscService {
 	// 设置 worker 数量和信号量上限
 	numWorkers := config.SimulationLimit // worker 数量
-	numWorkers = 3
+	numWorkers = 32
 
 	service := &sscService{
 		CommitteeMechanism: cm,
@@ -367,6 +367,11 @@ func newBaseService(ctx context.Context, config *api.Config, cm *CommitteeMechan
 			},
 		},
 	)
+	// 给 Verifier / Committer 回填所属 sscService，用于补全 tx block trace 阶段埋点
+	// （StageSimulationTxCommit / StageCommitOrRollback 需要写入 service.txTraces）
+	service.Verifier.traceSvc = service
+	service.Committer.traceSvc = service
+
 	subscription := bc.SubscribeChainHeadEvent(service.chainHeadCh)
 	service.chainHeadSub = subscription
 	utils.SSCLogger().Info().Msg("ssc service start...")

@@ -102,3 +102,55 @@ rollback with proof = 63,574 (shard1 作为 target 收到大量回滚, 来自其
 - **8/6 实验**（历史正常基线）：P50=6.9s，P90=97s（那时锁泄漏在 shard1，尾部拖长）
 - **8/10 185643**（本次）：P50=31.8s，P90=75s，globalLocked=0（锁已修，时延整体更平滑但 P50 更高，无慢尾杆）
 - 注意 8/10 的 `total=10000` 与更早实验（total=100000）不同，对比口径要一致
+
+
+---
+
+## 6. 2026-08-11 新增：交易各阶段耗时分解结论（已用数据定型，不用重挖）
+
+> 数据来源：`20260810_185643` 全量 99,662 笔 committed 交易，逐笔 join 客户端 txs.csv + 各 shard leader `[txLife]` 埋点。
+
+### 6.1 阶段口径（先钉死测量边界）
+
+| 阶段 | 起点 | 终点 | 是否被 `[txLife]` 覆盖 | 埋点 |
+|---|---|---|---|---|
+| ① pool→simulate | tx 入池 "Pooled" (zero log) | 模拟开始 (simulator_leader.go:103) | ❌ 未覆盖 | startCXT / "simulate cx transaction, start" (debug) |
+| ② simToSubmit | 模拟开始 | SimTx 提交 | ✅ | `stage=0` → `[simTxSubmit]` |
+| ③ submit→commit | SimTx 提交 | VerifySimulation 上链 | ⚠️ 恒0 | `[simTxSubmit]` → `[vsCommit]` |
+| ④ commit→CRSubmit | SimTx 上链 | CR 提交 | ⚠️ 恒0 | `[vsCommit]` → CR submit |
+| ⑤ crSubmitToCR | CR 提交 | CR 上链 | ✅ | CR submit → `[txLife]` |
+| ⑥ totalLife | 模拟开始 | closeTransaction | ✅ | `[txLife]` |
+
+**`[txLife]` 只覆盖 simulate→close；result 时延 = pool(add) → leader close。二者差 = ① 未被覆盖的 pool→simulate 段。**
+
+**为什么 submitToCommit/commitToCRSubmit 恒 0（已定位根因）**：`ssc/tx_trace.go` 定义了 5 个 TraceStage，但 `recordTraceBlock` 在代码里只有 3 个调用点（`simulator_leader.go:103`=StageSimulateCX、`impl.go:910`=StageSimulationTxSubmit、`impl.go:1175`=StageCommitOrRollbackTxSubmit）。**StageSimulationTxCommit 和 StageCommitOrRollback 从未被调用** → `SimulationTxCommitTime`/`CommitOrRollbackTime`(via stage) 恒 0 → ③④ 恒 0。要补（`impl.go` close 处 `CommitOrRollbackTime` 是 `time.Now()` 直接设的，与 stage 无关，所以 totalLife 仍完整）。
+
+### 6.2 全量对账结果（99,662 笔）
+
+```
+             result P50    txLife P50   pool→simulate 缺口 P50
+shard 0        5.60s         4.36s           1.25s   ✅ 健康
+shard 2        5.64s         4.25s           1.41s   ✅ 健康
+shard 3       42.78s         4.29s          37.85s   ❌ 病态
+shard 1       68.39s         7.83s          61.27s   ❌ 病态
+```
+
+**一句话结论**：时延瓶颈不在已埋点的任何阶段（模拟/上链/CR 全分片都正常，txLife 4.3-7.8s），而在 **① pool→simulate 这段完全未被 `[txLife]` 覆盖的服务端等待**。shard0/2 只等 1.3s（健康），shard1/3 等 38-61s（病态），占了各自总时延的 ~90%。
+
+### 6.3 关键排除（已证伪的方向）
+
+- **不是 cross_cnt/cross 深度**：shard1 即使 cross=1（单分片交易）也 约 61s；shard0 即使 cross=33 也只 0.5s。瓶颈是分片整体性，非单笔交易属性。
+- **不是重试风暴**：simNum≥1 的仅 ~140 笔，且 CSV simulationNum 99.6% 为 0。
+- **不是完成率/吞吐**：完成率 99.67%，各 leader vsCommit/simTxSubmit 全量正常推进（shard1 63k/63k 等）。
+- **不是日志过滤**：debug 埋点齐全（"simulate cx transaction, start"=446k、"StartSimulateCXTransaction timing breakdown"=57k、"handle simulate request"=1.15M），无需补埋点即可定位 ①。
+
+### 6.4 指向的根因（下一 session 验证方向）
+
+**shard1/3 的 origin leader（9040/9120）在"从 txpool 捞交易 → 开始模拟"这一步被卡住/排队。** 与 §2.4 证据吻合：ChainPatch=317,315 远多于 AddPatch=63,337（5×），100% 交易被标 chain tx 跳过锁检查。怀疑 shard1/3 leader 的 chain-retry / DAG(ChainPatch) 调度使 leader 串行化，导致池内交易长期等不到模拟启动。
+
+**验证方法（现有 debug 埋点即可，不用补）**：批量抽 shard1 vs shard0 每笔 tx 的 `Pooled`(zero log) 时间 + `simulate cx transaction, start`(leader log) 时间，本地 join 算 ① 分布；再对比 9040 vs 9000 的"开始模拟"事件到达节奏与耗散。
+
+### 6.5 数据/文件
+- 客户端 txs.csv 时延口径：`commit(add) 事件时间 − Pooled(add) 事件时间`（见 sscc_log_handle/data_handler.py:453-469）
+- `[txLife]` 解析：远程 `logs/harmony-sscc/analyze-tx-life.py --leader`
+- 本次分析临时文件：本地 `/tmp/afyg/txs.csv`(15MB,100k tx)、`/tmp/afyg/txlife_all.jsonl`(151MB,199k txLife 行)

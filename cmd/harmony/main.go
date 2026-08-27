@@ -395,8 +395,8 @@ func setupNodeAndRun(hc harmonyconfig.HarmonyConfig) {
 	}
 
 	go func() {
-		// runtime.SetBlockProfileRate(1)
-		// runtime.SetMutexProfileFraction(1)
+		runtime.SetBlockProfileRate(1)
+		runtime.SetMutexProfileFraction(1)
 		ol.Println(http.ListenAndServe(fmt.Sprintf(":%d", hc.HTTP.Port-3000), nil))
 	}()
 

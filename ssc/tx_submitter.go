@@ -75,7 +75,6 @@ type txTask struct {
 	originTxHash common.Hash
 	nonce        uint64 // 排序用的 nonce（SimTx 已在 CXTSimulation.Nonce 中，非 SimTx 在入堆时快照）
 	shardId      uint32 // 排序用的 shardId
-	done         chan error
 }
 
 // TxPriorityQueue 优先级队列，包含 5 个独立 channel（索引 0=最高优先级）
@@ -165,18 +164,17 @@ type txSubmitter struct {
 	queue     TxPriorityQueue
 	ctx       context.Context
 
-	// 监控计数器
-	pendingCount   atomic.Int64 // 队列中待处理的任务数
-	completedCount atomic.Int64 // 已完成的任务总数（成功 + 失败）
-	failedCount    atomic.Int64 // 失败的任务数
-
 	// 排序 Buffer + Flight 控制
-	heaps             [5]*taskHeap            // 5 个独立 MinHeap（按类型索引）
-	mu                sync.Mutex              // 保护 heaps + signal 的条件变量
-	signal            *sync.Cond              // 条件变量：等待新 task 或 flight 空位
-	inFlight          atomic.Int32            // 已提交到 TxPool 但未被块确认的交易数
+	heaps             [5]*taskHeap             // 5 个独立 MinHeap（按类型索引）
+	mu                sync.Mutex               // 保护 heaps + signal 的条件变量
+	signal            *sync.Cond               // 条件变量：等待新 task 或 flight 空位
+	inFlight          atomic.Int32             // 已提交到 TxPool 但未被块确认的交易数
 	submittedTxHashes map[common.Hash]struct{} // 已提交但未确认的 txHash（锁保护）
 	submittedLock     sync.Mutex
+
+	// heapHighWater — submitter 内排队任务的历史最高水位（受 t.mu 保护），
+	// 用于 debug 观察 SimTx 是否在 submitter 内积压（每突破一次新高才打一条日志，避免刷屏）
+	heapHighWater int
 }
 
 // getSigner 根据交易类型返回对应的签名器
@@ -217,25 +215,17 @@ func (t *txSubmitter) SubmitSimulationTx(simulation *api.CXTSimulation) error {
 		originTxHash: simulation.TxHash,
 		nonce:        simulation.Nonce,
 		shardId:      simulation.ShardId,
-		done:         make(chan error, 1),
 	}
 	utils.Logger().Info().
 		Str("txHash", simulation.TxHash.Hex()).
 		Uint64("Nonce", t.GetNonce(SimulationTx)).
-		Int64("pendingCnt", t.pendingCount.Load()).
 		Int("simulationNum", simulation.SimulationNum).
 		Uint64("blockNum", t.nodeAPI.Blockchain().CurrentBlock().NumberU64()).
 		Str("originTxHash", simulation.TxHash.Hex()).
 		Msg("[SimulationTx] submitting")
-	t.pendingCount.Add(1)
 	t.queue.queues[txTypeToHeapIndex(SimulationTx)] <- task
-	err := <-task.done
-	if err != nil {
-		t.failedCount.Add(1)
-	}
-	t.completedCount.Add(1)
-	t.pendingCount.Add(-1)
-	return err
+	// 异步等待提交完成，不让模拟 worker 被 submitter 串行提交阻塞（瓶颈优化）
+	return nil
 }
 
 // SubmitSimulationTxWithSigner 用指定的 signer 类型提交 SimulationTx。
@@ -252,22 +242,14 @@ func (t *txSubmitter) SubmitSimulationTxWithSigner(simulation *api.CXTSimulation
 		originTxHash: simulation.TxHash,
 		nonce:        simulation.Nonce,
 		shardId:      simulation.ShardId,
-		done:         make(chan error, 1),
 	}
 	utils.Logger().Info().
 		Str("txHash", simulation.TxHash.Hex()).
 		Uint64("Nonce", t.GetNonce(TxType(signerType))).
 		Str("signerType", signerType).
 		Msg("[SimulationTx] submitting with CR signer (hot key chain)")
-	t.pendingCount.Add(1)
 	t.queue.queues[txTypeToHeapIndex(TxType(signerType))] <- task
-	err := <-task.done
-	if err != nil {
-		t.failedCount.Add(1)
-	}
-	t.completedCount.Add(1)
-	t.pendingCount.Add(-1)
-	return err
+	return nil
 }
 
 // SubmitCommitOrRollbackTx 将 CommitOrRollbackTx 任务放入优先级队列
@@ -281,18 +263,8 @@ func (t *txSubmitter) SubmitCommitOrRollbackTx(proof *api.CXTCommitProof) error 
 		originTxHash: proof.TxHash,
 		nonce:        0, // nonce 在 processTask 中分配
 		shardId:      t.selfShard,
-		done:         make(chan error, 1),
 	}
-	t.pendingCount.Add(1)
 	t.queue.queues[txTypeToHeapIndex(CommitOrRollbackTx)] <- task
-	go func() {
-		err := <-task.done
-		if err != nil {
-			t.failedCount.Add(1)
-		}
-		t.completedCount.Add(1)
-		t.pendingCount.Add(-1)
-	}()
 	return nil
 }
 
@@ -307,18 +279,8 @@ func (t *txSubmitter) SubmitEmptyTx() error {
 		originTxHash: common.Hash{},
 		nonce:        0,
 		shardId:      t.selfShard,
-		done:         make(chan error, 1),
 	}
-	t.pendingCount.Add(1)
 	t.queue.queues[txTypeToHeapIndex(EmptyTx)] <- task
-	go func() {
-		err := <-task.done
-		if err != nil {
-			t.failedCount.Add(1)
-		}
-		t.completedCount.Add(1)
-		t.pendingCount.Add(-1)
-	}()
 	return nil
 }
 
@@ -333,18 +295,8 @@ func (t *txSubmitter) SubmitNewEpoch(newEpoch *api.NewEpoch) error {
 		originTxHash: common.Hash{},
 		nonce:        0,
 		shardId:      t.selfShard,
-		done:         make(chan error, 1),
 	}
-	t.pendingCount.Add(1)
 	t.queue.queues[txTypeToHeapIndex(NewEpochTx)] <- task
-	go func() {
-		err := <-task.done
-		if err != nil {
-			t.failedCount.Add(1)
-		}
-		t.completedCount.Add(1)
-		t.pendingCount.Add(-1)
-	}()
 	return nil
 }
 
@@ -359,18 +311,8 @@ func (t *txSubmitter) SubmitUploadOpinions(uploadOpinions *api.SelfOpinions) err
 		originTxHash: common.Hash{},
 		nonce:        0,
 		shardId:      t.selfShard,
-		done:         make(chan error, 1),
 	}
-	t.pendingCount.Add(1)
 	t.queue.queues[txTypeToHeapIndex(UploadOpinionsTx)] <- task
-	go func() {
-		err := <-task.done
-		if err != nil {
-			t.failedCount.Add(1)
-		}
-		t.completedCount.Add(1)
-		t.pendingCount.Add(-1)
-	}()
 	return nil
 }
 
@@ -460,12 +402,25 @@ func (t *txSubmitter) pushToHeap(task *txTask) {
 			Int("heapIdx", heapIdx).
 			Str("txType", string(task.txType)).
 			Msg("[TxSubmitter] heap full, dropping task")
-		if task.done != nil {
-			task.done <- errors.New("heap full")
-		}
 		return
 	}
 	heap.Push(t.heaps[heapIdx], task)
+
+	// debug：记录 submitter 内排队任务总水位的突破（每突破新高打一条，便于观察积压趋势）
+	total := 0
+	for i := range t.heaps {
+		total += t.heaps[i].Len()
+	}
+	if total > t.heapHighWater {
+		t.heapHighWater = total
+		utils.SSCLogger().Debug().
+			Int("heapTotal", total).
+			Int("heapHighWater", t.heapHighWater).
+			Int32("inFlight", t.inFlight.Load()).
+			Str("txType", string(task.txType)).
+			Str("originTxHash", task.originTxHash.Hex()).
+			Msg("[TxSubmitter] queue high-water mark raised")
+	}
 }
 
 // processTask 处理单个交易任务，负责 nonce 分配和重试
@@ -475,14 +430,12 @@ func (t *txSubmitter) processTask(task *txTask) error {
 	signer := t.getSigner(task.txType)
 	if signer == nil {
 		t.lock.Unlock()
-		task.done <- errors.New("signer not configured for tx type: " + string(task.txType))
 		return errors.New("signer not configured for tx type: " + string(task.txType))
 	}
 	gasPrice := new(big.Int).Set(t.config.SimulationCommitGasPrice)
 	t.lock.Unlock()
 
 	err := t.submitWithRetry(task.txBuilder, task.txType, task.originTxHash, currentNonce, gasPrice, 0, signer)
-	task.done <- err
 	return err
 }
 
@@ -519,7 +472,6 @@ func (t *txSubmitter) submitWithRetry(
 		Uint64("Nonce", nonce).
 		Str("originTxHash", originTxHash.Hex()).
 		Int("retry", retryCount).Msgf("submitting %s, nonce=%d, gasPrice=%s", txType, nonce, gasPrice.String())
-
 	err = t.nodeAPI.AddPendingTransaction(signedTx)
 	if err != nil {
 		if errors.Is(err, core.ErrNonceTooLow) {
@@ -623,13 +575,6 @@ func (t *txSubmitter) GetNonce(txType TxType) uint64 {
 	return t.getNonce(txType)
 }
 
-// GetStats 获取完整统计信息
-func (t *txSubmitter) GetStats() (pending, completed, failed int64, simNonce, crNonce uint64) {
-	t.lock.Lock()
-	defer t.lock.Unlock()
-	return t.pendingCount.Load(), t.completedCount.Load(), t.failedCount.Load(), t.simNonce, t.crNonce
-}
-
 // SetNonce 设置指定交易类型的 nonce（用于初始化/恢复）
 func (t *txSubmitter) SetNonce(txType TxType, nonce uint64) {
 	t.lock.Lock()
@@ -639,24 +584,4 @@ func (t *txSubmitter) SetNonce(txType TxType, nonce uint64) {
 	} else {
 		t.simNonce = nonce
 	}
-}
-
-// GetPendingCount 获取队列中待处理的任务数
-func (t *txSubmitter) GetPendingCount() int64 {
-	return t.pendingCount.Load()
-}
-
-// GetCompletedCount 获取已完成的任务总数（成功 + 失败）
-func (t *txSubmitter) GetCompletedCount() int64 {
-	return t.completedCount.Load()
-}
-
-// GetFailedCount 获取失败的任务数
-func (t *txSubmitter) GetFailedCount() int64 {
-	return t.failedCount.Load()
-}
-
-// GetQueueSize 获取当前队列长度（与 GetPendingCount 相同，别名）
-func (t *txSubmitter) GetQueueSize() int64 {
-	return t.pendingCount.Load()
 }
