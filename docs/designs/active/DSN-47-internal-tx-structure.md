@@ -16,7 +16,7 @@ refs: [DSN-45, DSN-46, EXP-07]
 
 ## 1. 概述
 
-定义 `SSCInternalTx`（RLP 外壳 + protobuf 内部载荷），作为区块/交易池/网络中内部交易的统一实体；在区块 `BodyV2` 中新增**独立内部交易队列（二维、按类型分桶）**；给 SSCVM 提供**原生处理入口**，不再走「特殊地址 + precompile + JSON」的 hack。
+定义 `SSCInternalTx`（RLP 外壳 + protobuf 内部载荷），作为区块/交易池/网络中内部交易的统一实体；在区块 `BodyV2` 中新增**独立内部交易队列（一维 `[]*SSCInternalTx`，按类型在内存分桶处理）**；给 SSCVM 提供**原生处理入口**，不再走「特殊地址 + precompile + JSON」的 hack。
 
 ## 2. 现状与问题
 
@@ -28,7 +28,7 @@ refs: [DSN-45, DSN-46, EXP-07]
 ## 3. 设计目标
 
 1. 独立的内部交易结构，类型化、去 JSON。
-2. 区块里独立承载内部交易，按类型分桶（二维数组）。
+2. 区块里独立承载内部交易（一维队列），执行时按类型分桶处理。
 3. SSCVM 原生识别/处理内部交易。
 4. 排序以「区块数组顺序」为唯一权威（无 seq 字段）。
 5. leader/validator 确定性一致。
@@ -64,36 +64,32 @@ func (t *SSCInternalTx) RefTxHash() common.Hash   // 解 Payload 后取；非外
 | 6 | **外壳 RLP，内部载荷 protobuf**（混合序列化） |
 | 7 | **去掉 `IsExternal()`**：是否外部直接用 `Type` 判断 |
 
-### 4.3 区块承载：BodyV2 新增独立内部交易队列（二维）
+### 4.3 区块承载：BodyV2 新增独立内部交易队列
 
-参照 `StakingTransactions`（独立队列的先例）：
+参照 `StakingTransactions`（独立队列的先例）。
+
+> **R11 决策：RLP 用一维 `[]*SSCInternalTx`**（数组顺序 = 执行顺序，与 `Transactions` 语义一致，最简单、最不易出错）。**类型分桶只在内存执行时做**（worker 已有 `pendingCRTxs/pendingSSCTxs` 分类）；二维 `[][]*SSCInternalTx` 列为可选（若要在 body 层就固化顺序）。
 
 ```go
 type bodyFieldsV2 struct {
     Transactions          []*Transaction
     StakingTransactions   []*staking.StakingTransaction
-    SSCTransactions       [][]*SSCInternalTx   // ← 新增：二维，行=类型
+    SSCTransactions       []*SSCInternalTx   // ← 新增：一维，顺序=执行顺序
     Uncles                []*block.Header
     IncomingReceipts      CXReceiptsProofs
 }
 ```
 
-**二维数组行约定（必须确定、leader/validator 一致）**：
+**执行时分类（内存态）**：
 ```go
-// 行索引 = 类型（O(1) 分类，不用 switch To()）
+// worker / state_processor 执行时按 Type 分桶，行顺序固定：
+//   CRTx(先) → SimTx(后,批量并行) → NewEpoch/UploadOpinions/Empty(最后)
 const (
-    SSCRowCR        = 0   // CRTx        （先）
-    SSCRowSim       = 1   // SimTx       （后，批量并行）
-    SSCRowOther     = 2   // NewEpoch/UploadOpinions/Empty（最后）
+    SSCRowCR    = 0
+    SSCRowSim   = 1
+    SSCRowOther = 2
 )
 ```
-
-**收益**：
-- 分类 O(1)、天然确定顺序（CR 行在 Sim 行前）；
-- 每行可配不同处理策略（CR 串行、Sim 批量并行、其余串行）；
-- validator 直接读区块顺序复算，不再重复分类。
-
-> 注意：真正的吞吐提升来自 Sim 行内部的并行 execVerify（DSN-45）和去 nonce 串行（DSN-46）；二维数组解决的是“组织/分类 + 确定性顺序”。
 
 ### 4.4 SSCVM 原生处理入口
 
@@ -114,26 +110,43 @@ func (v *SSCVM) ProcessInternal(tx *SSCInternalTx, stateDB api.StateDB, header *
 }
 ```
 
+> **R5/R10 语义**：`SSCInternalTx` 走标准 ApplyTransaction 机制（产生 receipt、累计 gas、更新 nonce、并入 state root），仅执行入口换成 `ProcessInternal`（详见 DSN-45 §4.4.1）。收据/gas/root 全部复用，不特判。
+
 ### 4.5 RLP / 区块 / 集成影响
 
 | 文件 | 改动 |
 |:-----|:-----|
 | `core/types/` | `SSCInternalTx` 类型 + RLP 编解码 |
-| `core/types/bodyv2.go` | `SSCTransactions [][]*SSCInternalTx` 字段 + getter/setter + RLP |
+| `core/types/bodyv2.go` | `SSCTransactions []*SSCInternalTx` 字段 + getter/setter + RLP |
 | `core/types/block.go` | `Block` 增加 `sscTransactions` 字段、`extblockV2` 序列化 |
 | `core/vm/sscvm.go` | `ProcessInternal` 原生入口 |
-| `node/worker/worker.go` | 出块从内部池取 `batches[0]` 写入 `SSCTransactions[Sim]` |
+| `node/worker/worker.go` | 出块从内部池取 `batches[0]` 写入 `SSCTransactions` |
 | `core/state_processor.go` | validator 复算走同一内部交易顺序 |
 | `ssc/tx_submitter.go` | 构造 `SSCInternalTx` 提交到内部池（DSN-46） |
 | `ssc/` | protobuf 定义 `CXTSimulation` / `CXTCommitProof`（替换 JSON） |
 
-### 4.6 receipt / gas 语义（待定，见开放问题）
+**R8 影响面清单（全节点协调升级）**：改动区块格式会连锁影响——
+1. block hash / state root（header）
+2. `extblockV2` RLP 序列化/反序列化
+3. P2P gossip / 区块广播
+4. DB 存储 / 存档 / 快照同步
+5. RPC 返回区块结构
+6. 跨分片 header / 收据
+7. `StateProcessor.Process` 复算路径
+
+每项都要在实现时同步更新，否则分叉。
+
+**R9 签名与编码解耦**：protobuf 只用于线上/区块载荷；**签名仍用独立规范字节**（沿用现有 `CXTSimulation.Bytes()` 语义），与线上编码解耦，避免 protobuf 迁移导致签名字节不稳定。
+
+### 4.6 receipt / gas 语义
+
+**已定（R5/R10）**：`SSCInternalTx` 作为一类交易走标准 ApplyTransaction 机制——产生 receipt、累计 gas、更新 nonce、并入 state root，与普通交易一致；仅执行入口换成 `ProcessInternal`。详见 DSN-45 §4.4.1。
 
 ## 5. 与 DSN-45 / DSN-46 的关系
 
 | DSN | 职责 |
 |---|---|
-| DSN-47 | 内部交易结构 + 区块承载（二维）+ SSCVM 原生入口 —— **基础** |
+| DSN-47 | 内部交易结构 + 区块承载（一维）+ 内存分桶 + SSCVM 原生入口 —— **基础** |
 | DSN-46 | 内部池（进池仲裁、分组、DAG 就绪）—— 消费 DSN-47 的结构 |
 | DSN-45 | 拿到批次后并行 execVerify —— 消费 DSN-46 的批次 |
 
@@ -145,9 +158,9 @@ func (v *SSCVM) ProcessInternal(tx *SSCInternalTx, stateDB api.StateDB, header *
 
 ## 7. 开放问题
 
-| 问题 | 说明 |
-|---|---|
-| receipt / gas 语义 | 内部交易要不要 receipt？gas 怎么算？（可参照 staking） |
-| 二维数组行内顺序 | Sim 行内顺序：冲突分组后如何定？（由内部池 `batches[0]` 决定） |
-| protobuf 迁移范围 | 现有 `CXTSimulation` 等从 JSON→protobuf 的工作量与兼容 |
-| RLP 向后兼容 | 实验可接受区块格式变更，但需全节点同版本 |
+| 问题 | 说明 | 处理 |
+|---|---|---|
+| receipt / gas 语义 | 内部交易要不要 receipt | 已定：走标准 ApplyTransaction，产生 receipt（R5/R10） |
+| 行内顺序 | Sim 行内顺序 | 已定：由内部池 `batches[0]`（DSN-46）决定 |
+| protobuf 迁移范围 | JSON→protobuf 工作量 | 已定：只换线上/区块载荷，签名仍用独立规范字节（R9） |
+| RLP 向后兼容 | 区块格式变更 | 全节点协调升级；按 R8 清单逐项同步 |

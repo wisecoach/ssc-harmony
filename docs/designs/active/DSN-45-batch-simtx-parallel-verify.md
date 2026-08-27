@@ -16,7 +16,9 @@ refs: [DSN-34, DSN-35, DSN-37, DSN-40, DSN-41, BUG-09, BUG-10, BUG-11, BUG-13]
 
 ## 1. 概述
 
-在**保持单块 1s 时间预算不变**的前提下，把 leader 区块构建里 SimTx 的验证从「串行一笔一笔」改为「**冲突分组 + 跨 SimTx 并行 execVerify + 串行确定性写入**」，从而用满 32 核、在同样的 1s 墙钟内处理更多 SimTx。validator 侧保持原样（第一版），后续在同一开关下再做「跳过仲裁 → 并行 → 统一写入」。
+在**保持单块 1s 时间预算不变**的前提下，把区块构建里 SimTx 的验证从「串行一笔一笔」改为「**冲突分组 + 跨 SimTx 并行 execVerify + 并行 lockState + 串行确定性装配**」，从而用满 32 核、在同样的 1s 墙钟内处理更多 SimTx。
+
+> **R1 前提**：目标架构是 DSN-47+46+45 全栈——DSN-47 改动区块格式，**所有节点（leader+validator）一起换**。因此 validator 并非“永久不动”，而是随 DSN-47 一起升级，只是**并行只发生在 leader 产块侧**，validator 复算时按同一区块顺序执行（确定性一致）。DSN-45 若独立先行（不改区块格式），validator 可保持原样做最小回归验证。
 
 ## 2. 现状与问题
 
@@ -96,7 +98,7 @@ if w.sscService.IsParallelBatchEnabled() {
 verifyLockCheck(sim, stateDB) bool
 // 2) 只读执行：在 stateDB.Copy() 上跑 EVM（可并行）
 verifyExec(sim, stateDBCopy) (result, error)
-// 3) 写路径：写锁 + 发 vote（必须按序串行）
+// 3) 写路径：写锁（跨组并行、组内串行）+ 发 vote
 verifyLockState(sim, result, stateDB)
 ```
 
@@ -104,18 +106,22 @@ verifyLockState(sim, result, stateDB)
 
 ### 4.4 批量并行流程（node/worker/worker.go — processSSCBatchParallel）
 
+> 取数来源：目标全栈（DSN-47+46+45）下，**Phase 0 直接取内部池的 `batches[0]`（DSN-46）**；
+> nonce 前缀仅为“未启用内部池”时的 legacy 回退。
+
 ```
-SimTx 池（按 sender/nonce 有序）
+SimTx（来自内部池 batches[0]，或 legacy 按 nonce 取前缀）
 │
 ├─ Phase 0  收集
-│    · 1s 预算内按 nonce 取每 sender 连续前缀
+│    · 取 batches[0]（单批，全局互不冲突）；或 legacy 按 nonce 取每 sender 连续前缀
 │    · 上限 MaxSimTxPerBlock=500（防大块正反馈，规避 BUG-10）
 │    · deadline = 开始 + 预算
 │
 ├─ Phase 1  仲裁（只读，并行）
 │    1a 并行 lockCheck：每笔查全局锁（sync.Map 只读）→ 候选集
 │    1b 冲突分组：反向索引 key→SimTx 建冲突图
-│        → 独立组（组内无公共 key），组间可并行
+│        → 每块只取一个互不冲突的批次（组内无公共 key）→ 全部可并行
+│    · 出块前对 batches[0] 做一次只读最终复核（链上锁可能已变化，R4）
 │    · 候选上限 500 + deadline 800ms
 │
 ├─ Phase 2  并行 execVerify
@@ -123,24 +129,35 @@ SimTx 池（按 sender/nonce 有序）
 │    · 每笔 SimTx 一份 stateDB.Copy()（确定性、隔离）
 │    · 收集 通过/失败
 │
-├─ Phase 3  串行确定性写入（按 Phase 0 原始块序）
-│    · lockStateWithRWSet（写真实 stateDB）
-│    · 写 receipt / 更新 gas / nonce / 追加区块
+├─ Phase 3  并行 lockState + 串行装配（R3/R5）
+│    · 跨组并行 lockStateWithRWSet（不同组无公共 key，sync.Map 写安全）
+│    · 组内按序写锁
+│    · receipt / gas / nonce / state-root 仍按「区块数组顺序」串行装配
+│      （复用标准 ApplyTransaction 的写入机制，仅执行入口换 ProcessInternal）
 │    · 发 commit vote
 │
 └─ Phase 4  retry/回滚
      · 冲突/失败 → callForRetry / rollback（同现状）
 ```
 
-### 4.5 validator 侧（后续，同一开关下）
+### 4.4.1 receipt / gas / state-root（R5/R10 解法）
+
+`SSCInternalTx` 作为一类交易走**标准 ApplyTransaction 机制**：产生 receipt、累计 gas、更新 nonce、并入 state root，与普通交易一致。区别只在“执行入口”由 precompile 换成 `SSCVM.ProcessInternal`。这样：
+- 收据索引 / gas 上限 / 状态根重建完全复用现有机器的逻辑；
+- validator 复算路径与普通交易一致，无需特判；
+- 并行只发生在 Phase 2（只读 execVerify）和 Phase 3 的跨组 lockState；receipt/gas/root 始终按块序串行装配。
+
+### 4.5 validator 侧（随 DSN-47 一起升级）
 
 ```
-收到已定稿区块（SimTx 集合与顺序已固化）
+收到已定稿区块（SSCInternalTx 集合与顺序已固化）
   → 跳过仲裁（结果由 leader 决定并固化在区块里）
   → 并行 execVerify（stateDB.Copy 每笔一份）
-  → 按区块顺序串行统一写入（lockState/receipt/gas/state root）
+  → 按区块数组顺序串行统一写入（lockState/receipt/gas/state root，标准 ApplyTransaction 机制）
   → 与 leader 产出完全一致
 ```
+
+> validator 不改“执行语义”，只复用 leader 同一套 `ProcessInternal` + 同一顺序；并行仅发生在只读 execVerify（R1）。
 
 ### 4.6 一致性保证
 
@@ -148,14 +165,15 @@ SimTx 池（按 sender/nonce 有序）
 |---|---|---|---|
 | lockCheck | 只读（sync.Map） | ✅ 可并行 | 无副作用 |
 | execVerify | 纯函数（stateDB.Copy 隔离） | ✅ 可并行 | 确定 |
-| lockState/写状态 | 确定性、需按序 | ❌ 串行 | 按块序 |
+| lockState/写状态 | 确定性 | ✅ 跨组并行（不同组无公共 key）；组内串行 | 写锁并发安全（sync.Map） |
+| receipt/gas/root 装配 | 确定性、需按序 | ❌ 串行 | 按区块数组顺序 |
 | leader vs validator | 同一顺序写 | — | 构造保证一致 |
 
 ### 4.7 关键风险控制
 
 | 风险 | 措施 |
 |---|---|
-| BUG-09（验证被跳过） | validator 不动；leader 只并行 execVerify，不跳验证 |
+| BUG-09（验证被跳过） | 全栈（DSN-47）下所有节点同版本；leader 不跳验证 |
 | BUG-10（仲裁爆炸） | 候选上限 500 + deadline 800ms；lockCheck 并行 |
 | BUG-11（ChainPatch 脏写） | AddOnChainPatch 只在验证成功后；Phase 1b 不 merge |
 | stateDB.Copy GC 压力 | 每笔一个 Copy（而非每 callState），监控 GC |
