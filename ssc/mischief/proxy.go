@@ -2,7 +2,6 @@ package mischief
 
 import (
 	"context"
-	"encoding/json"
 	"math/rand"
 	"time"
 
@@ -10,6 +9,8 @@ import (
 	"github.com/harmony-one/harmony/block"
 	"github.com/harmony-one/harmony/internal/utils"
 	"github.com/harmony-one/harmony/ssc/api"
+	"github.com/harmony-one/harmony/ssc/api/proto"
+	"google.golang.org/protobuf/proto"
 )
 
 // MischiefProxy 作恶行为代理（装饰器模式）
@@ -97,11 +98,12 @@ func (p *MischiefProxy) CallCXTContract(req *api.CXTCallRequest) *api.CXTCallSSC
 
 // VerifySimulation 代理验证模拟
 func (p *MischiefProxy) VerifySimulation(simulationBytes []byte, stateDB api.StateDB, header *block.Header) {
-	simulation := &api.CXTSimulation{}
-	err := json.Unmarshal(simulationBytes, simulation)
+	simulationProto := &sscpb.CXTSimulation{}
+	err := proto.Unmarshal(simulationBytes, simulationProto)
 	if err != nil {
 		return
 	}
+	simulation := sscpb.CXTSimulationFromProto(simulationProto)
 	// 作恶行为：状态不一致
 	if p.shouldInject(simulation.TxHash, api.BehaviorStateInconsistent) {
 		p.injectStateInconsistent(simulationBytes, stateDB, header)

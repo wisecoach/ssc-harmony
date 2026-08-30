@@ -1,13 +1,14 @@
 package ssc
 
 import (
-	"encoding/json"
 	"time"
 
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/harmony-one/harmony/internal/utils"
 	"github.com/harmony-one/harmony/ssc/api"
+	"github.com/harmony-one/harmony/ssc/api/proto"
 	"github.com/harmony-one/harmony/ssc/perf"
+	"google.golang.org/protobuf/proto"
 )
 
 // CommitterStateAccessor 封装 Committer 需要的 simulationState 原子读写操作。
@@ -47,12 +48,13 @@ func NewCommitter(
 func (c *Committer) CommitOrRollbackWithProof(commitProofBytes []byte, stateDB api.StateDB, blockNum uint64) error {
 	t0 := time.Now()
 
-	commitProof := &api.CXTCommitProof{}
-	err := json.Unmarshal(commitProofBytes, commitProof)
+	commitProofProto := &sscpb.CXTCommitProof{}
+	err := proto.Unmarshal(commitProofBytes, commitProofProto)
 	if err != nil {
 		utils.SSCLogger().Error().Err(err).Msg("failed to unmarshal commit proof")
 		return err
 	}
+	commitProof := sscpb.CXTCommitProofFromProto(commitProofProto)
 	tUnmarshal := time.Since(t0)
 
 	txHash := commitProof.TxHash

@@ -404,7 +404,7 @@ func (g *Genesis) ToBlock(db ethdb.Database) *types.Block {
 
 	utils.Logger().Info().Msgf("Genesis block created: %s, coinbase: %s", head.Hash().Hex(), head.Coinbase().Hex())
 
-	return types.NewBlock(head, nil, nil, nil, nil, nil)
+	return types.NewBlock(head, nil, nil, nil, nil, nil, nil)
 }
 
 // Commit writes the block and state of a genesis specification to the database.

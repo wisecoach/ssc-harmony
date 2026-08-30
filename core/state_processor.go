@@ -156,10 +156,33 @@ func (p *StateProcessor) Process(
 	}
 
 	if processTxsAndStxs {
+		ssc := block.SSCTransactions()
+		sscTotal := types.SSCTransactions(ssc).Len()
+		normalL := len(block.Transactions())
+
+		// 1) 先处理 SSC 内部交易（DSN-47）。执行顺序 = 按类型下标从小到大
+		// （CRTx(0) → SimTx(1) → NewEpoch/UploadOpinions/Empty(2/3/4)），与出块方一致。
+		// 注意：此处的执行/收据顺序必须与 leader 出块时完全一致，否则 state root 分叉。
 		startTime := time.Now()
-		// Iterate over and process the individual transactions
+		for _, row := range ssc {
+			for _, sscTx := range row {
+				statedb.Prepare(sscTx.Hash(), block.Hash(), len(receipts))
+				receipt, _, err := ApplySSCInternalTransaction(
+					p.sscService, p.bc, &beneficiary, gp, statedb, header, sscTx, usedGas, cfg,
+				)
+				if err != nil {
+					return nil, nil, nil, nil, 0, nil, statedb, err
+				}
+				receipts = append(receipts, receipt)
+				allLogs = append(allLogs, receipt.Logs...)
+			}
+		}
+		utils.Logger().Debug().Int64("elapsed time", time.Now().Sub(startTime).Milliseconds()).Msg("Process SSC Internal Txns")
+
+		// 2) 再处理普通交易
+		startTime = time.Now()
 		for i, tx := range block.Transactions() {
-			statedb.Prepare(tx.Hash(), block.Hash(), i)
+			statedb.Prepare(tx.Hash(), block.Hash(), sscTotal+i)
 			var (
 				receipt   *types.Receipt
 				cxReceipt *types.CXReceipt
@@ -189,11 +212,10 @@ func (p *StateProcessor) Process(
 		}
 		utils.Logger().Debug().Int64("elapsed time", time.Now().Sub(startTime).Milliseconds()).Msg("Process Normal Txns")
 
+		// 3) 最后处理 staking 交易
 		startTime = time.Now()
-		// Iterate over and process the staking transactions
-		L := len(block.Transactions())
 		for i, tx := range block.StakingTransactions() {
-			statedb.Prepare(tx.Hash(), block.Hash(), i+L)
+			statedb.Prepare(tx.Hash(), block.Hash(), sscTotal+normalL+i)
 			receipt, _, err := ApplyStakingTransaction(
 				p.bc, &beneficiary, gp, statedb, header, tx, usedGas, cfg,
 			)
@@ -239,7 +261,7 @@ func (p *StateProcessor) Process(
 		p.bc,
 		p.beacon,
 		header, statedb, block.Transactions(),
-		receipts, outcxs, incxs, block.StakingTransactions(), slashes, sigsReady, func() uint64 { return header.ViewID().Uint64() },
+		receipts, outcxs, incxs, block.StakingTransactions(), block.SSCTransactions(), slashes, sigsReady, func() uint64 { return header.ViewID().Uint64() },
 	)
 	if err != nil {
 		return nil, nil, nil, nil, 0, nil, statedb, errors.WithMessage(err, "[Process] Cannot finalize block")
@@ -513,6 +535,46 @@ func SimulateCXTransaction(service api.Service, bc ChainContext, author *common.
 		receipt.GasUsed = 0
 		return receipt, nil, make([]staking.StakeMsg, 0), 0, nil
 	}
+}
+
+// ApplySSCInternalTransaction 应用一条 SSC 内部交易（SSCInternalTx, DSN-47）。
+// 它复用标准 ApplyTransaction 的 receipt/gas/state-root 装配机制，仅执行入口换成
+// SSCVM.ProcessInternal（不再走「特殊 precompile 地址 + JSON」）。
+//
+// leader 出块与 validator 复算必须使用同一函数与同一顺序，以保证 state root 一致。
+// 当前 SSC 内部交易不消耗 gas、不携带 from/nonce，因此 receipt.GasUsed 固定为 0；
+// 后续若为内部交易引入 gas/nonce 语义（DSN-45 §4.4.1），在此处补充即可。
+func ApplySSCInternalTransaction(
+	service api.Service, bc ChainContext, author *common.Address,
+	gp *GasPool, statedb *state.DB, header *block.Header,
+	sscTx *types.SSCInternalTx, usedGas *uint64, cfg vm.Config,
+) (*types.Receipt, uint64, error) {
+	config := bc.Config()
+	if sscTx == nil {
+		return nil, 0, errors.New("nil SSCInternalTx")
+	}
+	vmCtx := NewSSCVMContext(common.Address{}, sscTx.Hash(), api.CallIndex{}, big.NewInt(0), header, bc, author)
+	sscvm := vm.NewSSCVM(vmCtx, statedb, config, cfg, service, vm.Precompiled)
+	if err := sscvm.ProcessInternal(sscTx, statedb, header); err != nil {
+		utils.SSCLogger().Error().Err(err).
+			Str("sscType", sscTx.Type.String()).
+			Str("sscHash", sscTx.Hash().Hex()).
+			Msgf("ApplySSCInternalTransaction failed")
+		return nil, 0, err
+	}
+	var root []byte
+	if config.IsS3(header.Epoch()) {
+		statedb.Finalise(true)
+	} else {
+		root = statedb.IntermediateRoot(config.IsS3(header.Epoch())).Bytes()
+	}
+	receipt := types.NewReceipt(root, false, 0)
+	receipt.Logs = make([]*types.Log, 0)
+	receipt.Bloom = types.CreateBloom(types.Receipts{receipt})
+	receipt.TxHash = sscTx.Hash()
+	receipt.GasUsed = 0
+	*usedGas += 0
+	return receipt, 0, nil
 }
 
 // ApplyStakingTransaction attempts to apply a staking transaction to the given state database

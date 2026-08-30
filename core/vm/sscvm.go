@@ -1,13 +1,16 @@
 package vm
 
 import (
+	"fmt"
 	"math/big"
 	"strings"
 	"sync/atomic"
 
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/crypto"
+	"github.com/harmony-one/harmony/block"
 	"github.com/harmony-one/harmony/core/state"
+	"github.com/harmony-one/harmony/core/types"
 	"github.com/harmony-one/harmony/internal/params"
 	"github.com/harmony-one/harmony/ssc/api"
 	"github.com/pkg/errors"
@@ -772,6 +775,36 @@ func (vm *SSCVM) SetForceVMErr(err error) {
 
 func (vm *SSCVM) GetForceVMErr() error {
 	return vm.forceVMErr
+}
+
+// ProcessInternal 是 SSCVM 对内部交易（SSCInternalTx, DSN-47）的原生处理入口。
+// 不再走「普通 tx → 特殊 precompile 地址 + JSON」的 hack；由执行入口按 Type 分派。
+//
+// 说明：当前 payload 仍是既有 JSON 字节（protobuf 迁移见 DSN-47 §4.2/R9，另行实施），
+// 这里只负责统一分派到既有 Service 方法；DSN-45 的并行 execVerify / DSN-46 的内部池
+// 由后续设计接入，本方法保持确定性串行语义。
+func (vm *SSCVM) ProcessInternal(tx *types.SSCInternalTx, stateDB api.StateDB, header *block.Header) error {
+	if tx == nil {
+		return errors.New("nil SSCInternalTx")
+	}
+	switch tx.Type {
+	case types.InternalTxTypeSimTx:
+		// SimTx：验证模拟并投票（当前为串行 VerifySimulation；DSN-45 并行路径后续接入）
+		vm.SSCService.VerifySimulation(tx.Payload, stateDB, header)
+		return nil
+	case types.InternalTxTypeCRTx:
+		// CRTx：提交或回滚
+		return vm.SSCService.CommitOrRollbackWithProof(tx.Payload, stateDB, header.Number().Uint64())
+	case types.InternalTxTypeNewEpoch:
+		return vm.SSCService.NewEpoch(tx.Payload, vm, stateDB, header.Number().Uint64())
+	case types.InternalTxTypeUploadOpinions:
+		return vm.SSCService.UploadSLOpinion(tx.Payload, stateDB)
+	case types.InternalTxTypeEmpty:
+		// 空交易：无操作
+		return nil
+	default:
+		return fmt.Errorf("unknown SSCInternalTx type %d", tx.Type)
+	}
 }
 
 func IsLockConflictErr(err string) bool {

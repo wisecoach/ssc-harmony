@@ -18,7 +18,9 @@ import (
 	"github.com/harmony-one/harmony/core/types"
 	"github.com/harmony-one/harmony/internal/utils"
 	"github.com/harmony-one/harmony/ssc/api"
+	"github.com/harmony-one/harmony/ssc/api/proto"
 	"github.com/harmony-one/harmony/ssc/perf"
+	"google.golang.org/protobuf/proto"
 )
 
 type pendingCXTRequest struct {
@@ -113,6 +115,13 @@ func (pq *simulationReqPriorityQueue) Stop() {
 	pq.cond.L.Unlock()
 }
 
+// Len 返回当前队列长度（线程安全），供监控统计使用。
+func (pq *simulationReqPriorityQueue) Len() int {
+	pq.cond.L.Lock()
+	defer pq.cond.L.Unlock()
+	return pq.items.Len()
+}
+
 type sscService struct {
 	*CommitteeMechanism
 	*Verifier
@@ -128,6 +137,9 @@ type sscService struct {
 
 	Config *api.Config
 	bc     core.BlockChain
+
+	// internalPool DSN-48：最简内部交易池（由 main.go 注入，无条件使用）
+	internalPool *SSCInternalPool
 
 	txStates sync.Map // key: common.Hash, value: *api.TxState, 带 per-tx mu
 
@@ -156,6 +168,87 @@ func (s *sscService) GetShardID(address common.Address) uint32 {
 	return s.CommitteeMechanism.GetShardID(address)
 }
 
+// ExtractSSCTransactions 从内部池按类型顺序提取一批内部交易（DSN-48），供 worker 写入区块。
+func (s *sscService) ExtractSSCTransactions(maxTotal int) [][]*types.SSCInternalTx {
+	if s == nil || s.internalPool == nil {
+		return nil
+	}
+	return s.internalPool.Extract(maxTotal)
+}
+
+// DiscardSSCInternalTx 从内部池删除一条执行失败的内部交易（DSN-48）。
+// worker 出块时若 ApplySSCInternalTransaction 失败，调用此方法移除该 tx，
+// 避免其每块被重复提取/重试。
+func (s *sscService) DiscardSSCInternalTx(tx *types.SSCInternalTx) {
+	if s == nil || s.internalPool == nil {
+		return
+	}
+	s.internalPool.Remove(tx)
+}
+
+// GetModuleStatus 汇总 SSC 各模块当前维护的数据量快照。
+// 供实验结束后通过监控 gRPC 服务调用，用于分析各模块是否正确释放资源。
+func (s *sscService) GetModuleStatus() *api.ModuleStatus {
+	status := &api.ModuleStatus{}
+	if s == nil {
+		return status
+	}
+
+	// sscService 顶层存储
+	s.txStates.Range(func(_, _ interface{}) bool { status.TxStates++; return true })
+	s.commitLock.RLock()
+	status.CommitStates = len(s.commitStates)
+	s.commitLock.RUnlock()
+	s.traceLock.Lock()
+	status.TxTraces = len(s.txTraces)
+	s.traceLock.Unlock()
+	if s.internalPool != nil {
+		status.InternalPool = s.internalPool.Len()
+	}
+
+	// RetryScheduler
+	if s.retryScheduler != nil {
+		status.RetryScheduler = s.retryScheduler.Stats()
+	}
+
+	// 状态锁管理器（已有 Stats）
+	if s.lockStateMgr != nil {
+		status.StateLock.GlobalLocked, status.StateLock.GlobalRLocked,
+			status.StateLock.GlobalFinishedTxs, status.StateLock.GlobalLockStart = s.lockStateMgr.Stats()
+	}
+
+	// 临时锁视图（已有 Stats）
+	if s.tempLockView != nil {
+		status.TempLockView.WriteLocks, status.TempLockView.ReadLocks,
+			status.TempLockView.TxSets, status.TempLockView.Wounded = s.tempLockView.Stats()
+	}
+
+	// Simulator
+	if s.Simulator != nil {
+		status.Simulator.SimStates, status.Simulator.CallStatesWaiting,
+			status.Simulator.SimuChMap, status.Simulator.PendingReqsMap,
+			status.Simulator.QueueLen = s.Simulator.Stats()
+	}
+
+	// Verifier
+	if s.Verifier != nil {
+		status.Verifier.ExecutionVerifyContexts, status.Verifier.TxLockedSimNum = s.Verifier.Stats()
+	}
+
+	// 定时器管理器
+	if s.timerMgr != nil {
+		status.Timer.Txs, status.Timer.Sp1Buckets,
+			status.Timer.PoolTimeoutBuckets = s.timerMgr.Stats()
+	}
+
+	// DAG / ChainPatch 使用情况（累计值）
+	status.DAG.ChainTxDetected = int(chainRetryStats.MonitorChainTxDetected.Load())
+	status.DAG.RetryCommitPatchHit = int(chainRetryStats.MonitorRetryCommitPatchHit.Load())
+	status.DAG.RetryCommitPatchMiss = int(chainRetryStats.MonitorRetryCommitPatchMiss.Load())
+
+	return status
+}
+
 // newBaseService 创建基础服务实例（内部使用）
 func newBaseService(ctx context.Context, config *api.Config, cm *CommitteeMechanism, sscConfig *api.ShardSimulateCommitteeConfig,
 	signerMgr api.BLSSignerMgr, bc core.BlockChain, txSigner api.TxSigner, comm *Comm) *sscService {
@@ -178,6 +271,8 @@ func newBaseService(ctx context.Context, config *api.Config, cm *CommitteeMechan
 		chainHeadSub:       nil,
 		txTraces:           make(map[common.Hash]*TxBlockTrace),
 	}
+	// DSN-48：internalPool 由外部（main.go）创建后注入，保证与 txSubmitter 共享同一实例
+
 	lockStateMgr := newStateLockManager(service)
 	service.lockStateMgr = lockStateMgr
 	service.tempLockView = lockStateMgr.GetTempLockView()
@@ -419,6 +514,11 @@ func (s *sscService) BlockCommitted(block *types.Block) error {
 	// 通知 txSubmitter：块已确认，释放 inFlight 计数
 	s.txSubmitter.OnBlockCommitted(block)
 
+	// DSN-48：区块提交后清理内部池中已进块的内部交易
+	if s.internalPool != nil {
+		s.internalPool.OnBlockCommitted(block)
+	}
+
 	// 所有模块的 Record() 已完成，flush + reset PerfAggregator
 	perf.GetAggregator().OnBlockCommitted(block)
 
@@ -564,12 +664,13 @@ func (s *sscService) sendCXTCommitVote(shardId uint32, vote *api.CXTCommitVote) 
 }
 
 func (s *sscService) NewEpoch(newEpochBytes []byte, sscvm api.VM, stateDB api.StateDB, blockNum uint64) error {
-	newEpoch := &api.NewEpoch{}
-	err := json.Unmarshal(newEpochBytes, newEpoch)
+	newEpochProto := &sscpb.NewEpoch{}
+	err := proto.Unmarshal(newEpochBytes, newEpochProto)
 	if err != nil {
 		utils.SSCLogger().Error().Err(err).Msg("failed to unmarshal new epoch")
 		return err
 	}
+	newEpoch := sscpb.NewEpochFromProto(newEpochProto)
 
 	if s.IsLeader(newEpoch.Committee.Epoch - 1) {
 
@@ -885,7 +986,7 @@ func (s *sscService) CommitSimulation(commit *api.SimulationCommit) {
 		TxHash:         commit.TxHash,
 		Nonce:          commit.Nonce,
 		Sender:         commit.Sender,
-		ShardId:        commit.ShardId,
+		ShardId:        s.SelfShard, // 每个节点只建/广播自己分片的 SimTx
 		OriginShardId:  tx.OriginShardId,
 		RelatedShards:  commit.RelatedShards,
 		CallStates:     callStates,
@@ -900,14 +1001,15 @@ func (s *sscService) CommitSimulation(commit *api.SimulationCommit) {
 	tBuildCallStates = time.Since(t0)
 
 	// v5 Wound-Wait: 在提交 SimTx 前锁死 Patch（不可再被 Wound）
-	s.retryScheduler.finalizePatch(txHash)
+	s.retryScheduler.offChainDAG.finalizePatch(txHash)
 
 	s.buildSignaturesForSimulation(tx.Ctx, simulation)
 	tBuildSignatures = time.Since(t0)
 
-	// 提交 SimTx 前，先入链下 patches（供 leader 本地 chainNextSim 查询用）
+	// 提交 SimTx 前，先入链下单一 DAG（offChainDAG.nodes，记录本节点 WriteSet + 上游依赖）
 	// 链上 onChainPatches 在 VerifySimulation 验证通过后存入
-	s.retryScheduler.AddPatch(txHash, commit.SimulationNum, simulation.ChainPatch, upstreamTxList)
+	// 注：AddNode 只建节点（状态 PatchFree），由后续 MarkReady 建立 keyIndex 并触发 subscriber 扫描
+	s.retryScheduler.offChainDAG.AddNode(txHash, commit.SimulationNum, simulation.ChainPatch, upstreamTxList)
 	tOnChainPatch = time.Since(t0)
 
 	err = s.txSubmitter.SubmitSimulationTx(simulation)
@@ -939,10 +1041,11 @@ func (s *sscService) CommitSimulation(commit *api.SimulationCommit) {
 
 	// SimTx 提交成功后，检查是否可以链式触发依赖它的 retry tx（DAG chaining）
 	if s.IsLeader(commit.Epochs[s.SelfShard]) {
-		// Add to PatchPool for local shard matching
-		s.retryScheduler.addPatch(txHash, commit.SimulationNum, writeSet)
-		// Incremental scan: check subscriber index for matching retryTxs
-		s.retryScheduler.OnPatchPoolUpdated(writeSet)
+		// MarkReady：建立 keyIndex 反查（进入“可被匹配”状态）+ 触发 subscriber 增量扫描
+		// 合并了原 addPatch + OnPatchPoolUpdated 两步写入
+		s.retryScheduler.offChainDAG.MarkReady(txHash, func(ws *api.RWSet) {
+			s.retryScheduler.scanPatchSubscribers(ws)
+		})
 	}
 	s.stats.setCxtStage(txHash, 2)
 	if val, ok := s.txStates.Load(txHash); ok {
@@ -1247,13 +1350,21 @@ func (s *sscService) closeTransaction(txHash common.Hash, commitOrRollback bool,
 	if consumedTxHashesVal, exists := s.retryScheduler.consumedPatches.Load(txHash); exists {
 		consumedTxHashes := consumedTxHashesVal.([]common.Hash)
 		for _, txh := range consumedTxHashes {
-			s.retryScheduler.releasePatch(txh)
+			s.retryScheduler.offChainDAG.releasePatch(txh)
 		}
 		s.retryScheduler.consumedPatches.Delete(txHash)
 	}
 
-	// v4: Clean up PatchPool
-	s.retryScheduler.removePatch(txHash)
+	// v4/v4b: Clean up off-chain DAG —— 唯一链下清理入口。
+	// Remove 原子删除 node + keyIndex + subscriber + txSubKeys，
+	// 替代原 removePatch(localPatches) + patches.Delete 两处（消除 patches 泄漏）。
+	s.retryScheduler.offChainDAG.Remove(txHash)
+
+	// 清理 stateLockManager 的 finished 标记，避免 globalFinishedTxs 无限增长。
+	// globalFinishedTxs 仅在提交时写入、仅用于统计计数，事务关闭后即可安全删除。
+	if s.lockStateMgr != nil {
+		s.lockStateMgr.globalFinishedTxs.Delete(txHash)
+	}
 
 	// A09: Clean up passive pool
 	s.retryScheduler.RemoveFromPassivePool(txHash)

@@ -17,7 +17,9 @@ import (
 	"github.com/harmony-one/harmony/core/vm"
 	"github.com/harmony-one/harmony/internal/utils"
 	"github.com/harmony-one/harmony/ssc/api"
+	"github.com/harmony-one/harmony/ssc/api/proto"
 	"github.com/harmony-one/harmony/ssc/perf"
+	"google.golang.org/protobuf/proto"
 )
 
 // VerifyCommunicator 封装 Verifier 需要的跨节点通信和签名能力。
@@ -201,6 +203,16 @@ func (v *Verifier) Cleanup(txHash common.Hash) {
 		Msg("Verifier.Cleanup timing")
 }
 
+// Stats 返回 Verifier 各存储的条目数，供监控分析资源释放情况。
+func (v *Verifier) Stats() (execVerifyCtx, txLockedSimNum int) {
+	if v == nil {
+		return 0, 0
+	}
+	v.executionVerifyContexts.Range(func(_, _ interface{}) bool { execVerifyCtx++; return true })
+	v.txLockedSimNum.Range(func(_, _ interface{}) bool { txLockedSimNum++; return true })
+	return
+}
+
 // GetResult 读取验证结果。实现 api.Service 中的 CXTStateSimulationDB 接口。
 func (v *Verifier) GetResult(txHash common.Hash, callIndex api.CallIndex) (result []byte, leftOverGas uint64, err error) {
 	subCtx := v.loadSubCtx(txHash, callIndex)
@@ -233,8 +245,9 @@ func (v *Verifier) GetResult(txHash common.Hash, callIndex api.CallIndex) (resul
 
 // VerifySimulation 是链上验证 SimulationTx 的核心入口。
 func (v *Verifier) VerifySimulation(simulationBytes []byte, stateDB api.StateDB, header *block.Header) {
-	simulation := &api.CXTSimulation{}
-	err := json.Unmarshal(simulationBytes, simulation)
+	simulationProto := &sscpb.CXTSimulation{}
+	err := proto.Unmarshal(simulationBytes, simulationProto)
+	simulation := sscpb.CXTSimulationFromProto(simulationProto)
 	if err != nil {
 		txHash := simulation.TxHash
 		utils.SSCLogger().Error().Err(err).Str("txHash", txHash.Hex()).
@@ -316,16 +329,20 @@ func (v *Verifier) VerifySimulation(simulationBytes []byte, stateDB api.StateDB,
 
 	v.state.SetStatus(txHash, api.VERIFYING_SIMULATION)
 
-	// 检查是否为链式依赖交易（有 ChainPatch / 在 onChainPatches 中有匹配的 Patch）
-	// 如果是，跳过锁冲突检查，因为 nonce 排序保证了执行顺序
-	isChainTx := false
-	if simulation.ChainPatch != nil {
-		// v6: 直接从 SimTx 的 ChainPatch 判断是否为链式交易
-		isChainTx = true
+	// 检查是否为链式依赖交易（真正有上游依赖才跳过锁冲突检查）。
+	// 注意：不能用 `simulation.ChainPatch != nil` 判断——CommitSimulation 会给每笔
+	// SimTx 都填上非 nil 的 ChainPatch（本交易自己的 WriteSet），导致所有交易都被误判
+	// 为链式交易、跳过锁冲突检查（BUG：chain tx detected ~14.6万次、锁检测整体失效、
+	// 冲突交易陷入回滚-重模拟循环直到超时）。
+	// 只有当确实存在上游依赖（UpstreamTxList 非空，DSN-46 的 DAG 顺序保证）时才跳过。
+	isChainTx := len(simulation.UpstreamTxList) > 0
+	if isChainTx {
+		chainRetryStats.SigChainTxDetected.Add(1)
+		chainRetryStats.MonitorChainTxDetected.Add(1)
 		utils.SSCLogger().Debug().Str("txHash", txHash.Hex()).
 			Int("simNum", simulation.SimulationNum).
 			Int("upstreamCount", len(simulation.UpstreamTxList)).
-			Msg("VerifySimulation: chain tx detected (from SimTx ChainPatch), skipping lock conflict check")
+			Msg("VerifySimulation: chain tx detected (from upstream dependency), skipping lock conflict check")
 	}
 
 CallStates:

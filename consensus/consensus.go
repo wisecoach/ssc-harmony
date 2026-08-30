@@ -7,7 +7,6 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/ethereum/go-ethereum/common"
 	"github.com/harmony-one/abool"
 	bls_core "github.com/harmony-one/bls/ffi/go/bls"
 	"github.com/harmony-one/harmony/consensus/engine"
@@ -57,7 +56,6 @@ type DownloadAsync interface {
 }
 
 type UpdatePublicKeysFunc func(pubKeys []bls_cosi.PublicKeyWrapper)
-type GetOnChainSSCAddrs func() []common.Address
 
 // Consensus is the main struct with all states and data related to consensus process.
 type Consensus struct {
@@ -135,7 +133,6 @@ type Consensus struct {
 	AggregateSig bool
 
 	UpdatePublicKeysFunc UpdatePublicKeysFunc
-	GetOnChainSSCAddrs   GetOnChainSSCAddrs
 
 	// TODO (leo): an new metrics system to keep track of the consensus/viewchange
 	// finality of previous consensus in the unit of milliseconds
@@ -310,7 +307,6 @@ func New(
 		consensusTimeout:   createTimeout(),
 		dHelper:            downloadAsync{},
 		pendingCXReceipts:  make(map[utils.CXKey]*types.CXReceiptsProof), // All the receipts received but not yet processed for Consensus
-		GetOnChainSSCAddrs: func() []common.Address { return make([]common.Address, 0) },
 	}
 
 	if multiBLSPriKey != nil {

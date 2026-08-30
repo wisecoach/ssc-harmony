@@ -268,6 +268,7 @@ func (e *engineImpl) Finalize(
 	state *state.DB, txs []*types.Transaction,
 	receipts []*types.Receipt, outcxs []*types.CXReceipt,
 	incxs []*types.CXReceiptsProof, stks staking.StakingTransactions,
+	sscTxns [][]*types.SSCInternalTx,
 	doubleSigners slash.Records, sigsReady chan bool, viewID func() uint64,
 ) (*types.Block, reward.Reader, error) {
 
@@ -352,7 +353,7 @@ func (e *engineImpl) Finalize(
 	}
 	// Finalize the state root
 	header.SetRoot(state.IntermediateRoot(chain.Config().IsS3(header.Epoch())))
-	return types.NewBlock(header, txs, receipts, outcxs, incxs, stks), payout, nil
+	return types.NewBlock(header, txs, receipts, outcxs, incxs, stks, sscTxns), payout, nil
 }
 
 // Withdraw unlocked tokens to the delegators' accounts

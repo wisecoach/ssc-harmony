@@ -59,8 +59,7 @@ func TestAddNewBlock(t *testing.T) {
 	txs := make(map[common.Address]types.Transactions)
 	stks := staking.StakingTransactions{}
 	node.Worker.CommitTransactions(
-		make(types.Transactions, 0), txs, stks, common.Address{},
-		nil,
+		txs, stks, common.Address{},
 	)
 	commitSigs := make(chan []byte)
 	go func() {
@@ -123,8 +122,7 @@ func TestVerifyNewBlock(t *testing.T) {
 	txs := make(map[common.Address]types.Transactions)
 	stks := staking.StakingTransactions{}
 	node.Worker.CommitTransactions(
-		make(types.Transactions, 0), txs, stks, common.Address{},
-		nil,
+		txs, stks, common.Address{},
 	)
 	commitSigs := make(chan []byte)
 	go func() {
@@ -183,8 +181,7 @@ func TestVerifyVRF(t *testing.T) {
 	txs := make(map[common.Address]types.Transactions)
 	stks := staking.StakingTransactions{}
 	node.Worker.CommitTransactions(
-		make(types.Transactions, 0), txs, stks, common.Address{},
-		nil,
+		txs, stks, common.Address{},
 	)
 	commitSigs := make(chan []byte)
 	go func() {

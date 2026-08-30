@@ -186,7 +186,7 @@ func (v *TempLockView) addReadLock(key api.LockKey, txHash common.Hash) {
 // 如果持有者优先级更高，或者持有者的 Patch 已 Finalized → false
 func (v *TempLockView) canWound(entry tempLockEntry, requesterPri api.Priority, requester common.Hash) bool {
 	// 检查 PatchPool 中该持有者的 Patch 是否已 Finalized
-	if v.stateLockManager.sscService.retryScheduler.isPatchFinalized(entry.Holder) {
+	if v.stateLockManager.sscService.retryScheduler.offChainDAG.isPatchFinalized(entry.Holder) {
 		return false
 	}
 	// 如果持有者优先级更低（数值更大），可以踢

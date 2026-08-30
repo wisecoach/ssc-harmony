@@ -143,6 +143,14 @@ type Node struct {
 
 	// sscGrpcServer is the gRPC server for SSC internal RPC.
 	sscGrpcServer *grpc.Server
+
+	// sscInternalTxSink DSN-48：收到广播的 SSC 内部交易后的入池回调（由 main 注入 internalPool.Add）
+	sscInternalTxSink func(*types.SSCInternalTx)
+}
+
+// SetSSCInternalTxSink 注入 SSC 内部交易接收回调（DSN-48）。
+func (node *Node) SetSSCInternalTxSink(sink func(*types.SSCInternalTx)) {
+	node.sscInternalTxSink = sink
 }
 
 func (node *Node) SetSSCService(sscService api.Service) {
@@ -238,6 +246,26 @@ func (node *Node) tryBroadcast(tx *types.Transaction) {
 			break
 		}
 	}
+}
+
+// BroadcastSSCInternalTx 广播一条 SSC 内部交易到本分片 group（DSN-48）。
+// 整体实现参考普通交易广播 tryBroadcast：构造消息 → SendMessageToGroups → 按 NumTryBroadCast 重试。
+func (node *Node) BroadcastSSCInternalTx(tx *types.SSCInternalTx) error {
+	msg := proto_node.ConstructSSCInternalTransactionListMessage([]*types.SSCInternalTx{tx})
+	shardGroupID := nodeconfig.NewGroupIDByShardID(nodeconfig.ShardID(tx.Shard))
+	utils.Logger().Info().
+		Str("shardGroupID", string(shardGroupID)).
+		Str("sscHash", tx.Hash().Hex()).
+		Str("sscType", tx.Type.String()).
+		Msg("tryBroadcastSSCInternalTx")
+	for attempt := 0; attempt < NumTryBroadCast; attempt++ {
+		if err := node.host.SendMessageToGroups([]nodeconfig.GroupID{shardGroupID}, p2p.ConstructMessage(msg)); err != nil {
+			utils.Logger().Error().Int("attempt", attempt).Msg("Error when trying to broadcast SSC internal tx")
+		} else {
+			return nil
+		}
+	}
+	return errors.New("failed to broadcast SSC internal tx")
 }
 
 func (node *Node) tryBroadcastStaking(stakingTx *staking.StakingTransaction) {

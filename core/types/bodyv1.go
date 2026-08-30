@@ -16,6 +16,7 @@ type BodyV1 struct {
 
 type bodyFieldsV1 struct {
 	Transactions     []*Transaction
+	SSCTransactions  [][]*SSCInternalTx // 新增（DSN-47）：二维，第一维下标=InternalTxType，第二维=行内顺序
 	Uncles           []*block.Header
 	IncomingReceipts CXReceiptsProofs
 }
@@ -101,6 +102,51 @@ func (b *BodyV1) SetUncles(newUncle []*block.Header) {
 		uncles = append(uncles, CopyHeader(uncle))
 	}
 	b.f.Uncles = uncles
+}
+
+// SSCTransactions returns the list of SSC internal transactions as a 2-D slice
+// (first dim index = InternalTxType bucket, second dim = tx within that type, in row order).
+func (b *BodyV1) SSCTransactions() (txs [][]*SSCInternalTx) {
+	for _, row := range b.f.SSCTransactions {
+		var rowCopy []*SSCInternalTx
+		for _, tx := range row {
+			rowCopy = append(rowCopy, tx.Copy())
+		}
+		txs = append(txs, rowCopy)
+	}
+	return txs
+}
+
+// SSCTransactionAt returns the SSC internal transaction at the given global index in this block,
+// counting by type order (CRTx first, then SimTx, ...). It returns nil if index is out of bounds.
+func (b *BodyV1) SSCTransactionAt(index int) *SSCInternalTx {
+	if index < 0 {
+		return nil
+	}
+	for _, row := range b.f.SSCTransactions {
+		if index < len(row) {
+			return row[index].Copy()
+		}
+		index -= len(row)
+	}
+	return nil
+}
+
+// SetSSCTransactions sets the list of SSC internal transactions (2-D:
+// first dim index = InternalTxType bucket, second dim = tx within that type) with a deep copy
+// of the given list. The stored slice is normalized to length InternalTxTypeCount() so callers
+// can always index by InternalTxType safely; missing buckets become empty (nil) rows.
+func (b *BodyV1) SetSSCTransactions(newSSCTransactions [][]*SSCInternalTx) {
+	txs := NewSSCTransactions() // length = InternalTxTypeCount()
+	for i, row := range newSSCTransactions {
+		if i >= len(txs) {
+			break // ignore rows beyond defined types
+		}
+		for _, tx := range row {
+			txs[i] = append(txs[i], tx.Copy())
+		}
+	}
+	b.f.SSCTransactions = txs
 }
 
 // IncomingReceipts returns a deep copy of the list of incoming cross-shard

@@ -170,6 +170,23 @@ func (sim *Simulator) DeleteSimState(txHash common.Hash) {
 	sim.simStates.Delete(txHash)
 }
 
+// Stats 返回 Simulator 各存储的条目数，供监控分析资源释放情况。
+func (sim *Simulator) Stats() (simStates, callStatesWaiting, simuChMap, pendingReqs, queueLen int) {
+	if sim == nil {
+		return 0, 0, 0, 0, 0
+	}
+	sim.simStates.Range(func(_, _ interface{}) bool { simStates++; return true })
+	sim.simuChMap.Range(func(_, _ interface{}) bool { simuChMap++; return true })
+	sim.pendingReqsMap.Range(func(_, _ interface{}) bool { pendingReqs++; return true })
+	sim.syncLock.Lock()
+	callStatesWaiting = len(sim.callStatesInWaiting)
+	sim.syncLock.Unlock()
+	if sim.simulateTaskPQ != nil {
+		queueLen = sim.simulateTaskPQ.Len()
+	}
+	return
+}
+
 func (sim *Simulator) GetBlockHash(txHash common.Hash) (common.Hash, bool) {
 	state, ok := sim.GetSimState(txHash)
 	if !ok {

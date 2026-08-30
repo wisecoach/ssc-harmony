@@ -70,6 +70,21 @@ func (b *BodyV0) SetStakingTransactions(newTransactions []*staking.StakingTransa
 	// not supported
 }
 
+// SSCTransactions returns the list of SSC internal transactions. (not supported by Body V0)
+func (b *BodyV0) SSCTransactions() (txs [][]*SSCInternalTx) {
+	return nil
+}
+
+// SSCTransactionAt returns the SSC internal transaction at the given index. (not supported by Body V0)
+func (b *BodyV0) SSCTransactionAt(index int) *SSCInternalTx {
+	return nil
+}
+
+// SetSSCTransactions sets the list of SSC internal transactions. (not supported by Body V0)
+func (b *BodyV0) SetSSCTransactions(newSSCTransactions [][]*SSCInternalTx) {
+	// not supported
+}
+
 // Uncles returns a deep copy of the list of uncle headers of this block.
 func (b *BodyV0) Uncles() (uncles []*block.Header) {
 	for _, uncle := range b.f.Uncles {

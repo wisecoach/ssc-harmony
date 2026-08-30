@@ -2,16 +2,16 @@
 id: DSN-47
 title: 专用内部交易结构（SSCInternalTx）+ 区块承载 + SSCVM 原生处理
 type: DSN
-status: planned
+status: implemented
 priority: P0
 author: Designer
 created: 2026-08-27
-updated: 2026-08-27
+updated: 2026-08-28
 scope: [core/types, core/vm, node/worker, core/state_processor, ssc]
 refs: [DSN-45, DSN-46, EXP-07]
 ---
 
-> **状态**：设计阶段
+> **状态**：已实现（2026-08-28 落地并回归）
 > **背景**：SimTx/CRTx 目前被硬塞进普通 `types.Transaction`（特殊 precompile 地址 + JSON-in-Data + 假 nonce），导致 JSON 开销、单账户 nonce 串行、语义不清。本 DSN 定义**独立的内部交易结构**，并作为 DSN-46（内部池）和 DSN-45（批量并行）的承载基础。
 
 ## 1. 概述
@@ -69,6 +69,8 @@ func (t *SSCInternalTx) RefTxHash() common.Hash   // 解 Payload 后取；非外
 参照 `StakingTransactions`（独立队列的先例）。
 
 > **R11 决策：RLP 用一维 `[]*SSCInternalTx`**（数组顺序 = 执行顺序，与 `Transactions` 语义一致，最简单、最不易出错）。**类型分桶只在内存执行时做**（worker 已有 `pendingCRTxs/pendingSSCTxs` 分类）；二维 `[][]*SSCInternalTx` 列为可选（若要在 body 层就固化顺序）。
+>
+> **实现落地（2026-08-28）**：实际采用了 R11 的“可选二维”分支——`bodyFieldsV2.SSCTransactions [][]*SSCInternalTx`（第一维下标=InternalTxType 类型桶，第二维=行内顺序），并在 `bodyv1/bodyv0`、`extblockV1/extblockV2`、`Block.EncodeRLP/DecodeRLP` 同步补齐（含修复 v1 body 曾丢失 SSC 的 BAD BLOCK，见 BRF-06）。
 
 ```go
 type bodyFieldsV2 struct {
@@ -164,3 +166,24 @@ func (v *SSCVM) ProcessInternal(tx *SSCInternalTx, stateDB api.StateDB, header *
 | 行内顺序 | Sim 行内顺序 | 已定：由内部池 `batches[0]`（DSN-46）决定 |
 | protobuf 迁移范围 | JSON→protobuf 工作量 | 已定：只换线上/区块载荷，签名仍用独立规范字节（R9） |
 | RLP 向后兼容 | 区块格式变更 | 全节点协调升级；按 R8 清单逐项同步 |
+
+---
+
+## 8. 实现落地与回归（2026-08-28）
+
+> 本 DSN 已实现完毕。核心交付物与实测确认：
+
+### 8.1 已落地（对照 §4.5 / §6）
+- `core/types/ssc_internal_tx.go`（新）：`SSCInternalTx`（Type/Shard/Payload，RLP 外壳）+ `InternalTxType` 枚举 + `Hash()`/`Copy()`/`String()` + 二维视图 `SSCTransactions`（实现 `DerivableBase`，并入 TxHash）。
+- 区块承载：`BodyV2.SSCTransactions [][]*SSCInternalTx`（2D，第一维=类型桶）；`BodyV1`/`BodyV0`、`extblockV1/extblockV2`、`Block.EncodeRLP/DecodeRLP` 同步补齐。
+- `SSCVM.ProcessInternal`（`core/vm/sscvm.go`）：原生处理入口，SimTx/CRTx/NewEpoch/UploadOpinions/Empty 按 `Type` 分派。
+- 出块/验证：`node/worker/worker.go` 从内部池提取写 `w.current.sscTxns`；`core/state_processor.go` `ApplySSCInternalTransaction`/`Process` 按 SSC→普通→staking 复算。
+- 载荷 protobuf 化：`CXTSimulation`/`CXTCommitProof`/`NewEpoch`/`SelfOpinions` 走 protobuf（BRF-05），签名仍用独立规范字节（R9）。
+
+### 8.2 回归修复（与本 DSN 相关）
+- **v1 body 丢 SSC（BAD BLOCK）**：`BodyV1`/`extblockV1` 曾未带 SSC，导致 v1 header 区块 RLP 传输后 SSC 丢失 → TxHash mismatch。已修（BRF-06）。`core/block_validator.go` 的 `ValidateBody` 补 `types.SSCTransactions(block.SSCTransactions())`，与 `NewBlock` 三元组对齐。
+- **跨分片 SimTx 泄漏**：`CommitSimulation` 曾用 origin 的 ShardId 建 SimTx，导致每节点把所有分片 SimTx 收进自己池并广播到所有分片 group → `InvalidSimulation` 回滚。已修：`ShardId=s.SelfShard` + 接收/提交侧 shard 过滤（详见 DSN-48 §8.2）。
+- **出块 1s 预算**：SSC 内部交易纳入 worker 1s 时间预算（DSN-48 §8.3）。
+
+### 8.3 遗留
+- DSN-46（内部池进池仲裁/分组/DAG）仍未做；`CHAIN_RETRY_STATS` 仍 Debug 级（统计应 Info）。

@@ -8,7 +8,9 @@ import (
 	"google.golang.org/grpc"
 )
 
-// RegisterSSCGrpcServer registers both SSC gRPC services on the given gRPC server.
+// RegisterSSCGrpcServer registers the SSC gRPC services on the given gRPC server.
+// This includes the shard/cross services plus the monitor service used for
+// post-experiment resource-release analysis.
 func RegisterSSCGrpcServer(grpcServer *grpc.Server, svc api.Service) {
 	sscpb.RegisterSSCShardServiceServer(grpcServer, &sscGrpcShardService{
 		internalService: svc,
@@ -16,6 +18,27 @@ func RegisterSSCGrpcServer(grpcServer *grpc.Server, svc api.Service) {
 	sscpb.RegisterSSCCrossServiceServer(grpcServer, &sscGrpcCrossService{
 		internalService: svc,
 	})
+	sscpb.RegisterSSCMonitorServiceServer(grpcServer, &sscGrpcMonitorService{
+		internalService: svc,
+	})
+}
+
+// ============================================================================
+// sscGrpcMonitorService — implements SSCMonitorServiceServer
+// ============================================================================
+
+type sscGrpcMonitorService struct {
+	sscpb.UnimplementedSSCMonitorServiceServer
+	internalService api.Service
+}
+
+// GetModuleStatus 返回 SSC 各模块当前维护的数据量快照。
+// 供实验结束后调用，分析各模块是否正确释放资源。
+func (s *sscGrpcMonitorService) GetModuleStatus(
+	ctx context.Context, req *sscpb.Empty,
+) (*sscpb.ModuleStatus, error) {
+	status := s.internalService.GetModuleStatus()
+	return sscpb.ModuleStatusToProto(status), nil
 }
 
 // ============================================================================

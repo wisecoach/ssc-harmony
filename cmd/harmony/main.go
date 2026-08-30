@@ -33,6 +33,7 @@ import (
 	"github.com/harmony-one/harmony/consensus"
 	"github.com/harmony-one/harmony/consensus/quorum"
 	"github.com/harmony-one/harmony/core"
+	"github.com/harmony-one/harmony/core/types"
 	"github.com/harmony-one/harmony/crypto/bls"
 	"github.com/harmony-one/harmony/hmy/downloader"
 	"github.com/harmony-one/harmony/internal/blsgen"
@@ -937,9 +938,18 @@ func setupConsensusAndNode(hc harmonyconfig.HarmonyConfig, nodeConfig *nodeconfi
 	}
 	ctx := context.Background()
 	comm := ssc.NewComm()
-	txSub := ssc.NewTxSubmitter(nodeConfig.ShardID, simSigner, crSigner, currentNode, sscConfig)
+	// DSN-48：内部交易无条件走内部池（txSubmitter 与 sscService 共用同一实例）
+	internalPool := ssc.NewSSCInternalPool()
+	currentNode.SetSSCInternalTxSink(func(tx *types.SSCInternalTx) {
+		// DSN-48 兜底：只收本分片的内部交易，杜绝他分片 SimTx/CRTx 进本节点池
+		if tx.Shard != nodeConfig.ShardID {
+			return
+		}
+		_ = internalPool.Add(tx)
+	})
+	txSub := ssc.NewTxSubmitter(nodeConfig.ShardID, simSigner, crSigner, currentNode, sscConfig, internalPool, currentNode)
 	cm := ssc.NewCommitteeMechanism(ctx, ethCommon.Address(sscSelfAddr), nodeConfig.ShardID, sscOnChainConfig, signerMgr, txSub, comm)
-	sscService := ssc.NewService(ctx, sscConfig, cm, sscOnChainConfig, signerMgr, bc, simSigner, comm)
+	sscService := ssc.NewService(ctx, sscConfig, cm, sscOnChainConfig, signerMgr, bc, simSigner, comm, internalPool)
 	currentNode.SetSSCService(sscService)
 
 	if hc.Legacy != nil && hc.Legacy.TPBroadcastInvalidTxn != nil {
@@ -994,7 +1004,6 @@ func setupConsensusAndNode(hc harmonyconfig.HarmonyConfig, nodeConfig *nodeconfi
 	// update consensus information based on the blockchain
 	currentConsensus.SetMode(currentConsensus.UpdateConsensusInformation())
 	currentConsensus.NextBlockDue = time.Now()
-	currentConsensus.GetOnChainSSCAddrs = cm.CurrentValidatorAddrs
 	return currentNode
 }
 

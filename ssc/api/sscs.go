@@ -274,4 +274,17 @@ type Service interface {
 	InternalService
 	ShardService
 	CrossService
+
+	// ExtractSSCTransactions 从内部池按类型顺序提取一批内部交易（DSN-48）。
+	// 返回二维（第一维=InternalTxType 桶），供 worker 写入区块。
+	ExtractSSCTransactions(maxTotal int) [][]*types.SSCInternalTx
+
+	// DiscardSSCInternalTx 从内部池删除一条内部交易（按 hash）。
+	// 用于执行失败、应停止重试的内部交易（DSN-48：避免每块无限重试）。
+	DiscardSSCInternalTx(tx *types.SSCInternalTx)
+
+	// GetModuleStatus 返回 SSC 各模块当前维护的数据量快照。
+	// 供实验结束后通过监控 gRPC 服务（SSCMonitorService）调用，
+	// 用于分析各模块是否正确释放资源。
+	GetModuleStatus() *ModuleStatus
 }

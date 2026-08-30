@@ -7,6 +7,7 @@ import (
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/rlp"
 	"github.com/harmony-one/harmony/core/types"
+	"github.com/harmony-one/harmony/internal/utils"
 	api "github.com/harmony-one/harmony/ssc/api"
 )
 
@@ -427,13 +428,13 @@ func CXTSimulationSSCResultFromProto(p *CXTSimulationSSCResult) *api.CXTSimulati
 		json.Unmarshal(p.GetReceipt().GetData(), receipt)
 	}
 	return &api.CXTSimulationSSCResult{
-		RelatedShards:  relatedShardsFromProto(p.GetRelatedShards()),
-		Result:         p.GetResult(),
-		Receipt:        receipt,
-		UsedGas:        p.GetUsedGas(),
-		Err:            p.GetErr(),
-		TreeNode:       callNodeDataFromProto(p.GetTreeNode()),
-		ConflictKeys:   lockKeysFromProto(p.GetConflictKeys()),
+		RelatedShards:        relatedShardsFromProto(p.GetRelatedShards()),
+		Result:               p.GetResult(),
+		Receipt:              receipt,
+		UsedGas:              p.GetUsedGas(),
+		Err:                  p.GetErr(),
+		TreeNode:             callNodeDataFromProto(p.GetTreeNode()),
+		ConflictKeys:         lockKeysFromProto(p.GetConflictKeys()),
 		BaseBLSSignedMessage: baseBLSFromProto(p.GetBase()),
 	}
 }
@@ -467,16 +468,16 @@ func CXTSimulationFromProto(p *CXTSimulation) *api.CXTSimulation {
 		return nil
 	}
 	return &api.CXTSimulation{
-		SimulationNum:  int(p.GetSimulationNum()),
-		TxHash:         hashFromProto(p.GetTxHash()),
-		Nonce:          p.GetNonce(),
-		Sender:         addrFromProto(p.GetSender()),
-		ShardId:        p.GetShardId(),
-		OriginShardId:  p.GetOriginShardId(),
-		RelatedShards:  relatedShardsFromProto(p.GetRelatedShards()),
-		CallStates:     callStatesFromProto(p.GetCallStates()),
-		ChainPatch:     rwSetFromProto(p.GetChainPatch()),
-		UpstreamTxList: txSimKeysFromProto(p.GetUpstreamTxList()),
+		SimulationNum:        int(p.GetSimulationNum()),
+		TxHash:               hashFromProto(p.GetTxHash()),
+		Nonce:                p.GetNonce(),
+		Sender:               addrFromProto(p.GetSender()),
+		ShardId:              p.GetShardId(),
+		OriginShardId:        p.GetOriginShardId(),
+		RelatedShards:        relatedShardsFromProto(p.GetRelatedShards()),
+		CallStates:           callStatesFromProto(p.GetCallStates()),
+		ChainPatch:           rwSetFromProto(p.GetChainPatch()),
+		UpstreamTxList:       txSimKeysFromProto(p.GetUpstreamTxList()),
 		BaseBLSSignedMessage: baseBLSFromProto(p.GetBase()),
 	}
 }
@@ -619,24 +620,24 @@ func CXTCallSSCRequestFromProto(p *CXTCallSSCRequest) *api.CXTCallSSCRequest {
 		return nil
 	}
 	return &api.CXTCallSSCRequest{
-		OriginShardId:  p.GetOriginShardId(),
-		FromShardId:    p.GetFromShardId(),
-		TargetShardId:  p.GetTargetShardId(),
-		SimulationNum:  int(p.GetSimulationNum()),
-		RelatedShards:  relatedShardsFromProto(p.GetRelatedShards()),
-		TxHash:         hashFromProto(p.GetTxHash()),
-		Nonce:          p.GetNonce(),
-		TxSender:       p.GetTxSender(),
-		CallIndex:      callIndexFromProto(p.GetCallIndex()),
-		Caller:         addrFromProto(p.GetCaller()),
-		Addr:           addrFromProto(p.GetAddr()),
-		Input:          p.GetInput(),
-		Gas:            p.GetGas(),
-		GasPrice:       bigIntFromProto(p.GetGasPrice()),
-		Value:          bigIntFromProto(p.GetValue()),
+		OriginShardId:        p.GetOriginShardId(),
+		FromShardId:          p.GetFromShardId(),
+		TargetShardId:        p.GetTargetShardId(),
+		SimulationNum:        int(p.GetSimulationNum()),
+		RelatedShards:        relatedShardsFromProto(p.GetRelatedShards()),
+		TxHash:               hashFromProto(p.GetTxHash()),
+		Nonce:                p.GetNonce(),
+		TxSender:             p.GetTxSender(),
+		CallIndex:            callIndexFromProto(p.GetCallIndex()),
+		Caller:               addrFromProto(p.GetCaller()),
+		Addr:                 addrFromProto(p.GetAddr()),
+		Input:                p.GetInput(),
+		Gas:                  p.GetGas(),
+		GasPrice:             bigIntFromProto(p.GetGasPrice()),
+		Value:                bigIntFromProto(p.GetValue()),
 		BaseBLSSignedMessage: baseBLSFromProto(p.GetBase()),
-		BlockHash:      hashFromProto(p.GetBlockHash()),
-		BlockNum:       p.GetBlockNum(),
+		BlockHash:            hashFromProto(p.GetBlockHash()),
+		BlockNum:             p.GetBlockNum(),
 	}
 }
 
@@ -675,14 +676,14 @@ func CXTCallResultFromProto(p *CXTCallResult) *api.CXTCallResult {
 		return nil
 	}
 	return &api.CXTCallResult{
-		TxHash:        hashFromProto(p.GetTxHash()),
-		CallIndex:     callIndexFromProto(p.GetCallIndex()),
-		RelatedShards: relatedShardsFromProto(p.GetRelatedShards()),
-		Result:        p.GetResult(),
-		LeftOverGas:   p.GetLeftOverGas(),
-		BlockHash:     hashFromProto(p.GetBlockHash()),
-		Err:           p.GetErr(),
-		TreeNode:      callNodeDataFromProto(p.GetTreeNode()),
+		TxHash:         hashFromProto(p.GetTxHash()),
+		CallIndex:      callIndexFromProto(p.GetCallIndex()),
+		RelatedShards:  relatedShardsFromProto(p.GetRelatedShards()),
+		Result:         p.GetResult(),
+		LeftOverGas:    p.GetLeftOverGas(),
+		BlockHash:      hashFromProto(p.GetBlockHash()),
+		Err:            p.GetErr(),
+		TreeNode:       callNodeDataFromProto(p.GetTreeNode()),
 		BaseSSCMessage: baseSSCFromProto(p.GetBase()),
 	}
 }
@@ -709,14 +710,14 @@ func CXTCallSSCResultFromProto(p *CXTCallSSCResult) *api.CXTCallSSCResult {
 		return nil
 	}
 	return &api.CXTCallSSCResult{
-		TxHash:        hashFromProto(p.GetTxHash()),
-		CallIndex:     callIndexFromProto(p.GetCallIndex()),
-		RelatedShards: relatedShardsFromProto(p.GetRelatedShards()),
-		Result:        p.GetResult(),
-		LeftOverGas:   p.GetLeftOverGas(),
-		BlockHash:     hashFromProto(p.GetBlockHash()),
-		Err:           p.GetErr(),
-		TreeNode:      callNodeDataFromProto(p.GetTreeNode()),
+		TxHash:               hashFromProto(p.GetTxHash()),
+		CallIndex:            callIndexFromProto(p.GetCallIndex()),
+		RelatedShards:        relatedShardsFromProto(p.GetRelatedShards()),
+		Result:               p.GetResult(),
+		LeftOverGas:          p.GetLeftOverGas(),
+		BlockHash:            hashFromProto(p.GetBlockHash()),
+		Err:                  p.GetErr(),
+		TreeNode:             callNodeDataFromProto(p.GetTreeNode()),
 		BaseBLSSignedMessage: baseBLSFromProto(p.GetBase()),
 	}
 }
@@ -769,14 +770,14 @@ func SimulationCommitFromProto(p *SimulationCommit) *api.SimulationCommit {
 		return nil
 	}
 	return &api.SimulationCommit{
-		SimulationNum:  int(p.GetSimulationNum()),
-		TxHash:         hashFromProto(p.GetTxHash()),
-		Nonce:          p.GetNonce(),
-		Sender:         addrFromProto(p.GetSender()),
-		RelatedShards:  relatedShardsFromProto(p.GetRelatedShards()),
-		Commit:         p.GetCommit(),
-		Status:         simulationCommitStatusFromProto(p.GetStatus()),
-		Reason:         p.GetReason(),
+		SimulationNum:        int(p.GetSimulationNum()),
+		TxHash:               hashFromProto(p.GetTxHash()),
+		Nonce:                p.GetNonce(),
+		Sender:               addrFromProto(p.GetSender()),
+		RelatedShards:        relatedShardsFromProto(p.GetRelatedShards()),
+		Commit:               p.GetCommit(),
+		Status:               simulationCommitStatusFromProto(p.GetStatus()),
+		Reason:               p.GetReason(),
 		BaseBLSSignedMessage: baseBLSFromProto(p.GetBase()),
 	}
 }
@@ -786,15 +787,15 @@ func SimulationCommitToProto(a *api.SimulationCommit) *SimulationCommit {
 		return nil
 	}
 	return &SimulationCommit{
-		SimulationNum:  int32(a.SimulationNum),
-		TxHash:         hashToProto(a.TxHash),
-		Nonce:          a.Nonce,
-		Sender:         addrToProto(a.Sender),
-		RelatedShards:  relatedShardsToProto(a.RelatedShards),
-		Commit:         a.Commit,
-		Status:         simulationCommitStatusToProto(a.Status),
-		Reason:         a.Reason,
-		Base:           baseBLSToProto(a.BaseBLSSignedMessage),
+		SimulationNum: int32(a.SimulationNum),
+		TxHash:        hashToProto(a.TxHash),
+		Nonce:         a.Nonce,
+		Sender:        addrToProto(a.Sender),
+		RelatedShards: relatedShardsToProto(a.RelatedShards),
+		Commit:        a.Commit,
+		Status:        simulationCommitStatusToProto(a.Status),
+		Reason:        a.Reason,
+		Base:          baseBLSToProto(a.BaseBLSSignedMessage),
 	}
 }
 
@@ -873,13 +874,13 @@ func CXTCommitSSCVoteFromProto(p *CXTCommitSSCVote) *api.CXTCommitSSCVote {
 		return nil
 	}
 	return &api.CXTCommitSSCVote{
-		TxHash:        hashFromProto(p.GetTxHash()),
-		SimulationNum: int(p.GetSimulationNum()),
-		ShardId:       p.GetShardId(),
-		OriginShardId: p.GetOriginShardId(),
-		Type:          cxtCommitTypeFromProto(p.GetType()),
-		Reason:        cxtCommitReasonFromProto(p.GetReason()),
-		Payload:       p.GetPayload(),
+		TxHash:               hashFromProto(p.GetTxHash()),
+		SimulationNum:        int(p.GetSimulationNum()),
+		ShardId:              p.GetShardId(),
+		OriginShardId:        p.GetOriginShardId(),
+		Type:                 cxtCommitTypeFromProto(p.GetType()),
+		Reason:               cxtCommitReasonFromProto(p.GetReason()),
+		Payload:              p.GetPayload(),
 		BaseBLSSignedMessage: baseBLSFromProto(p.GetBase()),
 	}
 }
@@ -1116,8 +1117,18 @@ func NewEpochFromProto(p *NewEpoch) *api.NewEpoch {
 	if p == nil {
 		return nil
 	}
+	var committee *api.ShardSimulateCommittee
+	if len(p.GetCommittee()) > 0 {
+		c := &api.ShardSimulateCommittee{}
+		if err := json.Unmarshal(p.GetCommittee(), c); err != nil {
+			// 解析失败时保留 nil，调用方自行处理
+			utils.Logger().Error().Err(err).Msg("failed to unmarshal NewEpoch committee from proto")
+		} else {
+			committee = c
+		}
+	}
 	return &api.NewEpoch{
-		Committee: nil, // JSON serialized; caller must unmarshal if needed
+		Committee: committee,
 	}
 }
 
@@ -1125,8 +1136,14 @@ func NewEpochToProto(a *api.NewEpoch) *NewEpoch {
 	if a == nil {
 		return nil
 	}
+	var committee []byte
+	if a.Committee != nil {
+		if b, err := json.Marshal(a.Committee); err == nil {
+			committee = b
+		}
+	}
 	return &NewEpoch{
-		Committee: nil, // JSON serialized; handled by caller
+		Committee: committee,
 	}
 }
 
@@ -1167,6 +1184,64 @@ func SLTestResultToProto(a *api.SLTestResult) *SLTestResult {
 	return &SLTestResult{
 		Result: a.Result,
 		Error:  a.Error,
+	}
+}
+
+func SLOpinionFromProto(p *SLOpinion) *api.SLOpinion {
+	if p == nil {
+		return nil
+	}
+	return &api.SLOpinion{
+		From:  addrFromProto(p.GetFrom()),
+		To:    addrFromProto(p.GetTo()),
+		S:     int(p.GetS()),
+		F:     int(p.GetF()),
+		Beta:  p.GetBeta(),
+		Delta: p.GetDelta(),
+		Omega: p.GetOmega(),
+	}
+}
+
+func SLOpinionToProto(a *api.SLOpinion) *SLOpinion {
+	if a == nil {
+		return nil
+	}
+	return &SLOpinion{
+		From:  addrToProto(a.From),
+		To:    addrToProto(a.To),
+		S:     int32(a.S),
+		F:     int32(a.F),
+		Beta:  a.Beta,
+		Delta: a.Delta,
+		Omega: a.Omega,
+	}
+}
+
+func SelfOpinionsFromProto(p *SelfOpinions) *api.SelfOpinions {
+	if p == nil {
+		return nil
+	}
+	opinions := make([]*api.SLOpinion, len(p.GetOpinions()))
+	for i, o := range p.GetOpinions() {
+		opinions[i] = SLOpinionFromProto(o)
+	}
+	return &api.SelfOpinions{
+		From:     addrFromProto(p.GetFrom()),
+		Opinions: opinions,
+	}
+}
+
+func SelfOpinionsToProto(a *api.SelfOpinions) *SelfOpinions {
+	if a == nil {
+		return nil
+	}
+	opinions := make([]*SLOpinion, len(a.Opinions))
+	for i, o := range a.Opinions {
+		opinions[i] = SLOpinionToProto(o)
+	}
+	return &SelfOpinions{
+		From:     addrToProto(a.From),
+		Opinions: opinions,
 	}
 }
 
@@ -1296,4 +1371,147 @@ func retryStatusToProto(a api.RetryStatus) RetryStatus {
 	default:
 		return RetryStatus_RETRY_ACTIVE
 	}
+}
+
+// ============================================================================
+// ModuleStatus converters (monitoring gRPC service)
+// ============================================================================
+
+// ModuleStatusToProto converts the internal api.ModuleStatus to its proto form.
+func ModuleStatusToProto(m *api.ModuleStatus) *ModuleStatus {
+	if m == nil {
+		return &ModuleStatus{}
+	}
+	return &ModuleStatus{
+		TxStates:     int64(m.TxStates),
+		CommitStates: int64(m.CommitStates),
+		TxTraces:     int64(m.TxTraces),
+		InternalPool: int64(m.InternalPool),
+		RetryScheduler: &RetrySchedulerStatus{
+			RetryPool:       int64(m.RetryScheduler.RetryPool),
+			PassivePool:     int64(m.RetryScheduler.PassivePool),
+			StaleTxs:        int64(m.RetryScheduler.StaleTxs),
+			Signals:         int64(m.RetryScheduler.Signals),
+			Patches:         int64(m.RetryScheduler.Patches),
+			OnChainPatches:  int64(m.RetryScheduler.OnChainPatches),
+			LocalPatches:    int64(m.RetryScheduler.LocalPatches),
+			KeyIndex:        int64(m.RetryScheduler.KeyIndex),
+			Subscriber:      int64(m.RetryScheduler.Subscriber),
+			TxSubKeys:       int64(m.RetryScheduler.TxSubKeys),
+			ConsumedPatches: int64(m.RetryScheduler.ConsumedPatches),
+			ReSimInFlight:   int64(m.RetryScheduler.ReSimInFlight),
+			WoundedRetryTxs: int64(m.RetryScheduler.WoundedRetryTxs),
+			LockWait:        int64(m.RetryScheduler.LockWait),
+		},
+		StateLock: &StateLockStatus{
+			GlobalLocked:      int64(m.StateLock.GlobalLocked),
+			GlobalRLocked:     int64(m.StateLock.GlobalRLocked),
+			GlobalFinishedTxs: int64(m.StateLock.GlobalFinishedTxs),
+			GlobalLockStart:   int64(m.StateLock.GlobalLockStart),
+		},
+		TempLockView: &TempLockViewStatus{
+			WriteLocks: int64(m.TempLockView.WriteLocks),
+			ReadLocks:  int64(m.TempLockView.ReadLocks),
+			TxSets:     int64(m.TempLockView.TxSets),
+			Wounded:    int64(m.TempLockView.Wounded),
+		},
+		Simulator: &SimulatorStatus{
+			SimStates:         int64(m.Simulator.SimStates),
+			CallStatesWaiting: int64(m.Simulator.CallStatesWaiting),
+			SimuChMap:         int64(m.Simulator.SimuChMap),
+			PendingReqsMap:    int64(m.Simulator.PendingReqsMap),
+			QueueLen:          int64(m.Simulator.QueueLen),
+		},
+		Verifier: &VerifierStatus{
+			ExecutionVerifyContexts: int64(m.Verifier.ExecutionVerifyContexts),
+			TxLockedSimNum:          int64(m.Verifier.TxLockedSimNum),
+		},
+		Timer: &TimerStatus{
+			Txs:                int64(m.Timer.Txs),
+			Sp1Buckets:         int64(m.Timer.Sp1Buckets),
+			PoolTimeoutBuckets: int64(m.Timer.PoolTimeoutBuckets),
+		},
+		Dag: &DAGStatus{
+			ChainTxDetected:      int64(m.DAG.ChainTxDetected),
+			RetryCommitPatchHit:  int64(m.DAG.RetryCommitPatchHit),
+			RetryCommitPatchMiss: int64(m.DAG.RetryCommitPatchMiss),
+		},
+	}
+}
+
+// ModuleStatusFromProto converts the proto ModuleStatus back to the internal form.
+func ModuleStatusFromProto(p *ModuleStatus) *api.ModuleStatus {
+	if p == nil {
+		return &api.ModuleStatus{}
+	}
+	m := &api.ModuleStatus{
+		TxStates:     int(p.GetTxStates()),
+		CommitStates: int(p.GetCommitStates()),
+		TxTraces:     int(p.GetTxTraces()),
+		InternalPool: int(p.GetInternalPool()),
+	}
+	if rs := p.GetRetryScheduler(); rs != nil {
+		m.RetryScheduler = api.RetrySchedulerStatus{
+			RetryPool:       int(rs.GetRetryPool()),
+			PassivePool:     int(rs.GetPassivePool()),
+			StaleTxs:        int(rs.GetStaleTxs()),
+			Signals:         int(rs.GetSignals()),
+			Patches:         int(rs.GetPatches()),
+			OnChainPatches:  int(rs.GetOnChainPatches()),
+			LocalPatches:    int(rs.GetLocalPatches()),
+			KeyIndex:        int(rs.GetKeyIndex()),
+			Subscriber:      int(rs.GetSubscriber()),
+			TxSubKeys:       int(rs.GetTxSubKeys()),
+			ConsumedPatches: int(rs.GetConsumedPatches()),
+			ReSimInFlight:   int(rs.GetReSimInFlight()),
+			WoundedRetryTxs: int(rs.GetWoundedRetryTxs()),
+			LockWait:        int(rs.GetLockWait()),
+		}
+	}
+	if sl := p.GetStateLock(); sl != nil {
+		m.StateLock = api.StateLockStatus{
+			GlobalLocked:      int(sl.GetGlobalLocked()),
+			GlobalRLocked:     int(sl.GetGlobalRLocked()),
+			GlobalFinishedTxs: int(sl.GetGlobalFinishedTxs()),
+			GlobalLockStart:   int(sl.GetGlobalLockStart()),
+		}
+	}
+	if tlv := p.GetTempLockView(); tlv != nil {
+		m.TempLockView = api.TempLockViewStatus{
+			WriteLocks: int(tlv.GetWriteLocks()),
+			ReadLocks:  int(tlv.GetReadLocks()),
+			TxSets:     int(tlv.GetTxSets()),
+			Wounded:    int(tlv.GetWounded()),
+		}
+	}
+	if sim := p.GetSimulator(); sim != nil {
+		m.Simulator = api.SimulatorStatus{
+			SimStates:         int(sim.GetSimStates()),
+			CallStatesWaiting: int(sim.GetCallStatesWaiting()),
+			SimuChMap:         int(sim.GetSimuChMap()),
+			PendingReqsMap:    int(sim.GetPendingReqsMap()),
+			QueueLen:          int(sim.GetQueueLen()),
+		}
+	}
+	if v := p.GetVerifier(); v != nil {
+		m.Verifier = api.VerifierStatus{
+			ExecutionVerifyContexts: int(v.GetExecutionVerifyContexts()),
+			TxLockedSimNum:          int(v.GetTxLockedSimNum()),
+		}
+	}
+	if t := p.GetTimer(); t != nil {
+		m.Timer = api.TimerStatus{
+			Txs:                int(t.GetTxs()),
+			Sp1Buckets:         int(t.GetSp1Buckets()),
+			PoolTimeoutBuckets: int(t.GetPoolTimeoutBuckets()),
+		}
+	}
+	if d := p.GetDag(); d != nil {
+		m.DAG = api.DAGStatus{
+			ChainTxDetected:      int(d.GetChainTxDetected()),
+			RetryCommitPatchHit:  int(d.GetRetryCommitPatchHit()),
+			RetryCommitPatchMiss: int(d.GetRetryCommitPatchMiss()),
+		}
+	}
+	return m
 }

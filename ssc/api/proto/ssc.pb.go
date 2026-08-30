@@ -3240,6 +3240,150 @@ func (x *SLTestResult) GetError() string {
 	return ""
 }
 
+type SLOpinion struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	From          *Address               `protobuf:"bytes,1,opt,name=from,proto3" json:"from,omitempty"`
+	To            *Address               `protobuf:"bytes,2,opt,name=to,proto3" json:"to,omitempty"`
+	S             int32                  `protobuf:"varint,3,opt,name=s,proto3" json:"s,omitempty"`
+	F             int32                  `protobuf:"varint,4,opt,name=f,proto3" json:"f,omitempty"`
+	Beta          float64                `protobuf:"fixed64,5,opt,name=beta,proto3" json:"beta,omitempty"`
+	Delta         float64                `protobuf:"fixed64,6,opt,name=delta,proto3" json:"delta,omitempty"`
+	Omega         float64                `protobuf:"fixed64,7,opt,name=omega,proto3" json:"omega,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *SLOpinion) Reset() {
+	*x = SLOpinion{}
+	mi := &file_ssc_proto_msgTypes[37]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *SLOpinion) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*SLOpinion) ProtoMessage() {}
+
+func (x *SLOpinion) ProtoReflect() protoreflect.Message {
+	mi := &file_ssc_proto_msgTypes[37]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use SLOpinion.ProtoReflect.Descriptor instead.
+func (*SLOpinion) Descriptor() ([]byte, []int) {
+	return file_ssc_proto_rawDescGZIP(), []int{37}
+}
+
+func (x *SLOpinion) GetFrom() *Address {
+	if x != nil {
+		return x.From
+	}
+	return nil
+}
+
+func (x *SLOpinion) GetTo() *Address {
+	if x != nil {
+		return x.To
+	}
+	return nil
+}
+
+func (x *SLOpinion) GetS() int32 {
+	if x != nil {
+		return x.S
+	}
+	return 0
+}
+
+func (x *SLOpinion) GetF() int32 {
+	if x != nil {
+		return x.F
+	}
+	return 0
+}
+
+func (x *SLOpinion) GetBeta() float64 {
+	if x != nil {
+		return x.Beta
+	}
+	return 0
+}
+
+func (x *SLOpinion) GetDelta() float64 {
+	if x != nil {
+		return x.Delta
+	}
+	return 0
+}
+
+func (x *SLOpinion) GetOmega() float64 {
+	if x != nil {
+		return x.Omega
+	}
+	return 0
+}
+
+type SelfOpinions struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	From          *Address               `protobuf:"bytes,1,opt,name=from,proto3" json:"from,omitempty"`
+	Opinions      []*SLOpinion           `protobuf:"bytes,2,rep,name=opinions,proto3" json:"opinions,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *SelfOpinions) Reset() {
+	*x = SelfOpinions{}
+	mi := &file_ssc_proto_msgTypes[38]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *SelfOpinions) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*SelfOpinions) ProtoMessage() {}
+
+func (x *SelfOpinions) ProtoReflect() protoreflect.Message {
+	mi := &file_ssc_proto_msgTypes[38]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use SelfOpinions.ProtoReflect.Descriptor instead.
+func (*SelfOpinions) Descriptor() ([]byte, []int) {
+	return file_ssc_proto_rawDescGZIP(), []int{38}
+}
+
+func (x *SelfOpinions) GetFrom() *Address {
+	if x != nil {
+		return x.From
+	}
+	return nil
+}
+
+func (x *SelfOpinions) GetOpinions() []*SLOpinion {
+	if x != nil {
+		return x.Opinions
+	}
+	return nil
+}
+
 // Helper message for methods that return raw bytes (SignSimulationCommit, SignCXTSimulation).
 type Bytes struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
@@ -3250,7 +3394,7 @@ type Bytes struct {
 
 func (x *Bytes) Reset() {
 	*x = Bytes{}
-	mi := &file_ssc_proto_msgTypes[37]
+	mi := &file_ssc_proto_msgTypes[39]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3262,7 +3406,7 @@ func (x *Bytes) String() string {
 func (*Bytes) ProtoMessage() {}
 
 func (x *Bytes) ProtoReflect() protoreflect.Message {
-	mi := &file_ssc_proto_msgTypes[37]
+	mi := &file_ssc_proto_msgTypes[39]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3275,12 +3419,677 @@ func (x *Bytes) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use Bytes.ProtoReflect.Descriptor instead.
 func (*Bytes) Descriptor() ([]byte, []int) {
-	return file_ssc_proto_rawDescGZIP(), []int{37}
+	return file_ssc_proto_rawDescGZIP(), []int{39}
 }
 
 func (x *Bytes) GetVal() []byte {
 	if x != nil {
 		return x.Val
+	}
+	return nil
+}
+
+// RetrySchedulerStatus 重试调度器各池/索引的条目数。
+type RetrySchedulerStatus struct {
+	state           protoimpl.MessageState `protogen:"open.v1"`
+	RetryPool       int64                  `protobuf:"varint,1,opt,name=retry_pool,json=retryPool,proto3" json:"retry_pool,omitempty"`
+	PassivePool     int64                  `protobuf:"varint,2,opt,name=passive_pool,json=passivePool,proto3" json:"passive_pool,omitempty"`
+	StaleTxs        int64                  `protobuf:"varint,3,opt,name=stale_txs,json=staleTxs,proto3" json:"stale_txs,omitempty"`
+	Signals         int64                  `protobuf:"varint,4,opt,name=signals,proto3" json:"signals,omitempty"`
+	Patches         int64                  `protobuf:"varint,5,opt,name=patches,proto3" json:"patches,omitempty"`
+	OnChainPatches  int64                  `protobuf:"varint,6,opt,name=on_chain_patches,json=onChainPatches,proto3" json:"on_chain_patches,omitempty"`
+	LocalPatches    int64                  `protobuf:"varint,7,opt,name=local_patches,json=localPatches,proto3" json:"local_patches,omitempty"`
+	KeyIndex        int64                  `protobuf:"varint,8,opt,name=key_index,json=keyIndex,proto3" json:"key_index,omitempty"`
+	Subscriber      int64                  `protobuf:"varint,9,opt,name=subscriber,proto3" json:"subscriber,omitempty"`
+	TxSubKeys       int64                  `protobuf:"varint,10,opt,name=tx_sub_keys,json=txSubKeys,proto3" json:"tx_sub_keys,omitempty"`
+	ConsumedPatches int64                  `protobuf:"varint,11,opt,name=consumed_patches,json=consumedPatches,proto3" json:"consumed_patches,omitempty"`
+	ReSimInFlight   int64                  `protobuf:"varint,12,opt,name=re_sim_in_flight,json=reSimInFlight,proto3" json:"re_sim_in_flight,omitempty"`
+	WoundedRetryTxs int64                  `protobuf:"varint,13,opt,name=wounded_retry_txs,json=woundedRetryTxs,proto3" json:"wounded_retry_txs,omitempty"`
+	LockWait        int64                  `protobuf:"varint,14,opt,name=lock_wait,json=lockWait,proto3" json:"lock_wait,omitempty"`
+	unknownFields   protoimpl.UnknownFields
+	sizeCache       protoimpl.SizeCache
+}
+
+func (x *RetrySchedulerStatus) Reset() {
+	*x = RetrySchedulerStatus{}
+	mi := &file_ssc_proto_msgTypes[40]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *RetrySchedulerStatus) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*RetrySchedulerStatus) ProtoMessage() {}
+
+func (x *RetrySchedulerStatus) ProtoReflect() protoreflect.Message {
+	mi := &file_ssc_proto_msgTypes[40]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use RetrySchedulerStatus.ProtoReflect.Descriptor instead.
+func (*RetrySchedulerStatus) Descriptor() ([]byte, []int) {
+	return file_ssc_proto_rawDescGZIP(), []int{40}
+}
+
+func (x *RetrySchedulerStatus) GetRetryPool() int64 {
+	if x != nil {
+		return x.RetryPool
+	}
+	return 0
+}
+
+func (x *RetrySchedulerStatus) GetPassivePool() int64 {
+	if x != nil {
+		return x.PassivePool
+	}
+	return 0
+}
+
+func (x *RetrySchedulerStatus) GetStaleTxs() int64 {
+	if x != nil {
+		return x.StaleTxs
+	}
+	return 0
+}
+
+func (x *RetrySchedulerStatus) GetSignals() int64 {
+	if x != nil {
+		return x.Signals
+	}
+	return 0
+}
+
+func (x *RetrySchedulerStatus) GetPatches() int64 {
+	if x != nil {
+		return x.Patches
+	}
+	return 0
+}
+
+func (x *RetrySchedulerStatus) GetOnChainPatches() int64 {
+	if x != nil {
+		return x.OnChainPatches
+	}
+	return 0
+}
+
+func (x *RetrySchedulerStatus) GetLocalPatches() int64 {
+	if x != nil {
+		return x.LocalPatches
+	}
+	return 0
+}
+
+func (x *RetrySchedulerStatus) GetKeyIndex() int64 {
+	if x != nil {
+		return x.KeyIndex
+	}
+	return 0
+}
+
+func (x *RetrySchedulerStatus) GetSubscriber() int64 {
+	if x != nil {
+		return x.Subscriber
+	}
+	return 0
+}
+
+func (x *RetrySchedulerStatus) GetTxSubKeys() int64 {
+	if x != nil {
+		return x.TxSubKeys
+	}
+	return 0
+}
+
+func (x *RetrySchedulerStatus) GetConsumedPatches() int64 {
+	if x != nil {
+		return x.ConsumedPatches
+	}
+	return 0
+}
+
+func (x *RetrySchedulerStatus) GetReSimInFlight() int64 {
+	if x != nil {
+		return x.ReSimInFlight
+	}
+	return 0
+}
+
+func (x *RetrySchedulerStatus) GetWoundedRetryTxs() int64 {
+	if x != nil {
+		return x.WoundedRetryTxs
+	}
+	return 0
+}
+
+func (x *RetrySchedulerStatus) GetLockWait() int64 {
+	if x != nil {
+		return x.LockWait
+	}
+	return 0
+}
+
+// StateLockStatus 状态锁管理器各全局 sync.Map 的条目数。
+type StateLockStatus struct {
+	state             protoimpl.MessageState `protogen:"open.v1"`
+	GlobalLocked      int64                  `protobuf:"varint,1,opt,name=global_locked,json=globalLocked,proto3" json:"global_locked,omitempty"`
+	GlobalRLocked     int64                  `protobuf:"varint,2,opt,name=global_r_locked,json=globalRLocked,proto3" json:"global_r_locked,omitempty"`
+	GlobalFinishedTxs int64                  `protobuf:"varint,3,opt,name=global_finished_txs,json=globalFinishedTxs,proto3" json:"global_finished_txs,omitempty"`
+	GlobalLockStart   int64                  `protobuf:"varint,4,opt,name=global_lock_start,json=globalLockStart,proto3" json:"global_lock_start,omitempty"`
+	unknownFields     protoimpl.UnknownFields
+	sizeCache         protoimpl.SizeCache
+}
+
+func (x *StateLockStatus) Reset() {
+	*x = StateLockStatus{}
+	mi := &file_ssc_proto_msgTypes[41]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *StateLockStatus) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*StateLockStatus) ProtoMessage() {}
+
+func (x *StateLockStatus) ProtoReflect() protoreflect.Message {
+	mi := &file_ssc_proto_msgTypes[41]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use StateLockStatus.ProtoReflect.Descriptor instead.
+func (*StateLockStatus) Descriptor() ([]byte, []int) {
+	return file_ssc_proto_rawDescGZIP(), []int{41}
+}
+
+func (x *StateLockStatus) GetGlobalLocked() int64 {
+	if x != nil {
+		return x.GlobalLocked
+	}
+	return 0
+}
+
+func (x *StateLockStatus) GetGlobalRLocked() int64 {
+	if x != nil {
+		return x.GlobalRLocked
+	}
+	return 0
+}
+
+func (x *StateLockStatus) GetGlobalFinishedTxs() int64 {
+	if x != nil {
+		return x.GlobalFinishedTxs
+	}
+	return 0
+}
+
+func (x *StateLockStatus) GetGlobalLockStart() int64 {
+	if x != nil {
+		return x.GlobalLockStart
+	}
+	return 0
+}
+
+// TempLockViewStatus 临时锁视图各 sync.Map 的条目数。
+type TempLockViewStatus struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	WriteLocks    int64                  `protobuf:"varint,1,opt,name=write_locks,json=writeLocks,proto3" json:"write_locks,omitempty"`
+	ReadLocks     int64                  `protobuf:"varint,2,opt,name=read_locks,json=readLocks,proto3" json:"read_locks,omitempty"`
+	TxSets        int64                  `protobuf:"varint,3,opt,name=tx_sets,json=txSets,proto3" json:"tx_sets,omitempty"`
+	Wounded       int64                  `protobuf:"varint,4,opt,name=wounded,proto3" json:"wounded,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *TempLockViewStatus) Reset() {
+	*x = TempLockViewStatus{}
+	mi := &file_ssc_proto_msgTypes[42]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *TempLockViewStatus) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*TempLockViewStatus) ProtoMessage() {}
+
+func (x *TempLockViewStatus) ProtoReflect() protoreflect.Message {
+	mi := &file_ssc_proto_msgTypes[42]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use TempLockViewStatus.ProtoReflect.Descriptor instead.
+func (*TempLockViewStatus) Descriptor() ([]byte, []int) {
+	return file_ssc_proto_rawDescGZIP(), []int{42}
+}
+
+func (x *TempLockViewStatus) GetWriteLocks() int64 {
+	if x != nil {
+		return x.WriteLocks
+	}
+	return 0
+}
+
+func (x *TempLockViewStatus) GetReadLocks() int64 {
+	if x != nil {
+		return x.ReadLocks
+	}
+	return 0
+}
+
+func (x *TempLockViewStatus) GetTxSets() int64 {
+	if x != nil {
+		return x.TxSets
+	}
+	return 0
+}
+
+func (x *TempLockViewStatus) GetWounded() int64 {
+	if x != nil {
+		return x.Wounded
+	}
+	return 0
+}
+
+// SimulatorStatus 模拟器各存储的条目数。
+type SimulatorStatus struct {
+	state             protoimpl.MessageState `protogen:"open.v1"`
+	SimStates         int64                  `protobuf:"varint,1,opt,name=sim_states,json=simStates,proto3" json:"sim_states,omitempty"`
+	CallStatesWaiting int64                  `protobuf:"varint,2,opt,name=call_states_waiting,json=callStatesWaiting,proto3" json:"call_states_waiting,omitempty"`
+	SimuChMap         int64                  `protobuf:"varint,3,opt,name=simu_ch_map,json=simuChMap,proto3" json:"simu_ch_map,omitempty"`
+	PendingReqsMap    int64                  `protobuf:"varint,4,opt,name=pending_reqs_map,json=pendingReqsMap,proto3" json:"pending_reqs_map,omitempty"`
+	QueueLen          int64                  `protobuf:"varint,5,opt,name=queue_len,json=queueLen,proto3" json:"queue_len,omitempty"`
+	unknownFields     protoimpl.UnknownFields
+	sizeCache         protoimpl.SizeCache
+}
+
+func (x *SimulatorStatus) Reset() {
+	*x = SimulatorStatus{}
+	mi := &file_ssc_proto_msgTypes[43]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *SimulatorStatus) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*SimulatorStatus) ProtoMessage() {}
+
+func (x *SimulatorStatus) ProtoReflect() protoreflect.Message {
+	mi := &file_ssc_proto_msgTypes[43]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use SimulatorStatus.ProtoReflect.Descriptor instead.
+func (*SimulatorStatus) Descriptor() ([]byte, []int) {
+	return file_ssc_proto_rawDescGZIP(), []int{43}
+}
+
+func (x *SimulatorStatus) GetSimStates() int64 {
+	if x != nil {
+		return x.SimStates
+	}
+	return 0
+}
+
+func (x *SimulatorStatus) GetCallStatesWaiting() int64 {
+	if x != nil {
+		return x.CallStatesWaiting
+	}
+	return 0
+}
+
+func (x *SimulatorStatus) GetSimuChMap() int64 {
+	if x != nil {
+		return x.SimuChMap
+	}
+	return 0
+}
+
+func (x *SimulatorStatus) GetPendingReqsMap() int64 {
+	if x != nil {
+		return x.PendingReqsMap
+	}
+	return 0
+}
+
+func (x *SimulatorStatus) GetQueueLen() int64 {
+	if x != nil {
+		return x.QueueLen
+	}
+	return 0
+}
+
+// VerifierStatus 验证器各存储的条目数。
+type VerifierStatus struct {
+	state                   protoimpl.MessageState `protogen:"open.v1"`
+	ExecutionVerifyContexts int64                  `protobuf:"varint,1,opt,name=execution_verify_contexts,json=executionVerifyContexts,proto3" json:"execution_verify_contexts,omitempty"`
+	TxLockedSimNum          int64                  `protobuf:"varint,2,opt,name=tx_locked_sim_num,json=txLockedSimNum,proto3" json:"tx_locked_sim_num,omitempty"`
+	unknownFields           protoimpl.UnknownFields
+	sizeCache               protoimpl.SizeCache
+}
+
+func (x *VerifierStatus) Reset() {
+	*x = VerifierStatus{}
+	mi := &file_ssc_proto_msgTypes[44]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *VerifierStatus) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*VerifierStatus) ProtoMessage() {}
+
+func (x *VerifierStatus) ProtoReflect() protoreflect.Message {
+	mi := &file_ssc_proto_msgTypes[44]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use VerifierStatus.ProtoReflect.Descriptor instead.
+func (*VerifierStatus) Descriptor() ([]byte, []int) {
+	return file_ssc_proto_rawDescGZIP(), []int{44}
+}
+
+func (x *VerifierStatus) GetExecutionVerifyContexts() int64 {
+	if x != nil {
+		return x.ExecutionVerifyContexts
+	}
+	return 0
+}
+
+func (x *VerifierStatus) GetTxLockedSimNum() int64 {
+	if x != nil {
+		return x.TxLockedSimNum
+	}
+	return 0
+}
+
+// TimerStatus 定时器管理器各存储的条目数。
+type TimerStatus struct {
+	state              protoimpl.MessageState `protogen:"open.v1"`
+	Txs                int64                  `protobuf:"varint,1,opt,name=txs,proto3" json:"txs,omitempty"`
+	Sp1Buckets         int64                  `protobuf:"varint,2,opt,name=sp1_buckets,json=sp1Buckets,proto3" json:"sp1_buckets,omitempty"`
+	PoolTimeoutBuckets int64                  `protobuf:"varint,3,opt,name=pool_timeout_buckets,json=poolTimeoutBuckets,proto3" json:"pool_timeout_buckets,omitempty"`
+	unknownFields      protoimpl.UnknownFields
+	sizeCache          protoimpl.SizeCache
+}
+
+func (x *TimerStatus) Reset() {
+	*x = TimerStatus{}
+	mi := &file_ssc_proto_msgTypes[45]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *TimerStatus) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*TimerStatus) ProtoMessage() {}
+
+func (x *TimerStatus) ProtoReflect() protoreflect.Message {
+	mi := &file_ssc_proto_msgTypes[45]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use TimerStatus.ProtoReflect.Descriptor instead.
+func (*TimerStatus) Descriptor() ([]byte, []int) {
+	return file_ssc_proto_rawDescGZIP(), []int{45}
+}
+
+func (x *TimerStatus) GetTxs() int64 {
+	if x != nil {
+		return x.Txs
+	}
+	return 0
+}
+
+func (x *TimerStatus) GetSp1Buckets() int64 {
+	if x != nil {
+		return x.Sp1Buckets
+	}
+	return 0
+}
+
+func (x *TimerStatus) GetPoolTimeoutBuckets() int64 {
+	if x != nil {
+		return x.PoolTimeoutBuckets
+	}
+	return 0
+}
+
+// DAGStatus DAG / ChainPatch 使用情况（累计值，不随日志差分重置）。
+type DAGStatus struct {
+	state                protoimpl.MessageState `protogen:"open.v1"`
+	ChainTxDetected      int64                  `protobuf:"varint,1,opt,name=chain_tx_detected,json=chainTxDetected,proto3" json:"chain_tx_detected,omitempty"`                  // VerifySimulation 判定为链式交易（跳过锁检查）次数
+	RetryCommitPatchHit  int64                  `protobuf:"varint,2,opt,name=retry_commit_patch_hit,json=retryCommitPatchHit,proto3" json:"retry_commit_patch_hit,omitempty"`    // RetryCommit 被 DAG Patch 救回次数
+	RetryCommitPatchMiss int64                  `protobuf:"varint,3,opt,name=retry_commit_patch_miss,json=retryCommitPatchMiss,proto3" json:"retry_commit_patch_miss,omitempty"` // RetryCommit Patch 匹配但消费失败次数
+	unknownFields        protoimpl.UnknownFields
+	sizeCache            protoimpl.SizeCache
+}
+
+func (x *DAGStatus) Reset() {
+	*x = DAGStatus{}
+	mi := &file_ssc_proto_msgTypes[46]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *DAGStatus) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*DAGStatus) ProtoMessage() {}
+
+func (x *DAGStatus) ProtoReflect() protoreflect.Message {
+	mi := &file_ssc_proto_msgTypes[46]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use DAGStatus.ProtoReflect.Descriptor instead.
+func (*DAGStatus) Descriptor() ([]byte, []int) {
+	return file_ssc_proto_rawDescGZIP(), []int{46}
+}
+
+func (x *DAGStatus) GetChainTxDetected() int64 {
+	if x != nil {
+		return x.ChainTxDetected
+	}
+	return 0
+}
+
+func (x *DAGStatus) GetRetryCommitPatchHit() int64 {
+	if x != nil {
+		return x.RetryCommitPatchHit
+	}
+	return 0
+}
+
+func (x *DAGStatus) GetRetryCommitPatchMiss() int64 {
+	if x != nil {
+		return x.RetryCommitPatchMiss
+	}
+	return 0
+}
+
+// ModuleStatus 汇总 sscService 及所有子模块的数据量。
+type ModuleStatus struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// sscService 顶层存储
+	TxStates       int64                 `protobuf:"varint,1,opt,name=tx_states,json=txStates,proto3" json:"tx_states,omitempty"`
+	CommitStates   int64                 `protobuf:"varint,2,opt,name=commit_states,json=commitStates,proto3" json:"commit_states,omitempty"`
+	TxTraces       int64                 `protobuf:"varint,3,opt,name=tx_traces,json=txTraces,proto3" json:"tx_traces,omitempty"`
+	InternalPool   int64                 `protobuf:"varint,4,opt,name=internal_pool,json=internalPool,proto3" json:"internal_pool,omitempty"`
+	RetryScheduler *RetrySchedulerStatus `protobuf:"bytes,5,opt,name=retry_scheduler,json=retryScheduler,proto3" json:"retry_scheduler,omitempty"`
+	StateLock      *StateLockStatus      `protobuf:"bytes,6,opt,name=state_lock,json=stateLock,proto3" json:"state_lock,omitempty"`
+	TempLockView   *TempLockViewStatus   `protobuf:"bytes,7,opt,name=temp_lock_view,json=tempLockView,proto3" json:"temp_lock_view,omitempty"`
+	Simulator      *SimulatorStatus      `protobuf:"bytes,8,opt,name=simulator,proto3" json:"simulator,omitempty"`
+	Verifier       *VerifierStatus       `protobuf:"bytes,9,opt,name=verifier,proto3" json:"verifier,omitempty"`
+	Timer          *TimerStatus          `protobuf:"bytes,10,opt,name=timer,proto3" json:"timer,omitempty"`
+	Dag            *DAGStatus            `protobuf:"bytes,11,opt,name=dag,proto3" json:"dag,omitempty"`
+	unknownFields  protoimpl.UnknownFields
+	sizeCache      protoimpl.SizeCache
+}
+
+func (x *ModuleStatus) Reset() {
+	*x = ModuleStatus{}
+	mi := &file_ssc_proto_msgTypes[47]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ModuleStatus) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ModuleStatus) ProtoMessage() {}
+
+func (x *ModuleStatus) ProtoReflect() protoreflect.Message {
+	mi := &file_ssc_proto_msgTypes[47]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ModuleStatus.ProtoReflect.Descriptor instead.
+func (*ModuleStatus) Descriptor() ([]byte, []int) {
+	return file_ssc_proto_rawDescGZIP(), []int{47}
+}
+
+func (x *ModuleStatus) GetTxStates() int64 {
+	if x != nil {
+		return x.TxStates
+	}
+	return 0
+}
+
+func (x *ModuleStatus) GetCommitStates() int64 {
+	if x != nil {
+		return x.CommitStates
+	}
+	return 0
+}
+
+func (x *ModuleStatus) GetTxTraces() int64 {
+	if x != nil {
+		return x.TxTraces
+	}
+	return 0
+}
+
+func (x *ModuleStatus) GetInternalPool() int64 {
+	if x != nil {
+		return x.InternalPool
+	}
+	return 0
+}
+
+func (x *ModuleStatus) GetRetryScheduler() *RetrySchedulerStatus {
+	if x != nil {
+		return x.RetryScheduler
+	}
+	return nil
+}
+
+func (x *ModuleStatus) GetStateLock() *StateLockStatus {
+	if x != nil {
+		return x.StateLock
+	}
+	return nil
+}
+
+func (x *ModuleStatus) GetTempLockView() *TempLockViewStatus {
+	if x != nil {
+		return x.TempLockView
+	}
+	return nil
+}
+
+func (x *ModuleStatus) GetSimulator() *SimulatorStatus {
+	if x != nil {
+		return x.Simulator
+	}
+	return nil
+}
+
+func (x *ModuleStatus) GetVerifier() *VerifierStatus {
+	if x != nil {
+		return x.Verifier
+	}
+	return nil
+}
+
+func (x *ModuleStatus) GetTimer() *TimerStatus {
+	if x != nil {
+		return x.Timer
+	}
+	return nil
+}
+
+func (x *ModuleStatus) GetDag() *DAGStatus {
+	if x != nil {
+		return x.Dag
 	}
 	return nil
 }
@@ -3554,9 +4363,84 @@ const file_ssc_proto_rawDesc = "" +
 	"difficulty\"<\n" +
 	"\fSLTestResult\x12\x16\n" +
 	"\x06result\x18\x01 \x01(\x04R\x06result\x12\x14\n" +
-	"\x05error\x18\x02 \x01(\tR\x05error\"\x19\n" +
+	"\x05error\x18\x02 \x01(\tR\x05error\"\xab\x01\n" +
+	"\tSLOpinion\x12\"\n" +
+	"\x04from\x18\x01 \x01(\v2\x0e.sscpb.AddressR\x04from\x12\x1e\n" +
+	"\x02to\x18\x02 \x01(\v2\x0e.sscpb.AddressR\x02to\x12\f\n" +
+	"\x01s\x18\x03 \x01(\x05R\x01s\x12\f\n" +
+	"\x01f\x18\x04 \x01(\x05R\x01f\x12\x12\n" +
+	"\x04beta\x18\x05 \x01(\x01R\x04beta\x12\x14\n" +
+	"\x05delta\x18\x06 \x01(\x01R\x05delta\x12\x14\n" +
+	"\x05omega\x18\a \x01(\x01R\x05omega\"`\n" +
+	"\fSelfOpinions\x12\"\n" +
+	"\x04from\x18\x01 \x01(\v2\x0e.sscpb.AddressR\x04from\x12,\n" +
+	"\bopinions\x18\x02 \x03(\v2\x10.sscpb.SLOpinionR\bopinions\"\x19\n" +
 	"\x05Bytes\x12\x10\n" +
-	"\x03val\x18\x01 \x01(\fR\x03val*f\n" +
+	"\x03val\x18\x01 \x01(\fR\x03val\"\xf2\x03\n" +
+	"\x14RetrySchedulerStatus\x12\x1d\n" +
+	"\n" +
+	"retry_pool\x18\x01 \x01(\x03R\tretryPool\x12!\n" +
+	"\fpassive_pool\x18\x02 \x01(\x03R\vpassivePool\x12\x1b\n" +
+	"\tstale_txs\x18\x03 \x01(\x03R\bstaleTxs\x12\x18\n" +
+	"\asignals\x18\x04 \x01(\x03R\asignals\x12\x18\n" +
+	"\apatches\x18\x05 \x01(\x03R\apatches\x12(\n" +
+	"\x10on_chain_patches\x18\x06 \x01(\x03R\x0eonChainPatches\x12#\n" +
+	"\rlocal_patches\x18\a \x01(\x03R\flocalPatches\x12\x1b\n" +
+	"\tkey_index\x18\b \x01(\x03R\bkeyIndex\x12\x1e\n" +
+	"\n" +
+	"subscriber\x18\t \x01(\x03R\n" +
+	"subscriber\x12\x1e\n" +
+	"\vtx_sub_keys\x18\n" +
+	" \x01(\x03R\ttxSubKeys\x12)\n" +
+	"\x10consumed_patches\x18\v \x01(\x03R\x0fconsumedPatches\x12'\n" +
+	"\x10re_sim_in_flight\x18\f \x01(\x03R\rreSimInFlight\x12*\n" +
+	"\x11wounded_retry_txs\x18\r \x01(\x03R\x0fwoundedRetryTxs\x12\x1b\n" +
+	"\tlock_wait\x18\x0e \x01(\x03R\blockWait\"\xba\x01\n" +
+	"\x0fStateLockStatus\x12#\n" +
+	"\rglobal_locked\x18\x01 \x01(\x03R\fglobalLocked\x12&\n" +
+	"\x0fglobal_r_locked\x18\x02 \x01(\x03R\rglobalRLocked\x12.\n" +
+	"\x13global_finished_txs\x18\x03 \x01(\x03R\x11globalFinishedTxs\x12*\n" +
+	"\x11global_lock_start\x18\x04 \x01(\x03R\x0fglobalLockStart\"\x87\x01\n" +
+	"\x12TempLockViewStatus\x12\x1f\n" +
+	"\vwrite_locks\x18\x01 \x01(\x03R\n" +
+	"writeLocks\x12\x1d\n" +
+	"\n" +
+	"read_locks\x18\x02 \x01(\x03R\treadLocks\x12\x17\n" +
+	"\atx_sets\x18\x03 \x01(\x03R\x06txSets\x12\x18\n" +
+	"\awounded\x18\x04 \x01(\x03R\awounded\"\xc7\x01\n" +
+	"\x0fSimulatorStatus\x12\x1d\n" +
+	"\n" +
+	"sim_states\x18\x01 \x01(\x03R\tsimStates\x12.\n" +
+	"\x13call_states_waiting\x18\x02 \x01(\x03R\x11callStatesWaiting\x12\x1e\n" +
+	"\vsimu_ch_map\x18\x03 \x01(\x03R\tsimuChMap\x12(\n" +
+	"\x10pending_reqs_map\x18\x04 \x01(\x03R\x0ependingReqsMap\x12\x1b\n" +
+	"\tqueue_len\x18\x05 \x01(\x03R\bqueueLen\"w\n" +
+	"\x0eVerifierStatus\x12:\n" +
+	"\x19execution_verify_contexts\x18\x01 \x01(\x03R\x17executionVerifyContexts\x12)\n" +
+	"\x11tx_locked_sim_num\x18\x02 \x01(\x03R\x0etxLockedSimNum\"r\n" +
+	"\vTimerStatus\x12\x10\n" +
+	"\x03txs\x18\x01 \x01(\x03R\x03txs\x12\x1f\n" +
+	"\vsp1_buckets\x18\x02 \x01(\x03R\n" +
+	"sp1Buckets\x120\n" +
+	"\x14pool_timeout_buckets\x18\x03 \x01(\x03R\x12poolTimeoutBuckets\"\xa3\x01\n" +
+	"\tDAGStatus\x12*\n" +
+	"\x11chain_tx_detected\x18\x01 \x01(\x03R\x0fchainTxDetected\x123\n" +
+	"\x16retry_commit_patch_hit\x18\x02 \x01(\x03R\x13retryCommitPatchHit\x125\n" +
+	"\x17retry_commit_patch_miss\x18\x03 \x01(\x03R\x14retryCommitPatchMiss\"\x87\x04\n" +
+	"\fModuleStatus\x12\x1b\n" +
+	"\ttx_states\x18\x01 \x01(\x03R\btxStates\x12#\n" +
+	"\rcommit_states\x18\x02 \x01(\x03R\fcommitStates\x12\x1b\n" +
+	"\ttx_traces\x18\x03 \x01(\x03R\btxTraces\x12#\n" +
+	"\rinternal_pool\x18\x04 \x01(\x03R\finternalPool\x12D\n" +
+	"\x0fretry_scheduler\x18\x05 \x01(\v2\x1b.sscpb.RetrySchedulerStatusR\x0eretryScheduler\x125\n" +
+	"\n" +
+	"state_lock\x18\x06 \x01(\v2\x16.sscpb.StateLockStatusR\tstateLock\x12?\n" +
+	"\x0etemp_lock_view\x18\a \x01(\v2\x19.sscpb.TempLockViewStatusR\ftempLockView\x124\n" +
+	"\tsimulator\x18\b \x01(\v2\x16.sscpb.SimulatorStatusR\tsimulator\x121\n" +
+	"\bverifier\x18\t \x01(\v2\x15.sscpb.VerifierStatusR\bverifier\x12(\n" +
+	"\x05timer\x18\n" +
+	" \x01(\v2\x12.sscpb.TimerStatusR\x05timer\x12\"\n" +
+	"\x03dag\x18\v \x01(\v2\x10.sscpb.DAGStatusR\x03dag*f\n" +
 	"\x16SimulationCommitStatus\x12\x11\n" +
 	"\rSIM_COMMIT_OK\x10\x00\x12\x14\n" +
 	"\x10EXECUTION_FAILED\x10\x01\x12\x11\n" +
@@ -3608,7 +4492,9 @@ const file_ssc_proto_rawDesc = "" +
 	"\x16HandleCXTCommitSSCVote\x12\x17.sscpb.CXTCommitSSCVote\x1a\f.sscpb.Empty\x12;\n" +
 	"\x14HandleCXTCommitProof\x12\x15.sscpb.CXTCommitProof\x1a\f.sscpb.Empty\x127\n" +
 	"\x12SignalReSimulation\x12\x13.sscpb.RetrySignals\x1a\f.sscpb.Empty\x125\n" +
-	"\x11HandleRetrySignal\x12\x12.sscpb.RetrySignal\x1a\f.sscpb.EmptyB\n" +
+	"\x11HandleRetrySignal\x12\x12.sscpb.RetrySignal\x1a\f.sscpb.Empty2I\n" +
+	"\x11SSCMonitorService\x124\n" +
+	"\x0fGetModuleStatus\x12\f.sscpb.Empty\x1a\x13.sscpb.ModuleStatusB\n" +
 	"Z\b./;sscpbb\x06proto3"
 
 var (
@@ -3624,7 +4510,7 @@ func file_ssc_proto_rawDescGZIP() []byte {
 }
 
 var file_ssc_proto_enumTypes = make([]protoimpl.EnumInfo, 6)
-var file_ssc_proto_msgTypes = make([]protoimpl.MessageInfo, 38)
+var file_ssc_proto_msgTypes = make([]protoimpl.MessageInfo, 48)
 var file_ssc_proto_goTypes = []any{
 	(SimulationCommitStatus)(0),    // 0: sscpb.SimulationCommitStatus
 	(CXTCommitType)(0),             // 1: sscpb.CXTCommitType
@@ -3669,7 +4555,17 @@ var file_ssc_proto_goTypes = []any{
 	(*HandleNewEpochRequest)(nil),  // 40: sscpb.HandleNewEpochRequest
 	(*SLTestRequest)(nil),          // 41: sscpb.SLTestRequest
 	(*SLTestResult)(nil),           // 42: sscpb.SLTestResult
-	(*Bytes)(nil),                  // 43: sscpb.Bytes
+	(*SLOpinion)(nil),              // 43: sscpb.SLOpinion
+	(*SelfOpinions)(nil),           // 44: sscpb.SelfOpinions
+	(*Bytes)(nil),                  // 45: sscpb.Bytes
+	(*RetrySchedulerStatus)(nil),   // 46: sscpb.RetrySchedulerStatus
+	(*StateLockStatus)(nil),        // 47: sscpb.StateLockStatus
+	(*TempLockViewStatus)(nil),     // 48: sscpb.TempLockViewStatus
+	(*SimulatorStatus)(nil),        // 49: sscpb.SimulatorStatus
+	(*VerifierStatus)(nil),         // 50: sscpb.VerifierStatus
+	(*TimerStatus)(nil),            // 51: sscpb.TimerStatus
+	(*DAGStatus)(nil),              // 52: sscpb.DAGStatus
+	(*ModuleStatus)(nil),           // 53: sscpb.ModuleStatus
 }
 var file_ssc_proto_depIdxs = []int32{
 	11,  // 0: sscpb.CallNodeData.children:type_name -> sscpb.CallNodeData
@@ -3758,49 +4654,62 @@ var file_ssc_proto_depIdxs = []int32{
 	16,  // 83: sscpb.ChainNode.patch:type_name -> sscpb.RWSet
 	32,  // 84: sscpb.ChainNode.upstream_tx_list:type_name -> sscpb.TxSimKey
 	39,  // 85: sscpb.HandleNewEpochRequest.new_epoch:type_name -> sscpb.NewEpoch
-	19,  // 86: sscpb.SSCShardService.StartSimulateCXTransaction:input_type -> sscpb.CXTSimulationRequest
-	19,  // 87: sscpb.SSCShardService.HandleSimulateRequest:input_type -> sscpb.CXTSimulationRequest
-	24,  // 88: sscpb.SSCShardService.RequestCallCXT:input_type -> sscpb.CXTCallRequest
-	25,  // 89: sscpb.SSCShardService.HandleCXTCall:input_type -> sscpb.CXTCallSSCRequest
-	28,  // 90: sscpb.SSCShardService.SignSimulationCommit:input_type -> sscpb.SimulationCommit
-	22,  // 91: sscpb.SSCShardService.SignCXTSimulation:input_type -> sscpb.CXTSimulation
-	29,  // 92: sscpb.SSCShardService.HandleCommitVote:input_type -> sscpb.CXTCommitVote
-	41,  // 93: sscpb.SSCShardService.SLTest:input_type -> sscpb.SLTestRequest
-	35,  // 94: sscpb.SSCShardService.AddRetryTx:input_type -> sscpb.RetryTx
-	7,   // 95: sscpb.SSCShardService.AddToPassivePool:input_type -> sscpb.Hash
-	7,   // 96: sscpb.SSCShardService.RetryCommit:input_type -> sscpb.Hash
-	7,   // 97: sscpb.SSCShardService.RetryCancel:input_type -> sscpb.Hash
-	40,  // 98: sscpb.SSCShardService.HandleNewEpoch:input_type -> sscpb.HandleNewEpochRequest
-	25,  // 99: sscpb.SSCCrossService.HandleCXTSSCCall:input_type -> sscpb.CXTCallSSCRequest
-	28,  // 100: sscpb.SSCCrossService.CommitSimulation:input_type -> sscpb.SimulationCommit
-	30,  // 101: sscpb.SSCCrossService.HandleCXTCommitSSCVote:input_type -> sscpb.CXTCommitSSCVote
-	31,  // 102: sscpb.SSCCrossService.HandleCXTCommitProof:input_type -> sscpb.CXTCommitProof
-	34,  // 103: sscpb.SSCCrossService.SignalReSimulation:input_type -> sscpb.RetrySignals
-	33,  // 104: sscpb.SSCCrossService.HandleRetrySignal:input_type -> sscpb.RetrySignal
-	21,  // 105: sscpb.SSCShardService.StartSimulateCXTransaction:output_type -> sscpb.CXTSimulationSSCResult
-	20,  // 106: sscpb.SSCShardService.HandleSimulateRequest:output_type -> sscpb.CXTSimulationResult
-	27,  // 107: sscpb.SSCShardService.RequestCallCXT:output_type -> sscpb.CXTCallSSCResult
-	26,  // 108: sscpb.SSCShardService.HandleCXTCall:output_type -> sscpb.CXTCallResult
-	43,  // 109: sscpb.SSCShardService.SignSimulationCommit:output_type -> sscpb.Bytes
-	43,  // 110: sscpb.SSCShardService.SignCXTSimulation:output_type -> sscpb.Bytes
-	6,   // 111: sscpb.SSCShardService.HandleCommitVote:output_type -> sscpb.Empty
-	42,  // 112: sscpb.SSCShardService.SLTest:output_type -> sscpb.SLTestResult
-	6,   // 113: sscpb.SSCShardService.AddRetryTx:output_type -> sscpb.Empty
-	6,   // 114: sscpb.SSCShardService.AddToPassivePool:output_type -> sscpb.Empty
-	36,  // 115: sscpb.SSCShardService.RetryCommit:output_type -> sscpb.RetryCommitResp
-	6,   // 116: sscpb.SSCShardService.RetryCancel:output_type -> sscpb.Empty
-	6,   // 117: sscpb.SSCShardService.HandleNewEpoch:output_type -> sscpb.Empty
-	27,  // 118: sscpb.SSCCrossService.HandleCXTSSCCall:output_type -> sscpb.CXTCallSSCResult
-	6,   // 119: sscpb.SSCCrossService.CommitSimulation:output_type -> sscpb.Empty
-	6,   // 120: sscpb.SSCCrossService.HandleCXTCommitSSCVote:output_type -> sscpb.Empty
-	6,   // 121: sscpb.SSCCrossService.HandleCXTCommitProof:output_type -> sscpb.Empty
-	6,   // 122: sscpb.SSCCrossService.SignalReSimulation:output_type -> sscpb.Empty
-	6,   // 123: sscpb.SSCCrossService.HandleRetrySignal:output_type -> sscpb.Empty
-	105, // [105:124] is the sub-list for method output_type
-	86,  // [86:105] is the sub-list for method input_type
-	86,  // [86:86] is the sub-list for extension type_name
-	86,  // [86:86] is the sub-list for extension extendee
-	0,   // [0:86] is the sub-list for field type_name
+	8,   // 86: sscpb.SLOpinion.from:type_name -> sscpb.Address
+	8,   // 87: sscpb.SLOpinion.to:type_name -> sscpb.Address
+	8,   // 88: sscpb.SelfOpinions.from:type_name -> sscpb.Address
+	43,  // 89: sscpb.SelfOpinions.opinions:type_name -> sscpb.SLOpinion
+	46,  // 90: sscpb.ModuleStatus.retry_scheduler:type_name -> sscpb.RetrySchedulerStatus
+	47,  // 91: sscpb.ModuleStatus.state_lock:type_name -> sscpb.StateLockStatus
+	48,  // 92: sscpb.ModuleStatus.temp_lock_view:type_name -> sscpb.TempLockViewStatus
+	49,  // 93: sscpb.ModuleStatus.simulator:type_name -> sscpb.SimulatorStatus
+	50,  // 94: sscpb.ModuleStatus.verifier:type_name -> sscpb.VerifierStatus
+	51,  // 95: sscpb.ModuleStatus.timer:type_name -> sscpb.TimerStatus
+	52,  // 96: sscpb.ModuleStatus.dag:type_name -> sscpb.DAGStatus
+	19,  // 97: sscpb.SSCShardService.StartSimulateCXTransaction:input_type -> sscpb.CXTSimulationRequest
+	19,  // 98: sscpb.SSCShardService.HandleSimulateRequest:input_type -> sscpb.CXTSimulationRequest
+	24,  // 99: sscpb.SSCShardService.RequestCallCXT:input_type -> sscpb.CXTCallRequest
+	25,  // 100: sscpb.SSCShardService.HandleCXTCall:input_type -> sscpb.CXTCallSSCRequest
+	28,  // 101: sscpb.SSCShardService.SignSimulationCommit:input_type -> sscpb.SimulationCommit
+	22,  // 102: sscpb.SSCShardService.SignCXTSimulation:input_type -> sscpb.CXTSimulation
+	29,  // 103: sscpb.SSCShardService.HandleCommitVote:input_type -> sscpb.CXTCommitVote
+	41,  // 104: sscpb.SSCShardService.SLTest:input_type -> sscpb.SLTestRequest
+	35,  // 105: sscpb.SSCShardService.AddRetryTx:input_type -> sscpb.RetryTx
+	7,   // 106: sscpb.SSCShardService.AddToPassivePool:input_type -> sscpb.Hash
+	7,   // 107: sscpb.SSCShardService.RetryCommit:input_type -> sscpb.Hash
+	7,   // 108: sscpb.SSCShardService.RetryCancel:input_type -> sscpb.Hash
+	40,  // 109: sscpb.SSCShardService.HandleNewEpoch:input_type -> sscpb.HandleNewEpochRequest
+	25,  // 110: sscpb.SSCCrossService.HandleCXTSSCCall:input_type -> sscpb.CXTCallSSCRequest
+	28,  // 111: sscpb.SSCCrossService.CommitSimulation:input_type -> sscpb.SimulationCommit
+	30,  // 112: sscpb.SSCCrossService.HandleCXTCommitSSCVote:input_type -> sscpb.CXTCommitSSCVote
+	31,  // 113: sscpb.SSCCrossService.HandleCXTCommitProof:input_type -> sscpb.CXTCommitProof
+	34,  // 114: sscpb.SSCCrossService.SignalReSimulation:input_type -> sscpb.RetrySignals
+	33,  // 115: sscpb.SSCCrossService.HandleRetrySignal:input_type -> sscpb.RetrySignal
+	6,   // 116: sscpb.SSCMonitorService.GetModuleStatus:input_type -> sscpb.Empty
+	21,  // 117: sscpb.SSCShardService.StartSimulateCXTransaction:output_type -> sscpb.CXTSimulationSSCResult
+	20,  // 118: sscpb.SSCShardService.HandleSimulateRequest:output_type -> sscpb.CXTSimulationResult
+	27,  // 119: sscpb.SSCShardService.RequestCallCXT:output_type -> sscpb.CXTCallSSCResult
+	26,  // 120: sscpb.SSCShardService.HandleCXTCall:output_type -> sscpb.CXTCallResult
+	45,  // 121: sscpb.SSCShardService.SignSimulationCommit:output_type -> sscpb.Bytes
+	45,  // 122: sscpb.SSCShardService.SignCXTSimulation:output_type -> sscpb.Bytes
+	6,   // 123: sscpb.SSCShardService.HandleCommitVote:output_type -> sscpb.Empty
+	42,  // 124: sscpb.SSCShardService.SLTest:output_type -> sscpb.SLTestResult
+	6,   // 125: sscpb.SSCShardService.AddRetryTx:output_type -> sscpb.Empty
+	6,   // 126: sscpb.SSCShardService.AddToPassivePool:output_type -> sscpb.Empty
+	36,  // 127: sscpb.SSCShardService.RetryCommit:output_type -> sscpb.RetryCommitResp
+	6,   // 128: sscpb.SSCShardService.RetryCancel:output_type -> sscpb.Empty
+	6,   // 129: sscpb.SSCShardService.HandleNewEpoch:output_type -> sscpb.Empty
+	27,  // 130: sscpb.SSCCrossService.HandleCXTSSCCall:output_type -> sscpb.CXTCallSSCResult
+	6,   // 131: sscpb.SSCCrossService.CommitSimulation:output_type -> sscpb.Empty
+	6,   // 132: sscpb.SSCCrossService.HandleCXTCommitSSCVote:output_type -> sscpb.Empty
+	6,   // 133: sscpb.SSCCrossService.HandleCXTCommitProof:output_type -> sscpb.Empty
+	6,   // 134: sscpb.SSCCrossService.SignalReSimulation:output_type -> sscpb.Empty
+	6,   // 135: sscpb.SSCCrossService.HandleRetrySignal:output_type -> sscpb.Empty
+	53,  // 136: sscpb.SSCMonitorService.GetModuleStatus:output_type -> sscpb.ModuleStatus
+	117, // [117:137] is the sub-list for method output_type
+	97,  // [97:117] is the sub-list for method input_type
+	97,  // [97:97] is the sub-list for extension type_name
+	97,  // [97:97] is the sub-list for extension extendee
+	0,   // [0:97] is the sub-list for field type_name
 }
 
 func init() { file_ssc_proto_init() }
@@ -3814,9 +4723,9 @@ func file_ssc_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_ssc_proto_rawDesc), len(file_ssc_proto_rawDesc)),
 			NumEnums:      6,
-			NumMessages:   38,
+			NumMessages:   48,
 			NumExtensions: 0,
-			NumServices:   2,
+			NumServices:   3,
 		},
 		GoTypes:           file_ssc_proto_goTypes,
 		DependencyIndexes: file_ssc_proto_depIdxs,

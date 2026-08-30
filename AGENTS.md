@@ -207,6 +207,34 @@ ssh -p 10022 zjnu@10.7.95.199 'env -i HOME=$HOME PATH=$HOME/miniconda3/bin:/usr/
 | Test entry | `auto_test.sh` → `test_single` |
 | Log tools | `ssc_grep.sh` (SSC), `zero_grep.sh` (Harmony node) |
 
+### 6.1 SSH 连接远程（必须按此方式）
+
+**远程地址**：`zjnu@10.7.95.199 -p 10022`（仅 SSH key 认证，无密码）。
+
+**⚠️ 三个必须**：
+1. **必须 `-F /dev/null`**：本机 `/etc/ssh/ssh_config.d/20-systemd-ssh-proxy.conf` 权限损坏，不带 `-F /dev/null` 会直接报 `Bad owner or permissions ...`。
+2. **必须显式 `-i ~/.ssh/id_ed25519 -o IdentitiesOnly=yes`**：199 只授权 `~/.ssh/id_ed25519` 这把 key。不要依赖默认 key 发现（连接会不稳定/挂起），也不要试 `~/.ssh/id_rsa_new`（199 未授权，`Permission denied`）。
+3. **连接可能间歇性不稳**（尤其从沙箱环境）：失败/无输出时重试即可；大批量命令尽量合成一条远程命令执行，减少往返。
+
+**标准命令**（SSH / SCP 都按这个参数）：
+
+```bash
+SSH_KEY=~/.ssh/id_ed25519
+# SSH
+ssh -F /dev/null -i "$SSH_KEY" -p 10022 -o ConnectTimeout=15 -o BatchMode=yes \
+    -o StrictHostKeyChecking=no -o IdentitiesOnly=yes zjnu@10.7.95.199 '<cmd>'
+# SCP 上传
+scp -F /dev/null -i "$SSH_KEY" -P 10022 -o StrictHostKeyChecking=no -o IdentitiesOnly=yes \
+    <local_file> zjnu@10.7.95.199:<remote_path>
+# SCP 拉取
+scp -F /dev/null -i "$SSH_KEY" -P 10022 -o StrictHostKeyChecking=no -o IdentitiesOnly=yes \
+    zjnu@10.7.95.199:<remote_file> <local_dir>/
+```
+
+**验证连通**：`ssh ... 'echo AUTH_OK; whoami'` → 期望 `AUTH_OK` + `zjnu`。
+
+**本地一键拉取脚本**（已内置上述全部参数）：`scripts/local-ssc-retry-stats.py`（`--rate 200` 指定 RATE，或 `--dir '<logdir>'` 直接指定日志目录）。
+
 **Before running any experiment**: User confirms environment ready. Don't spin up experiments autonomously.
 
 ## 7. Code Style & Conventions

@@ -22,6 +22,12 @@ func (bfs BodyFieldSetter) StakingTransactions(newStakingTransactions []*types.S
 	return bfs
 }
 
+// SSCTransactions sets the SSCTransactions field of the body (DSN-47, 2-D).
+func (bfs BodyFieldSetter) SSCTransactions(newSSCTransactions [][]*SSCInternalTx) BodyFieldSetter {
+	bfs.b.SetSSCTransactions(newSSCTransactions)
+	return bfs
+}
+
 // Uncles sets the Uncles field of the body.
 func (bfs BodyFieldSetter) Uncles(newUncles []*block.Header) BodyFieldSetter {
 	bfs.b.SetUncles(newUncles)

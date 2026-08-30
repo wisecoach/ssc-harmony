@@ -238,6 +238,9 @@ function test_single() {
   test
   test/test.sh
   sleep $TIME_FOR_FINISH
+  curl -X POST -H 'Content-Type: application/json' \
+    -d '{"jsonrpc":"2.0","method":"ssc_getModuleStatus","params":[],"id":1}' \
+    http://10.7.95.203:9512
   download_log
   DATA_HANDLER
 }

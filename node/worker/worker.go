@@ -37,6 +37,7 @@ type environment struct {
 	header     *block.Header
 	txs        []*types.Transaction
 	stakingTxs []*staking.StakingTransaction
+	sscTxns    [][]*types.SSCInternalTx // DSN-47：内部交易队列（二维，第一维下标=InternalTxType）
 	receipts   []*types.Receipt
 	logs       []*types.Log
 	reward     reward.Reader
@@ -101,119 +102,6 @@ func (w *Worker) SetSSCService(sscService api.Service) {
 	w.sscService = sscService
 }
 
-// CommitSSCTransactions 处理 SSC 交易区块。
-// maxTxns 控制单块最多处理的 SSC 交易数，0 表示不限制。
-// maxTime 控制单块 SSC 处理的时间预算，0 表示不限制。
-func (w *Worker) CommitSSCTransactions(
-	txs *types.TransactionsByPriceAndNonce,
-	coinbase common.Address,
-	maxTxns int,
-	maxTime time.Duration,
-) {
-	startTime := time.Now()
-	deadline := startTime.Add(maxTime)
-	count := 0
-	for {
-		// 时间预算检查
-		if maxTime > 0 && time.Now().After(deadline) {
-			utils.SSCLogger().Info().
-				Int("processed", count).
-				Dur("budget", maxTime).
-				Dur("elapsed", time.Since(startTime)).
-				Uint64("blockNum", w.current.header.NumberU64()).
-				Msg("CommitSSCTransactions: reached time budget, stopping")
-			break
-		}
-		// 单块 SSC 交易上限
-		if maxTxns > 0 && count >= maxTxns {
-			utils.Logger().Info().Int("count", maxTxns).Msg("Reached max SSC transactions per block")
-			break
-		}
-		count++
-		// If we don't have enough gas for any further transactions then we're done
-		if w.current.gasPool.Gas() < params.TxGas {
-			utils.Logger().Info().Uint64("have", w.current.gasPool.Gas()).Uint64("want", params.TxGas).Msg("Not enough gas for further transactions")
-			break
-		}
-		// Retrieve the next transaction and abort if all done
-		tx := txs.Peek()
-		if tx == nil {
-			// 记录循环退出时的关键状态，诊断悖论
-			utils.SSCLogger().Warn().
-				Int("processed", count).
-				Uint64("blockNum", w.current.header.NumberU64()).
-				Uint64("gasLeft", w.current.gasPool.Gas()).
-				Str("loop", "CommitSSCTransactions").
-				Dur("elapsed", time.Since(startTime)).
-				Msg("CommitSSCTransactions: Peek returned nil, stopping loop")
-			break
-		}
-		// Error may be ignored here. The error has already been checked
-		// during transaction acceptance is the transaction pool.
-		// We use the eip155 signer regardless of the current hf.
-		signer := w.current.signer
-		if tx.IsEthCompatible() {
-			signer = w.current.ethSigner
-		}
-		from, _ := types.Sender(signer, tx)
-		// Check whether the tx is replay protected. If we're not in the EIP155 hf
-		// phase, start ignoring the sender until we do.
-		if tx.Protected() && !w.chain.Config().IsEIP155(w.current.header.Epoch()) {
-			utils.Logger().Info().Str("hash", tx.Hash().Hex()).Str("eip155Epoch", w.config.EIP155Epoch.String()).Msg("Ignoring reply protected transaction")
-			txs.Pop()
-			continue
-		}
-
-		if tx.ShardID() != w.chain.ShardID() {
-			txs.Shift()
-			continue
-		}
-
-		txStart := time.Now()
-		w.current.state.Prepare(tx.Hash(), common.Hash{}, len(w.current.txs))
-		err := w.commitTransaction(tx, coinbase)
-		sender := from.Hex()
-		txDur := time.Since(txStart)
-
-		utils.SSCLogger().Info().
-			Str("txHash", tx.Hash().Hex()).
-			Str("sender", sender).
-			Uint64("nonce", tx.Nonce()).
-			Uint64("blockNum", w.current.header.NumberU64()).
-			Str("duration", txDur.String()).
-			Int("count", count).
-			Str("loop", "CommitSSCTransactions").
-			Msg("SSC tx commit timing")
-
-		switch err {
-		case core.ErrGasLimitReached:
-			// Pop the current out-of-gas transaction without shifting in the next from the account
-			utils.Logger().Info().Str("sender", sender).Msg("Gas limit exceeded for current block")
-			txs.Pop()
-
-		case core.ErrNonceTooLow:
-			// New head notification data race between the transaction pool and miner, shift
-			utils.Logger().Info().Str("sender", sender).Uint64("nonce", tx.Nonce()).Msg("Skipping transaction with low nonce")
-			txs.Shift()
-
-		case core.ErrNonceTooHigh:
-			// Reorg notification data race between the transaction pool and miner, skip account =
-			utils.Logger().Info().Str("sender", sender).Uint64("nonce", tx.Nonce()).Msg("Skipping account with high nonce")
-			txs.Pop()
-
-		case nil:
-			// Everything ok, collect the logs and shift in the next transaction from the same account
-			txs.Shift()
-
-		default:
-			// Strange error, discard the transaction and get the next in line (note, the
-			// nonce-too-high clause will prevent us from executing in vain).
-			utils.Logger().Info().Str("hash", tx.Hash().Hex()).AnErr("err", err).Msg("Transaction failed, account skipped")
-			txs.Shift()
-		}
-	}
-}
-
 // CommitSortedTransactions commits transactions for new block.
 // maxTxns 控制单块最多处理的普通交易数，0 表示不限制。
 // maxTime 控制单块普通交易处理的时间预算，0 表示不限制。
@@ -276,7 +164,8 @@ func (w *Worker) CommitSortedTransactions(
 
 		// Start executing the transaction
 		txStart := time.Now()
-		w.current.state.Prepare(tx.Hash(), common.Hash{}, len(w.current.txs))
+		// index 用 len(receipts)：内部交易已先入 receipts，与 validator Process 的 sscTotal+i 对齐。
+		w.current.state.Prepare(tx.Hash(), common.Hash{}, len(w.current.receipts))
 		err := w.commitTransaction(tx, coinbase)
 
 		sender, _ := common2.AddressToBech32(from)
@@ -322,11 +211,11 @@ func (w *Worker) CommitSortedTransactions(
 }
 
 // CommitTransactions commits transactions for new block.
+// DSN-48 后：普通交易池只承载普通/跨分片交易；SSC 内部交易已独立走内部池，
+// 不再需要 pendingSSCTxs / pendingCRTxs（旧 precompile 地址路径已废弃）。
 func (w *Worker) CommitTransactions(
-	pendingSSCTxs map[common.Address]types.Transactions,
 	pendingNormal map[common.Address]types.Transactions,
 	pendingStaking staking.StakingTransactions, coinbase common.Address,
-	pendingCRTxs map[common.Address]types.Transactions,
 ) error {
 	startTime := time.Now()
 	if w.current.gasPool == nil {
@@ -366,79 +255,69 @@ func (w *Worker) CommitTransactions(
 	}
 
 	// HARMONY TXNS
-	// 单块所有交易上限（总 300 笔）
+	// 单块所有交易上限（总 1000 笔）
 	remaining := 1000
-	crTxn := 0
-	simTxn := 0
 	normalTxn := 0
+	sscTxn := 0
 	remainingTime := time.Millisecond * 1000
 
-	// 1. CommitOrRollbackTx 最高优先级
-	if len(pendingCRTxs) > 0 {
-		crTxns := types.NewTransactionsByPriceAndNonce(w.current.signer, w.current.ethSigner, pendingCRTxs)
-		crTxAddrs := make([]common.Address, 0)
-		for address := range pendingCRTxs {
-			crTxAddrs = append(crTxAddrs, address)
-		}
-		utils.Logger().Info().Uint64("blockNum", w.current.header.NumberU64()).Int("txn", len(pendingCRTxs)).Interface("addrs", crTxAddrs).Msg("Leader apply CommitOrRollback txns first")
-		before := len(w.current.txs)
-		beginTime := time.Now()
-		w.CommitSSCTransactions(crTxns, coinbase, remaining, remainingTime)
-		remainingTime -= time.Since(beginTime)
-		crTxn = len(w.current.txs) - before
-		remaining -= crTxn
-	}
-
-	// 2. 其他 SSC 交易
-	sscTxns := types.NewTransactionsByPriceAndNonce(w.current.signer, w.current.ethSigner, pendingSSCTxs)
-	normalTxns := types.NewTransactionsByPriceAndNonce(w.current.signer, w.current.ethSigner, pendingNormal)
-	sscTxNums := make(map[common.Address]int)
-	txAddrs := make([]common.Address, 0)
-	for address := range pendingSSCTxs {
-		txAddrs = append(txAddrs, address)
-		sscTxNums[address] = pendingSSCTxs[address].Len()
-	}
-	utils.SSCLogger().Info().Uint64("blockNum", w.current.header.NumberU64()).Int("txn", len(pendingSSCTxs)).Interface("txNums", sscTxNums).Str("duration", time.Since(startTime).String()).Msg("Leader apply ssctxs for duration")
-	// 打印每个 SSC 地址的 pending 交易数和 nonce 范围（诊断：悖论 — 每块只处理 ~186 笔 SimTx）
-	for _, addr := range txAddrs {
-		if txs, ok := pendingSSCTxs[addr]; ok && len(txs) > 0 {
-			minNonce, maxNonce := txs[0].Nonce(), txs[0].Nonce()
-			for _, tx := range txs[1:] {
-				n := tx.Nonce()
-				if n < minNonce {
-					minNonce = n
+	// 0. DSN-48：先提取并执行内部交易（SSC → 普通 → staking 顺序，与 validator 一致）。
+	//    内部交易与普通交易共用同一个 1s 时间预算，避免 SSC 批量执行把出块拖超时。
+	sscStart := time.Now()
+	if w.sscService != nil {
+		sscBatch := w.sscService.ExtractSSCTransactions(remaining)
+		applied := types.NewSSCTransactions() // 只保留执行成功的（保持第一维下标=InternalTxType）
+		appliedTotal := 0
+	sscBatchLoop:
+		for _, row := range sscBatch {
+			for _, sscTx := range row {
+				// 1s 时间预算检查（与 CommitSortedTransactions 一致）
+				if remainingTime > 0 && time.Since(startTime) >= remainingTime {
+					utils.SSCLogger().Warn().
+						Int("applied", appliedTotal).
+						Dur("budget", remainingTime).
+						Dur("elapsed", time.Since(startTime)).
+						Uint64("blockNum", w.current.header.NumberU64()).
+						Msg("[SSCInternalPool] reached time budget, stopping ssc extraction")
+					break sscBatchLoop
 				}
-				if n > maxNonce {
-					maxNonce = n
+				// 与 validator 的 Process 保持一致：执行前设置 tx 上下文。
+				// index 用 len(receipts)（内部交易先于普通交易），block hash 在提案阶段未知，
+				// 沿用 worker 对普通交易的一致约定（common.Hash{}），内部交易不产 log 不受影响。
+				w.current.state.Prepare(sscTx.Hash(), common.Hash{}, len(w.current.receipts))
+				gasUsed := w.current.header.GasUsed()
+				receipt, _, err := core.ApplySSCInternalTransaction(
+					w.sscService, w.chain, &coinbase, w.current.gasPool,
+					w.current.state, w.current.header, sscTx, &gasUsed, vm.Config{},
+				)
+				if err != nil {
+					utils.SSCLogger().Error().Err(err).
+						Str("sscHash", sscTx.Hash().Hex()).
+						Msg("[SSCInternalPool] apply failed, discarding internal tx")
+					// DSN-48：失败的内部交易从池中移除，避免每块无限重试。
+					if w.sscService != nil {
+						w.sscService.DiscardSSCInternalTx(sscTx)
+					}
+					continue
 				}
+				w.current.header.SetGasUsed(gasUsed)
+				w.current.receipts = append(w.current.receipts, receipt)
+				applied[sscTx.Type] = append(applied[sscTx.Type], sscTx)
+				appliedTotal++
 			}
-			utils.SSCLogger().Info().
-				Uint64("blockNum", w.current.header.NumberU64()).
-				Str("addr", addr.Hex()).
-				Int("pendingCnt", len(txs)).
-				Uint64("minNonce", minNonce).
-				Uint64("maxNonce", maxNonce).
-				Uint64("chainNonce", w.current.state.GetNonce(addr)).
-				Msg("[pendingSSC] stats")
 		}
-	}
-	if remaining > 0 && remainingTime > 0 {
-		before := len(w.current.txs)
-		beginTime := time.Now()
-		w.CommitSSCTransactions(sscTxns, coinbase, remaining, remainingTime)
-		simPhaseCost := time.Since(beginTime)
-		remainingTime -= simPhaseCost
-		simTxn = len(w.current.txs) - before
-		remaining -= simTxn
-		// debug：每块 SimTx 阶段耗时 + 剩余时间预算，用于观察 1s 预算是否被吃满（SimTx 排队主因）
-		utils.SSCLogger().Debug().
+		w.current.sscTxns = applied
+		sscTxn = appliedTotal
+		utils.SSCLogger().Info().
+			Int("sscApplied", appliedTotal).
 			Uint64("blockNum", w.current.header.NumberU64()).
-			Int("simTxn", simTxn).
-			Dur("simPhaseCost", simPhaseCost).
-			Dur("remainingTime", remainingTime).
-			Msg("[BlockBudget] SimTx phase budget usage")
+			Msg("[SSCInternalPool] extracted and applied internal txs")
 	}
+	// SSC 消耗的时间从 1s 总预算里扣掉，普通交易继续用剩余预算
+	remainingTime -= time.Since(sscStart)
 
+	// 1. 普通交易（含跨分片）
+	normalTxns := types.NewTransactionsByPriceAndNonce(w.current.signer, w.current.ethSigner, pendingNormal)
 	normalTxAddrs := make([]common.Address, 0)
 	for address := range pendingNormal {
 		normalTxAddrs = append(normalTxAddrs, address)
@@ -455,9 +334,8 @@ func (w *Worker) CommitTransactions(
 
 	utils.SSCLogger().Warn().
 		Int("newTxns", len(w.current.txs)).
-		Int("crTxn", crTxn).
-		Int("simTxn", simTxn).
 		Int("normalTxn", normalTxn).
+		Int("sscTxn", sscTxn).
 		Dur("duration", time.Since(startTime)).
 		Uint64("blockGasLimit", w.current.header.GasLimit()).
 		Uint64("blockGasUsed", w.current.header.GasUsed()).
@@ -933,6 +811,7 @@ func (w *Worker) FinalizeNewBlock(
 		w.beacon,
 		copyHeader, state, w.current.txs, w.current.receipts,
 		w.current.outcxs, w.current.incxs, w.current.stakingTxs,
+		w.current.sscTxns,
 		w.current.slashes, sigsReady, viewID,
 	)
 	tEngineFinalize = time.Since(t0)

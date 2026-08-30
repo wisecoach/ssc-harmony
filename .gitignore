@@ -98,3 +98,6 @@ profiles/*.pb.gz
 # cache db
 cache/
 cache_*_db
+
+# local hermes attachments
+.hermes

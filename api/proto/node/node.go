@@ -35,6 +35,7 @@ type TransactionMessageType int
 const (
 	Send TransactionMessageType = iota
 	Unlock
+	SSCInternalSend // DSN-48：SSC 内部交易广播
 )
 
 // BlockMessageType represents the type of messages used for Node/Block
@@ -65,6 +66,7 @@ var (
 	slashH              = []byte{nodeB, blockB, slashB}
 	transactionListH    = []byte{nodeB, txnB, sendB}
 	stakingTxnListH     = []byte{nodeB, stakingB, sendB}
+	sscInternalTxListH  = []byte{nodeB, txnB, byte(SSCInternalSend)} // DSN-48：SSC 内部交易
 	syncH               = []byte{nodeB, blockB, syncB}
 	crossLinkH          = []byte{nodeB, blockB, crossLinkB}
 	cxReceiptH          = []byte{nodeB, blockB, receiptB}
@@ -92,6 +94,19 @@ func ConstructStakingTransactionListMessageAccount(
 	if err != nil {
 		log.Fatal(err)
 		return []byte{} // TODO(RJ): better handle of the error
+	}
+	byteBuffer.Write(txs)
+	return byteBuffer.Bytes()
+}
+
+// ConstructSSCInternalTransactionListMessage 构造 SSC 内部交易广播消息（DSN-48）。
+// 参考普通交易广播（ConstructTransactionListMessageAccount），仅载荷换成 SSC 内部交易列表。
+func ConstructSSCInternalTransactionListMessage(transactions []*types.SSCInternalTx) []byte {
+	byteBuffer := bytes.NewBuffer(sscInternalTxListH)
+	txs, err := rlp.EncodeToBytes(transactions)
+	if err != nil {
+		log.Fatal(err)
+		return []byte{}
 	}
 	byteBuffer.Write(txs)
 	return byteBuffer.Bytes()

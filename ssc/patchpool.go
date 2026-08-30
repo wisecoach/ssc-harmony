@@ -14,107 +14,176 @@ import (
 
 // ─── PatchConsumeStatus ───────────────────────────────────────────────
 
-// PatchConsumeStatus represents the lifecycle state of a ChainPatchNode.
+// PatchConsumeStatus represents the lifecycle state of an OffChainPatchNode.
 type PatchConsumeStatus int32
 
 const (
 	PatchFree      PatchConsumeStatus = iota // Not yet taken by any retryTx
 	PatchConsumed                            // Taken by a retryTx, can still be Wounded
 	PatchFinalized                           // Locked by CommitSimulation, cannot be Wounded
+
 )
 
-// ─── ChainPatchNode ───────────────────────────────────────────────────
+const defaultMaxChainDepthValue = 5
 
-// ChainPatchNode is a node in the PatchPool.
-// Each submitted SimTx corresponds to one node.
-type ChainPatchNode struct {
-	TxHash        common.Hash  // txHash of the SimTx
-	SimulationNum int          // simulationNum of the SimTx
-	Patch         *api.RWSet   // WriteSet of the SimTx
-	Consumer      common.Hash  // retryTx that consumed this Patch (zero if Free)
-	Priority      api.Priority // priority of the consumer
-	CreatedAt     time.Time    // time when added to pool
-	status        atomic.Int32 // PatchConsumeStatus, lock-free
+// defaultMaxChainDepthValue DSN-50: 链下 DAG 链深上限的默认值。
+
+// ─── OffChainPatchNode ───────────────────────────────────────────────
+
+// OffChainPatchNode is a node in the single off-chain DAG (offChainDAG).
+// It merges the scheduling state of the old ChainPatchNode (PatchPool) with the
+// read-construction state of api.ChainNode (UpstreamTxList), so that the whole
+// off-chain Patch pool is a single source of truth.
+type OffChainPatchNode struct {
+	TxHash         common.Hash    // txHash of the SimTx (本节点)
+	SimulationNum  int            // simulationNum of the SimTx
+	Patch          *api.RWSet     // WriteSet of the SimTx (本节点)
+	UpstreamTxList []api.TxSimKey // 上游依赖（DAG 边）—— 原 api.ChainNode 字段
+	Consumer       common.Hash    // retryTx that consumed this Patch (zero if Free)
+	Priority       api.Priority   // priority of the consumer
+	CreatedAt      time.Time      // time when added to pool
+	Depth          int            // DSN-50: DAG 深度（根=1；非根=max(上游 Depth)+1），用于链深上限
+	status         atomic.Int32   // PatchConsumeStatus, lock-free
 }
 
-func (n *ChainPatchNode) Status() PatchConsumeStatus {
+func (n *OffChainPatchNode) Status() PatchConsumeStatus {
 	return PatchConsumeStatus(n.status.Load())
 }
 
-func (n *ChainPatchNode) SetStatus(s PatchConsumeStatus) {
+func (n *OffChainPatchNode) SetStatus(s PatchConsumeStatus) {
 	n.status.Store(int32(s))
 }
 
 // TryAcquire atomically transitions from Free→Consumed.
 // Returns true if successful, false if already consumed/finalized.
-func (n *ChainPatchNode) TryAcquire() bool {
+func (n *OffChainPatchNode) TryAcquire() bool {
 	return n.status.CompareAndSwap(int32(PatchFree), int32(PatchConsumed))
 }
 
-// ─── Core Operations ────────────────────────────────────────────────
+// ─── offChainDAG ─────────────────────────────────────────────────────
 
-// addPatch adds a submitted SimTx's WriteSet to the local patch pool.
-// Also updates the keyIndex inverted index.
-func (rs *retryScheduler) addPatch(txHash common.Hash, simNum int, writeSet *api.RWSet) {
-	node := &ChainPatchNode{
-		TxHash:        txHash,
-		SimulationNum: simNum,
-		Patch:         writeSet,
-		CreatedAt:     time.Now(),
-	}
+// offChainDAG is the single leader-side off-chain Patch DAG storage.
+// It replaces the two parallel structures localPatches + patches (and their
+// keyIndex / subscriber / txSubKeys indexes).
+type offChainDAG struct {
+	// nodes — 链下 DAG 节点，key: txHash, value: *OffChainPatchNode
+	nodes sync.Map
+	// keyIndex — key → {txHash set}，哪些 SimTx 写了这个 key（调度匹配反查）
+	keyIndex sync.Map // key: api.LockKey, val: *sync.Map
+	// subscriber — key → {retryTxHash set}，哪些 retryTx 等这个 key
+	subscriber sync.Map // key: api.LockKey, val: *sync.Map
+	// txSubKeys — 反向索引，retryTxHash → []LockKey
+	txSubKeys sync.Map // key: common.Hash, val: []api.LockKey
+}
+
+// AddNode 在链下 DAG 中创建（或更新）一个节点。
+// 状态 = PatchFree；仅记录本节点 WriteSet + 上游依赖，尚未建立 keyIndex（不可被调度匹配）。
+// 之后需调用 MarkReady 建立 keyIndex 反查并触发 subscriber 扫描。
+func (dag *offChainDAG) AddNode(txHash common.Hash, simNum int, patch *api.RWSet, upstreamTxList []api.TxSimKey) {
+	now := time.Now()
+	nodeVal, _ := dag.nodes.LoadOrStore(txHash, &OffChainPatchNode{
+		TxHash:         txHash,
+		SimulationNum:  simNum,
+		Patch:          patch,
+		UpstreamTxList: upstreamTxList,
+		CreatedAt:      now,
+	})
+	node := nodeVal.(*OffChainPatchNode)
+	// 同 txHash 重复写入（如 sendChainSignal 复用节点）时更新字段，保持单一节点语义。
+	node.SimulationNum = simNum
+	node.Patch = patch
+	node.UpstreamTxList = upstreamTxList
+	node.Depth = chainDepthOfUpstreams(dag, upstreamTxList)
 	node.SetStatus(PatchFree)
-	rs.localPatches.Store(txHash, node)
+	if l := utils.SSCLogger(); l != nil {
+		l.Debug().Str("txHash", txHash.Hex()).
+			Int("simNum", simNum).
+			Int("upstreamCount", len(upstreamTxList)).
+			Int("depth", node.Depth).
+			Msg("offChainDAG.AddNode")
+	}
+}
 
-	for addr, state := range writeSet.WriteState.State {
+// MarkReady 将节点置为“可被匹配”状态：
+// 建立 keyIndex 反查，并通过 onReady 回调触发 scanPatchSubscribers 增量扫描
+// （替代原 addPatch + OnPatchPoolUpdated 两步；scan 逻辑依赖 retryScheduler 状态，故以回调注入）。
+func (dag *offChainDAG) MarkReady(txHash common.Hash, onReady func(*api.RWSet)) {
+	nodeVal, ok := dag.nodes.Load(txHash)
+	if !ok {
+		return
+	}
+	node := nodeVal.(*OffChainPatchNode)
+	if node.Patch == nil || len(node.Patch.WriteState.State) == 0 {
+		return
+	}
+	for addr, state := range node.Patch.WriteState.State {
 		for key := range state {
 			lockKey := api.FormKey(addr, key)
-			innerVal, _ := rs.keyIndex.LoadOrStore(lockKey, &sync.Map{})
+			innerVal, _ := dag.keyIndex.LoadOrStore(lockKey, &sync.Map{})
 			inner := innerVal.(*sync.Map)
 			inner.Store(txHash, struct{}{})
 		}
 	}
+	if l := utils.SSCLogger(); l != nil {
+		l.Debug().Str("txHash", txHash.Hex()).
+			Int("simNum", node.SimulationNum).
+			Msg("offChainDAG.MarkReady")
+	}
+	// 触发增量扫描：让已订阅该 WriteSet 中 key 的 retryTx 尝试匹配（DAG chaining）
+	if onReady != nil {
+		onReady(node.Patch)
+	}
 }
 
-// removePatch removes a Patch from the pool and cleans up keyIndex.
-func (rs *retryScheduler) removePatch(txHash common.Hash) {
+// Remove 从链下 DAG 原子删除一个节点及其关联索引（keyIndex + subscriber + txSubKeys）。
+// 这是 closeTransaction 中唯一的链下清理入口（替代 removePatch + patches.Delete 两处）。
+func (dag *offChainDAG) Remove(txHash common.Hash) {
 	t0 := time.Now()
-	nodeVal, ok := rs.localPatches.Load(txHash)
-	if !ok {
-		return
-	}
-	node := nodeVal.(*ChainPatchNode)
+	nodeVal, ok := dag.nodes.Load(txHash)
+	if ok {
+		node := nodeVal.(*OffChainPatchNode)
 
-	for addr, state := range node.Patch.WriteState.State {
-		for key := range state {
-			lockKey := api.FormKey(addr, key)
-			if innerVal, ok := rs.keyIndex.Load(lockKey); ok {
-				inner := innerVal.(*sync.Map)
-				inner.Delete(txHash)
-				empty := true
-				inner.Range(func(_, _ interface{}) bool {
-					empty = false
-					return false
-				})
-				if empty {
-					rs.keyIndex.Delete(lockKey)
+		// 清理 keyIndex（本节点作为 SimTx 写入了哪些 key）
+		if node.Patch != nil {
+			for addr, state := range node.Patch.WriteState.State {
+				for key := range state {
+					lockKey := api.FormKey(addr, key)
+					if innerVal, ok := dag.keyIndex.Load(lockKey); ok {
+						inner := innerVal.(*sync.Map)
+						inner.Delete(txHash)
+						empty := true
+						inner.Range(func(_, _ interface{}) bool {
+							empty = false
+							return false
+						})
+						if empty {
+							dag.keyIndex.Delete(lockKey)
+						}
+					}
 				}
 			}
 		}
+		dag.nodes.Delete(txHash)
 	}
-	rs.localPatches.Delete(txHash)
 
-	utils.SSCLogger().Debug().Str("txHash", txHash.Hex()).
-		Str("duration", time.Since(t0).String()).
-		Msg("PatchPool.Remove timing")
+	// 清理 subscriber / txSubKeys：无论 txHash 是否在 nodes 中，
+	// 只要它作为 retryTx 订阅过 key，都应一并清理（原子删除 node + keyIndex + subscriber + txSubKeys）。
+	dag.unsubscribeRetryTx(txHash)
+
+	if l := utils.SSCLogger(); l != nil {
+		l.Debug().Str("txHash", txHash.Hex()).
+			Str("duration", time.Since(t0).String()).
+			Msg("offChainDAG.Remove timing")
+	}
 }
 
 // patchStats returns snapshot of patch pool size metrics.
-func (rs *retryScheduler) patchStats() (patchCount, keyCount int) {
-	rs.localPatches.Range(func(_, _ interface{}) bool {
+func (dag *offChainDAG) patchStats() (patchCount, keyCount int) {
+	dag.nodes.Range(func(_, _ interface{}) bool {
 		patchCount++
 		return true
 	})
-	rs.keyIndex.Range(func(_, _ interface{}) bool {
+	dag.keyIndex.Range(func(_, _ interface{}) bool {
 		keyCount++
 		return true
 	})
@@ -124,12 +193,12 @@ func (rs *retryScheduler) patchStats() (patchCount, keyCount int) {
 // ─── Consume Operations ────────────────────────────────────────────
 
 // tryConsumePatch attempts to take the Patch for the given txHash.
-func (rs *retryScheduler) tryConsumePatch(txHash common.Hash, consumer common.Hash, priority api.Priority) *api.RWSet {
-	nodeVal, ok := rs.localPatches.Load(txHash)
+func (dag *offChainDAG) tryConsumePatch(txHash common.Hash, consumer common.Hash, priority api.Priority) *api.RWSet {
+	nodeVal, ok := dag.nodes.Load(txHash)
 	if !ok {
 		return nil
 	}
-	node := nodeVal.(*ChainPatchNode)
+	node := nodeVal.(*OffChainPatchNode)
 	if !node.TryAcquire() {
 		return nil
 	}
@@ -139,12 +208,12 @@ func (rs *retryScheduler) tryConsumePatch(txHash common.Hash, consumer common.Ha
 }
 
 // releasePatch releases a consumed Patch (on retry failure), allowing other retryTxs to take it.
-func (rs *retryScheduler) releasePatch(txHash common.Hash) {
-	nodeVal, ok := rs.localPatches.Load(txHash)
+func (dag *offChainDAG) releasePatch(txHash common.Hash) {
+	nodeVal, ok := dag.nodes.Load(txHash)
 	if !ok {
 		return
 	}
-	node := nodeVal.(*ChainPatchNode)
+	node := nodeVal.(*OffChainPatchNode)
 	if node.Status() != PatchConsumed {
 		return
 	}
@@ -154,12 +223,12 @@ func (rs *retryScheduler) releasePatch(txHash common.Hash) {
 }
 
 // finalizePatch marks a Patch as Finalized — cannot be Wounded anymore.
-func (rs *retryScheduler) finalizePatch(txHash common.Hash) {
-	nodeVal, ok := rs.localPatches.Load(txHash)
+func (dag *offChainDAG) finalizePatch(txHash common.Hash) {
+	nodeVal, ok := dag.nodes.Load(txHash)
 	if !ok {
 		return
 	}
-	node := nodeVal.(*ChainPatchNode)
+	node := nodeVal.(*OffChainPatchNode)
 	if node.Status() != PatchConsumed {
 		return
 	}
@@ -167,39 +236,39 @@ func (rs *retryScheduler) finalizePatch(txHash common.Hash) {
 }
 
 // isPatchFinalized returns true if the given txHash's Patch is Finalized.
-func (rs *retryScheduler) isPatchFinalized(txHash common.Hash) bool {
-	nodeVal, ok := rs.localPatches.Load(txHash)
+func (dag *offChainDAG) isPatchFinalized(txHash common.Hash) bool {
+	nodeVal, ok := dag.nodes.Load(txHash)
 	if !ok {
 		return false
 	}
-	return nodeVal.(*ChainPatchNode).Status() == PatchFinalized
+	return nodeVal.(*OffChainPatchNode).Status() == PatchFinalized
 }
 
 // ─── Subscriber ─────────────────────────────────────────────────────
 
 // subscribeRetryTx registers a retryTx's key interests (both ReadSet and WriteSet).
-func (rs *retryScheduler) subscribeRetryTx(txHash common.Hash, reads, writes []api.LockKey) {
+func (dag *offChainDAG) subscribeRetryTx(txHash common.Hash, reads, writes []api.LockKey) {
 	allKeys := make([]api.LockKey, 0, len(reads)+len(writes))
 	allKeys = append(allKeys, reads...)
 	allKeys = append(allKeys, writes...)
 
 	for _, key := range allKeys {
-		innerVal, _ := rs.subscriber.LoadOrStore(key, &sync.Map{})
+		innerVal, _ := dag.subscriber.LoadOrStore(key, &sync.Map{})
 		inner := innerVal.(*sync.Map)
 		inner.Store(txHash, struct{}{})
 	}
-	rs.txSubKeys.Store(txHash, allKeys)
+	dag.txSubKeys.Store(txHash, allKeys)
 }
 
 // unsubscribeRetryTx removes a retryTx from the subscriber index.
-func (rs *retryScheduler) unsubscribeRetryTx(txHash common.Hash) {
-	keysVal, ok := rs.txSubKeys.Load(txHash)
+func (dag *offChainDAG) unsubscribeRetryTx(txHash common.Hash) {
+	keysVal, ok := dag.txSubKeys.Load(txHash)
 	if !ok {
 		return
 	}
 	allKeys := keysVal.([]api.LockKey)
 	for _, key := range allKeys {
-		if innerVal, ok := rs.subscriber.Load(key); ok {
+		if innerVal, ok := dag.subscriber.Load(key); ok {
 			inner := innerVal.(*sync.Map)
 			inner.Delete(txHash)
 			empty := true
@@ -208,24 +277,24 @@ func (rs *retryScheduler) unsubscribeRetryTx(txHash common.Hash) {
 				return false
 			})
 			if empty {
-				rs.subscriber.Delete(key)
+				dag.subscriber.Delete(key)
 			}
 		}
 	}
-	rs.txSubKeys.Delete(txHash)
+	dag.txSubKeys.Delete(txHash)
 }
 
 // resubscribeRetryTx removes and re-registers a retryTx's key interests.
-func (rs *retryScheduler) resubscribeRetryTx(txHash common.Hash, reads, writes []api.LockKey) {
-	rs.unsubscribeRetryTx(txHash)
-	rs.subscribeRetryTx(txHash, reads, writes)
+func (dag *offChainDAG) resubscribeRetryTx(txHash common.Hash, reads, writes []api.LockKey) {
+	dag.unsubscribeRetryTx(txHash)
+	dag.subscribeRetryTx(txHash, reads, writes)
 }
 
 // querySubscribers returns all retryTx hashes subscribed to any of the given keys (deduplicated).
-func (rs *retryScheduler) querySubscribers(keys []api.LockKey) []common.Hash {
+func (dag *offChainDAG) querySubscribers(keys []api.LockKey) []common.Hash {
 	seen := make(map[common.Hash]struct{})
 	for _, key := range keys {
-		if innerVal, ok := rs.subscriber.Load(key); ok {
+		if innerVal, ok := dag.subscriber.Load(key); ok {
 			inner := innerVal.(*sync.Map)
 			inner.Range(func(txHashVal, _ interface{}) bool {
 				seen[txHashVal.(common.Hash)] = struct{}{}
@@ -242,12 +311,12 @@ func (rs *retryScheduler) querySubscribers(keys []api.LockKey) []common.Hash {
 
 // ─── Query ──────────────────────────────────────────────────────────
 
-// patchesHaveConflict checks if a retryTx depends on any SimTx in the local patch pool.
-func (rs *retryScheduler) patchesHaveConflict(retryTx *api.RetryTx) (bool, *ChainPatchNode) {
+// patchesHaveConflict checks if a retryTx depends on any SimTx in the off-chain DAG.
+func (dag *offChainDAG) patchesHaveConflict(retryTx *api.RetryTx) (bool, *OffChainPatchNode) {
 	candidates := make(map[common.Hash]int)
 
 	for _, key := range retryTx.ReadSet {
-		if innerVal, ok := rs.keyIndex.Load(key); ok {
+		if innerVal, ok := dag.keyIndex.Load(key); ok {
 			inner := innerVal.(*sync.Map)
 			inner.Range(func(txHashVal, _ interface{}) bool {
 				candidates[txHashVal.(common.Hash)]++
@@ -256,7 +325,7 @@ func (rs *retryScheduler) patchesHaveConflict(retryTx *api.RetryTx) (bool, *Chai
 		}
 	}
 	for _, key := range retryTx.WriteSet {
-		if innerVal, ok := rs.keyIndex.Load(key); ok {
+		if innerVal, ok := dag.keyIndex.Load(key); ok {
 			inner := innerVal.(*sync.Map)
 			inner.Range(func(txHashVal, _ interface{}) bool {
 				candidates[txHashVal.(common.Hash)]++
@@ -268,11 +337,11 @@ func (rs *retryScheduler) patchesHaveConflict(retryTx *api.RetryTx) (bool, *Chai
 	var best common.Hash
 	var bestCnt int
 	for txHash, cnt := range candidates {
-		nodeVal, exists := rs.localPatches.Load(txHash)
+		nodeVal, exists := dag.nodes.Load(txHash)
 		if !exists {
 			continue
 		}
-		node := nodeVal.(*ChainPatchNode)
+		node := nodeVal.(*OffChainPatchNode)
 		status := node.Status()
 		if cnt > bestCnt && status != PatchFinalized && status != PatchConsumed {
 			bestCnt = cnt
@@ -280,17 +349,17 @@ func (rs *retryScheduler) patchesHaveConflict(retryTx *api.RetryTx) (bool, *Chai
 		}
 	}
 	if bestCnt > 0 {
-		nodeVal, _ := rs.localPatches.Load(best)
-		return true, nodeVal.(*ChainPatchNode)
+		nodeVal, _ := dag.nodes.Load(best)
+		return true, nodeVal.(*OffChainPatchNode)
 	}
 	return false, nil
 }
 
 // findCoveringPatch checks if a single Patch covers all given conflictKeys.
-func (rs *retryScheduler) findCoveringPatch(conflictKeys []api.LockKey) (bool, *ChainPatchNode) {
+func (dag *offChainDAG) findCoveringPatch(conflictKeys []api.LockKey, exclude common.Hash) (bool, *OffChainPatchNode) {
 	candidates := make(map[common.Hash]int)
 	for _, key := range conflictKeys {
-		innerVal, ok := rs.keyIndex.Load(key)
+		innerVal, ok := dag.keyIndex.Load(key)
 		if !ok {
 			return false, nil
 		}
@@ -306,11 +375,14 @@ func (rs *retryScheduler) findCoveringPatch(conflictKeys []api.LockKey) (bool, *
 		if cnt != len(conflictKeys) {
 			continue
 		}
-		nodeVal, exists := rs.localPatches.Load(txHash)
+		if txHash == exclude {
+			continue
+		}
+		nodeVal, exists := dag.nodes.Load(txHash)
 		if !exists {
 			continue
 		}
-		node := nodeVal.(*ChainPatchNode)
+		node := nodeVal.(*OffChainPatchNode)
 		status := node.Status()
 		if status != PatchFinalized && status != PatchConsumed {
 			if best == (common.Hash{}) {
@@ -319,34 +391,44 @@ func (rs *retryScheduler) findCoveringPatch(conflictKeys []api.LockKey) (bool, *
 		}
 	}
 	if best != (common.Hash{}) {
-		nodeVal, _ := rs.localPatches.Load(best)
-		return true, nodeVal.(*ChainPatchNode)
+		nodeVal, _ := dag.nodes.Load(best)
+		return true, nodeVal.(*OffChainPatchNode)
 	}
 	return false, nil
 }
 
 // findCoveringSet 返回一组 Free Patch，联合覆盖全部 conflictKeys（DAG 多 Patch 覆盖）。
 // 贪心近似：每轮选覆盖最多「未覆盖 key」的 Free Patch。
-func (rs *retryScheduler) findCoveringSet(conflictKeys []api.LockKey) []*ChainPatchNode {
+// exclude：排除自己（防自环）；maxSimNum：仅选严格更早（SimulationNum < maxSimNum）的节点，
+// 保证依赖图按轮次严格递增、链深有界（防止同轮无限 chaining）。
+func (dag *offChainDAG) findCoveringSet(conflictKeys []api.LockKey, exclude common.Hash, maxSimNum int) []*OffChainPatchNode {
 	type patchEntry struct {
-		node *ChainPatchNode
+		node *OffChainPatchNode
 		keys map[int]struct{}
 	}
 	var available []patchEntry
 	for i, key := range conflictKeys {
-		innerVal, ok := rs.keyIndex.Load(key)
+		innerVal, ok := dag.keyIndex.Load(key)
 		if !ok {
 			return nil
 		}
 		inner := innerVal.(*sync.Map)
 		inner.Range(func(txHashVal, _ interface{}) bool {
 			txHash := txHashVal.(common.Hash)
-			nodeVal, exists := rs.localPatches.Load(txHash)
+			if txHash == exclude {
+				return true
+			}
+			nodeVal, exists := dag.nodes.Load(txHash)
 			if !exists {
 				return true
 			}
-			node := nodeVal.(*ChainPatchNode)
+			node := nodeVal.(*OffChainPatchNode)
 			if node.Status() != PatchFree {
+				return true
+			}
+			// 只选严格更早（SimulationNum < maxSimNum）的节点：依赖边必须指向更早轮次，
+			// 从构造上保证 DAG 无环且链深有界（阻断同轮次无限 chaining）。
+			if maxSimNum > 0 && node.SimulationNum >= maxSimNum {
 				return true
 			}
 			found := false
@@ -368,7 +450,7 @@ func (rs *retryScheduler) findCoveringSet(conflictKeys []api.LockKey) []*ChainPa
 	}
 
 	covered := make(map[int]bool)
-	var result []*ChainPatchNode
+	var result []*OffChainPatchNode
 	for len(covered) < len(conflictKeys) {
 		bestIdx := -1
 		bestCnt := 0
@@ -404,7 +486,7 @@ func (rs *retryScheduler) scanPatchSubscribers(writeSet *api.RWSet) {
 		return
 	}
 
-	candidates := rs.querySubscribers(keys)
+	candidates := rs.offChainDAG.querySubscribers(keys)
 	if len(candidates) == 0 {
 		return
 	}
@@ -414,7 +496,7 @@ func (rs *retryScheduler) scanPatchSubscribers(writeSet *api.RWSet) {
 		txHash  common.Hash
 		tx      *api.RetryTx
 		allKeys []api.LockKey
-		patches []*ChainPatchNode
+		patches []*OffChainPatchNode
 	}
 	var sorted []prioTx
 	for _, txHash := range candidates {
@@ -428,8 +510,16 @@ func (rs *retryScheduler) scanPatchSubscribers(writeSet *api.RWSet) {
 		}
 		allKeys := append([]api.LockKey{}, retryTx.ReadSet...)
 		allKeys = append(allKeys, retryTx.WriteSet...)
-		patches := rs.findCoveringSet(allKeys)
+		patches := rs.offChainDAG.findCoveringSet(allKeys, txHash, retryTx.SimulationNum)
 		if len(patches) == 0 {
+			continue
+		}
+		// DSN-50 闸门：覆盖完整性 + 链深上限。不满足则不链式救援，退回等锁。
+		if !rs.offChainDAG.isFullyCovered(allKeys, patches) {
+			continue
+		}
+		if chainDepthOf(patches) > rs.maxChainDepth {
+			chainRetryStats.SigChainDepthCapped.Add(1)
 			continue
 		}
 		sorted = append(sorted, prioTx{txHash: txHash, tx: retryTx, allKeys: allKeys, patches: patches})
@@ -487,7 +577,7 @@ func (rs *retryScheduler) scanPatchSubscribers(writeSet *api.RWSet) {
 		var upstreamTxList []api.TxSimKey
 		allOk := true
 		for _, pn := range pt.patches {
-			patch := rs.tryConsumePatch(pn.TxHash, pt.txHash, priority)
+			patch := rs.offChainDAG.tryConsumePatch(pn.TxHash, pt.txHash, priority)
 			if patch == nil {
 				allOk = false
 				break
@@ -502,12 +592,12 @@ func (rs *retryScheduler) scanPatchSubscribers(writeSet *api.RWSet) {
 		if allOk {
 			matchedCount++
 			pt.tx.Status = api.RetryConsumed
-			rs.unsubscribeRetryTx(pt.txHash)
+			rs.offChainDAG.unsubscribeRetryTx(pt.txHash)
 			rs.consumedPatches.Store(pt.txHash, consumedUpstreams)
 			rs.sendChainSignal(pt.txHash, pt.tx, merged, upstreamTxList)
 		} else {
 			for _, txh := range consumedUpstreams {
-				rs.releasePatch(txh)
+				rs.offChainDAG.releasePatch(txh)
 			}
 		}
 	}
@@ -534,6 +624,63 @@ func extractWriteKeys(writeSet *api.RWSet) []api.LockKey {
 		}
 	}
 	return keys
+}
+
+// defaultMaxChainDepth 返回链下 DAG 链深上限；配置 <=0 时使用默认值。
+func defaultMaxChainDepth(configured int) int {
+	if configured > 0 {
+		return configured
+	}
+	return defaultMaxChainDepthValue
+}
+
+// chainDepthOfUpstreams 计算以给定上游列表为新节点上游时的 DAG 深度。
+// 根节点（无上游）= 1；否则 = max(上游 Depth) + 1。
+// 用于 AddNode 写入节点时记录显式 Depth（DSN-50）。
+func chainDepthOfUpstreams(dag *offChainDAG, upstreamTxList []api.TxSimKey) int {
+	depth := 1
+	for _, up := range upstreamTxList {
+		if nv, ok := dag.nodes.Load(up.TxHash); ok {
+			if d := nv.(*OffChainPatchNode).Depth + 1; d > depth {
+				depth = d
+			}
+		}
+	}
+	return depth
+}
+
+// chainDepthOf 计算以一组 Patch 为上游时，新节点将会得到的 DAG 深度（DSN-50）。
+func chainDepthOf(patches []*OffChainPatchNode) int {
+	depth := 1
+	for _, p := range patches {
+		if p == nil {
+			continue
+		}
+		if d := p.Depth + 1; d > depth {
+			depth = d
+		}
+	}
+	return depth
+}
+
+// isFullyCovered 检查一组 Patch 是否联合覆盖 needKeys 的全部 key（DSN-50 覆盖完整性校验）。
+// 只有每个 key 都被至少一个选中 Patch 写过，才算完整覆盖。
+func (dag *offChainDAG) isFullyCovered(needKeys []api.LockKey, patches []*OffChainPatchNode) bool {
+	covered := make(map[api.LockKey]bool)
+	for _, p := range patches {
+		if p == nil || p.Patch == nil {
+			continue
+		}
+		for _, k := range extractWriteKeys(p.Patch) {
+			covered[k] = true
+		}
+	}
+	for _, k := range needKeys {
+		if !covered[k] {
+			return false
+		}
+	}
+	return true
 }
 
 // mergeRWSet 合并两个 RWSet 的 WriteState（new 覆盖相同 key）。

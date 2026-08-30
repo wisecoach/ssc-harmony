@@ -209,10 +209,11 @@ func getAPIs(hmy *hmy.Harmony, config nodeconfig.RPCServerConfig) []rpc.API {
 		NewPrivateDebugAPI(hmy, V2),
 	}
 
-	// publicAPIs = append(publicAPIs,
-	// 	NewPublicSSCCrossAPI(hmy.NodeAPI.GetSSCService(), SSC, config.RateLimiterEnabled, config.RequestsPerSecond),
-	// 	NewPublicSSCShardAPI(hmy.NodeAPI.GetSSCService(), SSC, config.RateLimiterEnabled, config.RequestsPerSecond),
-	// )
+	// SSC module-status monitor over JSON-RPC (method: ssc_getModuleStatus).
+	// Only registered on nodes that actually run SSC.
+	if svc := hmy.NodeAPI.GetSSCService(); svc != nil {
+		publicAPIs = append(publicAPIs, NewPublicSSCMonitorAPI(svc, SSC))
+	}
 
 	if config.DebugEnabled {
 		apis := append(publicAPIs, publicDebugAPIs...)

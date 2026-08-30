@@ -17,6 +17,7 @@ type BodyV2 struct {
 type bodyFieldsV2 struct {
 	Transactions        []*Transaction
 	StakingTransactions []*staking.StakingTransaction
+	SSCTransactions     [][]*SSCInternalTx // 新增（DSN-47）：二维，第一维下标=InternalTxType（类型桶），第二维=行内交易（顺序=行内执行顺序）
 	Uncles              []*block.Header
 	IncomingReceipts    CXReceiptsProofs
 }
@@ -60,6 +61,56 @@ func (b *BodyV2) StakingTransactionAt(index int) *staking.StakingTransaction {
 	return b.f.StakingTransactions[index].Copy()
 }
 
+// NewSSCTransactions 返回一个长度 = InternalTxTypeCount() 的二维切片，
+// 第一维可直接用 InternalTxType 做下标（例如 ssc[InternalTxTypeSimTx]）。
+// 这是构造 SSCTransactions 的推荐入口。
+func NewSSCTransactions() [][]*SSCInternalTx {
+	return make([][]*SSCInternalTx, InternalTxTypeCount())
+}
+
+// SSCTransactions returns the SSC internal transactions as a 2-D slice
+// (first dim index = InternalTxType bucket, second dim = tx within that type, in row order).
+// The returned list is a deep copy; the caller may do anything with it without
+// affecting the original.
+func (b *BodyV2) SSCTransactions() (txs [][]*SSCInternalTx) {
+	for _, row := range b.f.SSCTransactions {
+		var rowCopy []*SSCInternalTx
+		for _, tx := range row {
+			rowCopy = append(rowCopy, tx.Copy())
+		}
+		txs = append(txs, rowCopy)
+	}
+	return txs
+}
+
+// SSCTransactionsByType returns a deep copy of the SSC internal transactions of the given type.
+// It returns nil if t is out of range or that bucket is empty.
+func (b *BodyV2) SSCTransactionsByType(t InternalTxType) []*SSCInternalTx {
+	if int(t) < 0 || int(t) >= len(b.f.SSCTransactions) {
+		return nil
+	}
+	var txs []*SSCInternalTx
+	for _, tx := range b.f.SSCTransactions[t] {
+		txs = append(txs, tx.Copy())
+	}
+	return txs
+}
+
+// SSCTransactionAt returns the SSC internal transaction at the given global index in this block,
+// counting by type order (CRTx first, then SimTx, ...). It returns nil if index is out of bounds.
+func (b *BodyV2) SSCTransactionAt(index int) *SSCInternalTx {
+	if index < 0 {
+		return nil
+	}
+	for _, row := range b.f.SSCTransactions {
+		if index < len(row) {
+			return row[index].Copy()
+		}
+		index -= len(row)
+	}
+	return nil
+}
+
 // CXReceiptAt returns the CXReceipt at given index in this block
 // It returns nil if index is out of bounds
 func (b *BodyV2) CXReceiptAt(index int) *CXReceipt {
@@ -94,6 +145,23 @@ func (b *BodyV2) SetStakingTransactions(newStakingTransactions []*staking.Stakin
 		txs = append(txs, tx.Copy())
 	}
 	b.f.StakingTransactions = txs
+}
+
+// SetSSCTransactions sets the list of SSC internal transactions (2-D:
+// first dim index = InternalTxType bucket, second dim = tx within that type) with a deep copy
+// of the given list. The stored slice is normalized to length InternalTxTypeCount() so callers
+// can always index by InternalTxType safely; missing buckets become empty (nil) rows.
+func (b *BodyV2) SetSSCTransactions(newSSCTransactions [][]*SSCInternalTx) {
+	txs := NewSSCTransactions() // length = InternalTxTypeCount()
+	for i, row := range newSSCTransactions {
+		if i >= len(txs) {
+			break // ignore rows beyond defined types
+		}
+		for _, tx := range row {
+			txs[i] = append(txs[i], tx.Copy())
+		}
+	}
+	b.f.SSCTransactions = txs
 }
 
 // Uncles returns a deep copy of the list of uncle headers of this block.

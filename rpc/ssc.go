@@ -14,6 +14,7 @@ import (
 var lock = sync.Mutex{}
 var requests = make([]interface{}, 0)
 
+// NewPublicSSCShardAPI creates the JSON-RPC API for the SSC shard service.
 func NewPublicSSCShardAPI(
 	internalService api.ShardService,
 	version Version,
@@ -35,6 +36,33 @@ func NewPublicSSCShardAPI(
 		},
 		Public: true,
 	}
+}
+
+// NewPublicSSCMonitorAPI creates a JSON-RPC API exposing only the SSC
+// module-status monitor (GetModuleStatus), for post-experiment
+// resource-release analysis over plain HTTP.
+func NewPublicSSCMonitorAPI(internalService api.Service, version Version) rpc2.API {
+	return rpc2.API{
+		Namespace: version.Namespace(), // "ssc"
+		Version:   APIVersion,
+		Service: &PublicSSCMonitorService{
+			internalService: internalService,
+		},
+		Public: true,
+	}
+}
+
+// PublicSSCMonitorService exposes SSC module status over JSON-RPC.
+type PublicSSCMonitorService struct {
+	internalService api.Service
+}
+
+// GetModuleStatus 返回 SSC 各模块当前维护的数据量快照（JSON-RPC: ssc_getModuleStatus）。
+func (s *PublicSSCMonitorService) GetModuleStatus(ctx context.Context) (*api.ModuleStatus, error) {
+	if s == nil || s.internalService == nil {
+		return &api.ModuleStatus{}, nil
+	}
+	return s.internalService.GetModuleStatus(), nil
 }
 
 func NewPublicSSCCrossAPI(

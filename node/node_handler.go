@@ -113,6 +113,25 @@ func (node *Node) transactionMessageHandler(msgPayload []byte) {
 			return
 		}
 		node.addPendingTransactions(node.registry, txs)
+	case proto_node.SSCInternalSend:
+		// DSN-48：收到广播的 SSC 内部交易 → 反序列化 → 交给内部池（sink）
+		txs := []*types.SSCInternalTx{}
+		err := rlp.Decode(bytes.NewReader(msgPayload[1:]), &txs) // skip the SSCInternalSend messge type
+		if err != nil {
+			utils.Logger().Error().
+				Err(err).
+				Msg("Failed to deserialize SSC internal transaction list")
+			return
+		}
+		if node.sscInternalTxSink == nil {
+			utils.SSCLogger().Debug().
+				Int("txs", len(txs)).
+				Msg("[SSCInternalTx] received but no sink configured")
+			return
+		}
+		for _, tx := range txs {
+			node.sscInternalTxSink(tx)
+		}
 	}
 }
 

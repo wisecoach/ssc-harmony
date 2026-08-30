@@ -390,6 +390,21 @@ message SLTestResult {
   string error = 2;
 }
 
+message SLOpinion {
+  Address from = 1;
+  Address to = 2;
+  int32 s = 3;
+  int32 f = 4;
+  double beta = 5;
+  double delta = 6;
+  double omega = 7;
+}
+
+message SelfOpinions {
+  Address from = 1;
+  repeated SLOpinion opinions = 2;
+}
+
 // ============================================================================
 // gRPC Service definitions
 // ============================================================================
@@ -450,4 +465,95 @@ service SSCCrossService {
 // Helper message for methods that return raw bytes (SignSimulationCommit, SignCXTSimulation).
 message Bytes {
   bytes val = 1;
+}
+
+// ============================================================================
+// Monitoring — SSC module status export (post-experiment resource analysis)
+// ============================================================================
+
+// RetrySchedulerStatus 重试调度器各池/索引的条目数。
+message RetrySchedulerStatus {
+  int64 retry_pool = 1;
+  int64 passive_pool = 2;
+  int64 stale_txs = 3;
+  int64 signals = 4;
+  int64 patches = 5;
+  int64 on_chain_patches = 6;
+  int64 local_patches = 7;
+  int64 key_index = 8;
+  int64 subscriber = 9;
+  int64 tx_sub_keys = 10;
+  int64 consumed_patches = 11;
+  int64 re_sim_in_flight = 12;
+  int64 wounded_retry_txs = 13;
+  int64 lock_wait = 14;
+}
+
+// StateLockStatus 状态锁管理器各全局 sync.Map 的条目数。
+message StateLockStatus {
+  int64 global_locked = 1;
+  int64 global_r_locked = 2;
+  int64 global_finished_txs = 3;
+  int64 global_lock_start = 4;
+}
+
+// TempLockViewStatus 临时锁视图各 sync.Map 的条目数。
+message TempLockViewStatus {
+  int64 write_locks = 1;
+  int64 read_locks = 2;
+  int64 tx_sets = 3;
+  int64 wounded = 4;
+}
+
+// SimulatorStatus 模拟器各存储的条目数。
+message SimulatorStatus {
+  int64 sim_states = 1;
+  int64 call_states_waiting = 2;
+  int64 simu_ch_map = 3;
+  int64 pending_reqs_map = 4;
+  int64 queue_len = 5;
+}
+
+// VerifierStatus 验证器各存储的条目数。
+message VerifierStatus {
+  int64 execution_verify_contexts = 1;
+  int64 tx_locked_sim_num = 2;
+}
+
+// TimerStatus 定时器管理器各存储的条目数。
+message TimerStatus {
+  int64 txs = 1;
+  int64 sp1_buckets = 2;
+  int64 pool_timeout_buckets = 3;
+}
+
+// DAGStatus DAG / ChainPatch 使用情况（累计值，不随日志差分重置）。
+message DAGStatus {
+  int64 chain_tx_detected = 1;       // VerifySimulation 判定为链式交易（跳过锁检查）次数
+  int64 retry_commit_patch_hit = 2;  // RetryCommit 被 DAG Patch 救回次数
+  int64 retry_commit_patch_miss = 3; // RetryCommit Patch 匹配但消费失败次数
+}
+
+// ModuleStatus 汇总 sscService 及所有子模块的数据量。
+message ModuleStatus {
+  // sscService 顶层存储
+  int64 tx_states = 1;
+  int64 commit_states = 2;
+  int64 tx_traces = 3;
+  int64 internal_pool = 4;
+
+  RetrySchedulerStatus retry_scheduler = 5;
+  StateLockStatus state_lock = 6;
+  TempLockViewStatus temp_lock_view = 7;
+  SimulatorStatus simulator = 8;
+  VerifierStatus verifier = 9;
+  TimerStatus timer = 10;
+  DAGStatus dag = 11;
+}
+
+// SSCMonitorService 提供实验结束后的模块状态导出。
+// 调用 GetModuleStatus 即可拿到所有模块当前维护的数据量，
+// 用于分析各模块是否正确释放资源。
+service SSCMonitorService {
+  rpc GetModuleStatus(Empty) returns (ModuleStatus);
 }

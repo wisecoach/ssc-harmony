@@ -72,6 +72,7 @@ func (v *BlockValidator) ValidateBody(block *types.Block) error {
 	if hash := types.DeriveSha(
 		block.Transactions(),
 		block.StakingTransactions(),
+		types.SSCTransactions(block.SSCTransactions()),
 	); hash != header.TxHash() {
 		return fmt.Errorf("transaction root hash mismatch: have %x, want %x", hash, header.TxHash())
 	}

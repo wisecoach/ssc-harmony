@@ -1,7 +1,6 @@
 package consensus
 
 import (
-	"bytes"
 	"sort"
 	"strings"
 	"time"
@@ -10,7 +9,6 @@ import (
 	"github.com/harmony-one/harmony/core"
 	"github.com/harmony-one/harmony/core/rawdb"
 	"github.com/harmony-one/harmony/core/types"
-	"github.com/harmony-one/harmony/core/vm"
 	"github.com/harmony-one/harmony/crypto/bls"
 	"github.com/harmony-one/harmony/internal/utils"
 	"github.com/harmony-one/harmony/node/worker"
@@ -105,33 +103,17 @@ func (consensus *Consensus) ProposeNewBlock(commitSigs chan []byte) (*types.Bloc
 			utils.Logger().Err(err).Msg("Failed to fetch pending transactions")
 			return nil, err
 		}
-		// Build a set of known SSC submitter addresses for quick lookup
-		sscAddrSet := make(map[common.Address]bool)
-		for _, addr := range consensus.GetOnChainSSCAddrs() {
-			sscAddrSet[addr] = true
-		}
-
-		pendingCRTxs := make(map[common.Address]types.Transactions)
-		pendingSSCTxs := make(map[common.Address]types.Transactions)
+		// DSN-48：内部交易已独立走内部池（SSCInternalPool），普通交易池只承载普通/跨分片交易。
+		// 不再从普通交易池里区分 CR/Sim/其他 SSC 交易（旧 precompile 地址路径已废弃）。
 		pendingPlainTxs := map[common.Address]types.Transactions{}
 		pendingStakingTxs := staking.StakingTransactions{}
 
-		// Single pass: sort all pending txs by type
-		//   To() == CxtCommitOrRollbackAddr → CommitOrRollback tx (any sender)
-		//   sender in sscAddrSet           → other SSC tx
-		//   else                           → plain tx
+		// Single pass: sort all pending txs by type (plain tx / staking tx)
 		for addr, poolTxs := range pendingPoolTxs {
-			_, isSSCAddr := sscAddrSet[addr]
 			for _, tx := range poolTxs {
 				switch t := tx.(type) {
 				case *types.Transaction:
-					if t.To() != nil && bytes.Equal(t.To().Bytes(), vm.CxtCommitOrRollbackAddr.Bytes()) {
-						pendingCRTxs[addr] = append(pendingCRTxs[addr], t)
-					} else if isSSCAddr {
-						pendingSSCTxs[addr] = append(pendingSSCTxs[addr], t)
-					} else {
-						pendingPlainTxs[addr] = append(pendingPlainTxs[addr], t)
-					}
+					pendingPlainTxs[addr] = append(pendingPlainTxs[addr], t)
 				case *staking.StakingTransaction:
 					if consensus.Blockchain().Config().IsPreStaking(worker.GetCurrentHeader().Epoch()) {
 						pendingStakingTxs = append(pendingStakingTxs, t)
@@ -144,21 +126,10 @@ func (consensus *Consensus) ProposeNewBlock(commitSigs chan []byte) (*types.Bloc
 			}
 		}
 
-		countFunc := func(txs map[common.Address]types.Transactions) int {
-			cnt := 0
-			for _, acTxs := range txs {
-				cnt += len(acTxs)
-			}
-			return cnt
-		}
-
-		consensus.GetLogger().Info().Msgf("[ProposeNewBlock] begin to commit transaction, [cr, ssc, plain] = [%d, %d, %d]", countFunc(pendingCRTxs), countFunc(pendingSSCTxs), countFunc(pendingPlainTxs))
-
 		// Try commit normal and staking transactions based on the current state
 		// The successfully committed transactions will be put in the proposed block
 		if err := worker.CommitTransactions(
-			pendingSSCTxs, pendingPlainTxs, pendingStakingTxs, beneficiary,
-			pendingCRTxs,
+			pendingPlainTxs, pendingStakingTxs, beneficiary,
 		); err != nil {
 			consensus.GetLogger().Error().Err(err).Msg("cannot commit transactions")
 			return nil, err

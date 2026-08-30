@@ -20,10 +20,15 @@ type ServiceConfig struct {
 // 否则返回原始服务（零性能开销）
 func NewService(ctx context.Context, config *api.Config, cm *CommitteeMechanism,
 	sscConfig *api.ShardSimulateCommitteeConfig, signerMgr api.BLSSignerMgr,
-	bc core.BlockChain, txSigner api.TxSigner, comm *Comm) api.Service {
+	bc core.BlockChain, txSigner api.TxSigner, comm *Comm,
+	internalPool *SSCInternalPool) api.Service {
 
 	// 创建基础服务（原有逻辑完全不变）
 	baseService := newBaseService(ctx, config, cm, sscConfig, signerMgr, bc, txSigner, comm)
+	// DSN-48：注入与 txSubmitter 共享的内部池（main.go 创建）
+	if internalPool != nil {
+		baseService.internalPool = internalPool
+	}
 
 	// 如果启用作恶模式，返回代理；否则直接返回原服务（零开销）
 	if config.MischiefConfig != nil && config.MischiefConfig.Enabled {

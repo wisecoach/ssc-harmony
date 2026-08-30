@@ -296,15 +296,15 @@ type ChainConfig struct {
 
 // ShardSimulateCommittee (SSC) is the committee of the shard simulation
 type ShardSimulateCommittee struct {
-	ShardID            uint32                     `json:"shardid" yaml:"shardid"`
-	Epoch              Epoch                      `json:"epoch" yaml:"epoch"`
-	Members            []*Member                  `json:"members" yaml:"members"`
-	Threshold          int                        `json:"threshold" yaml:"threshold"`
-	Validators         []*Member                  `json:"validators" yaml:"validators"`
-	ValidatorThreshold int                        `json:"validatorthreshold" yaml:"validatorthreshold"`
-	Number             int                        `json:"number" yaml:"number"`
-	MemberIndex        map[common.Address]int      `json:"-" yaml:"-"`
-	ValidatorIndex     map[common.Address]int      `json:"-" yaml:"-"`
+	ShardID            uint32                 `json:"shardid" yaml:"shardid"`
+	Epoch              Epoch                  `json:"epoch" yaml:"epoch"`
+	Members            []*Member              `json:"members" yaml:"members"`
+	Threshold          int                    `json:"threshold" yaml:"threshold"`
+	Validators         []*Member              `json:"validators" yaml:"validators"`
+	ValidatorThreshold int                    `json:"validatorthreshold" yaml:"validatorthreshold"`
+	Number             int                    `json:"number" yaml:"number"`
+	MemberIndex        map[common.Address]int `json:"-" yaml:"-"`
+	ValidatorIndex     map[common.Address]int `json:"-" yaml:"-"`
 }
 
 type TimeoutConfig struct {
@@ -314,6 +314,7 @@ type TimeoutConfig struct {
 	MaxRetriesTotal      uint64 `json:"max_retries_total" yaml:"max_retries_total"`             // max total retries before giving up
 	ForceSimulation      bool   `json:"force_simulation" yaml:"force_simulation"`               // continue execution on lock conflict, get full RWSet
 	EnableLockOnConflict bool   `json:"enable_lock_on_conflict" yaml:"enable_lock_on_conflict"` // lock conflict callState via lockStateWithExecution before CallForRetry
+	MaxChainDepth        int    `json:"max_chain_depth" yaml:"max_chain_depth"`                 // DSN-50: 链下 DAG 链深上限（<=0 时使用默认值 5）
 }
 
 type ReputationConfig struct {
@@ -1195,8 +1196,8 @@ type CXTSimulationState struct {
 	// before querying stateDB, allowing downstream retry simulations to read
 	// the upstream's produced state values from the same block's chain.
 	ChainPatch *RWSet `json:"chain_patch,omitempty"`
-	// ChainPatchRef 引用：当此 tx 是链式 retry 时，指向 RetryScheduler.patches 中的节点
-	// GetState 时递归查 patches 链读取上游 WriteSet
+	// ChainPatchRef 引用：当此 tx 是链式 retry 时，指向 RetryScheduler.offChainDAG 中的节点
+	// GetState 时递归查 offChainDAG 链读取上游 WriteSet
 	ChainPatchRef         *TxSimKey          `json:"chain_patch_ref,omitempty"`
 	SimulateCh            chan struct{}      `json:"-"`
 	SimulationReentryLock sync.Mutex         `json:"-"`

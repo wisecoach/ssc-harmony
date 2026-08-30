@@ -101,6 +101,14 @@ type BodyInterface interface {
 	// It returns nil if index is out of bounds.
 	StakingTransactionAt(index int) *staking.StakingTransaction
 
+	// SSCTransactions returns a deep copy of the SSC internal transactions in this block
+	// (2-D: first dim index = InternalTxType bucket, second dim = tx within that type).
+	SSCTransactions() [][]*SSCInternalTx
+
+	// SSCTransactionAt returns the SSC internal transaction at the given global index in this block
+	// (row by row). It returns nil if index is out of bounds.
+	SSCTransactionAt(index int) *SSCInternalTx
+
 	// CXReceiptAt returns the CXReceipt given index (calculated from IncomingReceipts)
 	// It returns nil if index is out of bounds
 	CXReceiptAt(index int) *CXReceipt
@@ -112,6 +120,10 @@ type BodyInterface interface {
 	// SetStakingTransactions sets the list of staking transactions with a deep copy of the
 	// given list.
 	SetStakingTransactions(newStakingTransactions []*staking.StakingTransaction)
+
+	// SetSSCTransactions sets the list of SSC internal transactions (2-D) with a deep copy of the
+	// given list.
+	SetSSCTransactions(newSSCTransactions [][]*SSCInternalTx)
 
 	// Uncles returns a deep copy of the list of uncle headers of this block.
 	Uncles() []*block.Header
@@ -212,6 +224,7 @@ type Block struct {
 	uncles              []*block.Header
 	transactions        Transactions
 	stakingTransactions staking.StakingTransactions
+	sscTransactions     [][]*SSCInternalTx // DSN-47：独立内部交易队列（二维：第一维下标=InternalTxType，第二维=行内顺序）
 	incomingReceipts    CXReceiptsProofs
 
 	// caches
@@ -292,19 +305,22 @@ type extblock struct {
 	Uncles []*block.Header
 }
 
-// CX-ready extblock
+// CX-ready extblock (also carries SSC internal transactions since DSN-47:
+// v1/v2 headers use this encoding and must not drop SSCTransactions)
 type extblockV1 struct {
 	Header           *block.Header
 	Txs              []*Transaction
+	SSC              [][]*SSCInternalTx // 新增（DSN-47）：独立内部交易队列，二维（第一维下标=InternalTxType）
 	Uncles           []*block.Header
 	IncomingReceipts CXReceiptsProofs
 }
 
-// includes staking transaction
+// includes staking transaction and SSC internal transaction (DSN-47)
 type extblockV2 struct {
 	Header           *block.Header
 	Txs              []*Transaction
 	Stks             []*staking.StakingTransaction
+	SSC              [][]*SSCInternalTx // 新增（DSN-47）：独立内部交易队列，二维（第一维下标=InternalTxType，第二维=行内顺序）
 	Uncles           []*block.Header
 	IncomingReceipts CXReceiptsProofs
 }
@@ -333,21 +349,23 @@ func blockRegistry() *taggedrlp.Registry {
 func NewBlock(
 	header *block.Header, txs []*Transaction,
 	receipts []*Receipt, outcxs []*CXReceipt, incxs []*CXReceiptsProof,
-	stks []*staking.StakingTransaction) *Block {
+	stks []*staking.StakingTransaction, sscTxns [][]*SSCInternalTx) *Block {
 
 	b := &Block{header: CopyHeader(header)}
 
-	if len(receipts) != len(txs)+len(stks) {
+	sscTotal := SSCTransactions(sscTxns).Len()
+	if len(receipts) != len(txs)+len(stks)+sscTotal {
 		utils.Logger().Error().
 			Int("receiptsLen", len(receipts)).
 			Int("txnsLen", len(txs)).
 			Int("stakingTxnsLen", len(stks)).
+			Int("sscTxnsLen", sscTotal).
 			Msg("Length of receipts doesn't match length of transactions")
 		return nil
 	}
 
 	// Put transactions into block
-	if len(txs) == 0 && len(stks) == 0 {
+	if len(txs) == 0 && len(stks) == 0 && sscTotal == 0 {
 		b.header.SetTxHash(EmptyRootHash)
 	} else {
 		b.transactions = make(Transactions, len(txs))
@@ -356,9 +374,16 @@ func NewBlock(
 		b.stakingTransactions = make(staking.StakingTransactions, len(stks))
 		copy(b.stakingTransactions, stks)
 
+		b.sscTransactions = make([][]*SSCInternalTx, len(sscTxns))
+		for i := range sscTxns {
+			b.sscTransactions[i] = make([]*SSCInternalTx, len(sscTxns[i]))
+			copy(b.sscTransactions[i], sscTxns[i])
+		}
+
 		b.header.SetTxHash(DeriveSha(
 			Transactions(txs),
 			staking.StakingTransactions(stks),
+			SSCTransactions(sscTxns),
 		))
 	}
 
@@ -412,9 +437,9 @@ func (b *Block) DecodeRLP(s *rlp.Stream) error {
 	}
 	switch eb := eb.(type) {
 	case *extblockV2:
-		b.header, b.uncles, b.transactions, b.incomingReceipts, b.stakingTransactions = eb.Header, eb.Uncles, eb.Txs, eb.IncomingReceipts, eb.Stks
+		b.header, b.uncles, b.transactions, b.incomingReceipts, b.stakingTransactions, b.sscTransactions = eb.Header, eb.Uncles, eb.Txs, eb.IncomingReceipts, eb.Stks, eb.SSC
 	case *extblockV1:
-		b.header, b.uncles, b.transactions, b.incomingReceipts = eb.Header, eb.Uncles, eb.Txs, eb.IncomingReceipts
+		b.header, b.uncles, b.transactions, b.incomingReceipts, b.sscTransactions = eb.Header, eb.Uncles, eb.Txs, eb.IncomingReceipts, eb.SSC
 	case *extblock:
 		b.header, b.uncles, b.transactions, b.incomingReceipts = eb.Header, eb.Uncles, eb.Txs, nil
 	default:
@@ -430,9 +455,9 @@ func (b *Block) EncodeRLP(w io.Writer) error {
 
 	switch h := b.header.Header.(type) {
 	case *v3.Header:
-		eb = extblockV2{b.header, b.transactions, b.stakingTransactions, b.uncles, b.incomingReceipts}
+		eb = extblockV2{b.header, b.transactions, b.stakingTransactions, b.sscTransactions, b.uncles, b.incomingReceipts}
 	case *v2.Header, *v1.Header:
-		eb = extblockV1{b.header, b.transactions, b.uncles, b.incomingReceipts}
+		eb = extblockV1{b.header, b.transactions, b.sscTransactions, b.uncles, b.incomingReceipts}
 	case *v0.Header:
 		if len(b.incomingReceipts) > 0 {
 			return errors.New("incomingReceipts unsupported in v0 block")
@@ -465,6 +490,18 @@ func (b *Block) Transactions() Transactions {
 // StakingTransactions returns stakingTransactions.
 func (b *Block) StakingTransactions() staking.StakingTransactions {
 	return b.stakingTransactions
+}
+
+// SSCTransactions returns the SSC internal transactions (DSN-47) as a 2-D slice
+// (first dim index = InternalTxType bucket, second dim = tx within that type).
+func (b *Block) SSCTransactions() [][]*SSCInternalTx {
+	return b.sscTransactions
+}
+
+// SetSSCTransactions sets the SSC internal transactions (DSN-47).
+// 注意：区块格式变更需全节点协调升级；当前作为 DSN-46/45 消费该结构前的承载入口。
+func (b *Block) SetSSCTransactions(ssc [][]*SSCInternalTx) {
+	b.sscTransactions = ssc
 }
 
 // IncomingReceipts returns verified outgoing receipts
@@ -533,6 +570,7 @@ func (b *Block) Body() *Body {
 	return body.With().
 		Transactions(b.transactions).
 		StakingTransactions(b.stakingTransactions).
+		SSCTransactions(b.sscTransactions).
 		Uncles(b.uncles).
 		IncomingReceipts(b.incomingReceipts).
 		Body()
@@ -568,17 +606,22 @@ func CalcUncleHash(uncles []*block.Header) common.Hash {
 	return hash.FromRLP(uncles)
 }
 
-// WithBody returns a new block with the given transaction and uncle contents.
-func (b *Block) WithBody(transactions []*Transaction, stakingTxns []*staking.StakingTransaction, uncles []*block.Header, incomingReceipts CXReceiptsProofs) *Block {
+// WithBody returns a new block with the given transaction, SSC internal transaction and uncle contents.
+func (b *Block) WithBody(transactions []*Transaction, stakingTxns []*staking.StakingTransaction, sscTxns [][]*SSCInternalTx, uncles []*block.Header, incomingReceipts CXReceiptsProofs) *Block {
 	block := &Block{
 		header:              CopyHeader(b.header),
 		transactions:        make([]*Transaction, len(transactions)),
 		stakingTransactions: make([]*staking.StakingTransaction, len(stakingTxns)),
+		sscTransactions:     make([][]*SSCInternalTx, len(sscTxns)),
 		uncles:              make([]*block.Header, len(uncles)),
 		incomingReceipts:    make([]*CXReceiptsProof, len(incomingReceipts)),
 	}
 	copy(block.transactions, transactions)
 	copy(block.stakingTransactions, stakingTxns)
+	for i := range sscTxns {
+		block.sscTransactions[i] = make([]*SSCInternalTx, len(sscTxns[i]))
+		copy(block.sscTransactions[i], sscTxns[i])
+	}
 	copy(block.incomingReceipts, incomingReceipts)
 	for i := range uncles {
 		block.uncles[i] = CopyHeader(uncles[i])

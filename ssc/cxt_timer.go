@@ -163,6 +163,19 @@ func (c *CXTTimerManager) GetTimeoutConfig() *api.TimeoutConfig {
 	return c.config
 }
 
+// Stats 返回定时器管理器各存储的条目数，供监控分析资源释放情况。
+func (c *CXTTimerManager) Stats() (txs, sp1Buckets, poolTimeoutBuckets int) {
+	if c == nil {
+		return 0, 0, 0
+	}
+	c.lock.Lock()
+	defer c.lock.Unlock()
+	txs = len(c.txs)
+	sp1Buckets = len(c.bkNum2txForSp1)
+	poolTimeoutBuckets = len(c.bkNum2txForPoolTimeout)
+	return
+}
+
 func (c *CXTTimerManager) RemoveTx(txHash common.Hash) {
 	t0 := time.Now()
 	c.lock.Lock()
