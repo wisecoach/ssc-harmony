@@ -422,7 +422,6 @@ type CXTSimulationResult struct {
 	UsedGas       uint64
 	Err           string
 	TreeNode      *CallNodeData
-	ConflictKeys  []LockKey `json:"conflict_keys,omitempty"` // ForceSimulation mode: keys that had lock conflicts
 }
 
 func (m *CXTSimulationResult) Bytes() []byte {
@@ -433,7 +432,6 @@ func (m *CXTSimulationResult) Bytes() []byte {
 		UsedGas       uint64
 		Err           string
 		TreeNode      *CallNodeData
-		ConflictKeys  []LockKey
 	}
 	msg := CXTSimulationResultWithoutSignature{
 		RelatedShards: m.RelatedShards,
@@ -442,7 +440,6 @@ func (m *CXTSimulationResult) Bytes() []byte {
 		UsedGas:       m.UsedGas,
 		Err:           m.Err,
 		TreeNode:      m.TreeNode,
-		ConflictKeys:  m.ConflictKeys,
 	}
 	bytes, err := json.Marshal(msg)
 	if err != nil {
@@ -459,7 +456,6 @@ type CXTSimulationSSCResult struct {
 	UsedGas       uint64
 	Err           string
 	TreeNode      *CallNodeData
-	ConflictKeys  []LockKey
 	BaseBLSSignedMessage
 }
 
@@ -471,7 +467,6 @@ func (m *CXTSimulationSSCResult) Bytes() []byte {
 		UsedGas       uint64
 		Err           string
 		TreeNode      *CallNodeData
-		ConflictKeys  []LockKey
 	}
 	msg := CXTSimulationSSCResultWithoutSignature{
 		RelatedShards: m.RelatedShards,
@@ -480,7 +475,6 @@ func (m *CXTSimulationSSCResult) Bytes() []byte {
 		UsedGas:       m.UsedGas,
 		Err:           m.Err,
 		TreeNode:      m.TreeNode,
-		ConflictKeys:  m.ConflictKeys,
 	}
 	bytes, err := json.Marshal(msg)
 	if err != nil {
@@ -983,6 +977,7 @@ type CXTCommitProof struct {
 	OriginShard   uint32
 	RelatedShards RelatedShards
 	Votes         []*CXTCommitSSCVote
+	ReleaseOnly   bool // DSN-52: 只释放锁、不 close 交易（冲突让位后回重试池）
 }
 
 func (m *CXTCommitProof) Bytes() []byte {
@@ -994,6 +989,7 @@ func (m *CXTCommitProof) Bytes() []byte {
 		OriginShard   uint32
 		RelatedShards RelatedShards
 		Votes         []*CXTCommitSSCVote
+		ReleaseOnly   bool
 	}
 	msg := CXTCommitProofWithoutSignature{
 		TxHash:        m.TxHash,
@@ -1003,6 +999,7 @@ func (m *CXTCommitProof) Bytes() []byte {
 		OriginShard:   m.OriginShard,
 		RelatedShards: m.RelatedShards,
 		Votes:         m.Votes,
+		ReleaseOnly:   m.ReleaseOnly,
 	}
 	bytes, err := json.Marshal(msg)
 	if err != nil {

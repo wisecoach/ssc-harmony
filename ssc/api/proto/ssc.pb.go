@@ -1125,7 +1125,6 @@ type CXTSimulationResult struct {
 	UsedGas       uint64                 `protobuf:"varint,5,opt,name=used_gas,json=usedGas,proto3" json:"used_gas,omitempty"`
 	Err           string                 `protobuf:"bytes,6,opt,name=err,proto3" json:"err,omitempty"`
 	TreeNode      *CallNodeData          `protobuf:"bytes,7,opt,name=tree_node,json=treeNode,proto3" json:"tree_node,omitempty"`
-	ConflictKeys  []*LockKey             `protobuf:"bytes,8,rep,name=conflict_keys,json=conflictKeys,proto3" json:"conflict_keys,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -1209,13 +1208,6 @@ func (x *CXTSimulationResult) GetTreeNode() *CallNodeData {
 	return nil
 }
 
-func (x *CXTSimulationResult) GetConflictKeys() []*LockKey {
-	if x != nil {
-		return x.ConflictKeys
-	}
-	return nil
-}
-
 type CXTSimulationSSCResult struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	RelatedShards []uint32               `protobuf:"varint,1,rep,packed,name=related_shards,json=relatedShards,proto3" json:"related_shards,omitempty"`
@@ -1224,7 +1216,6 @@ type CXTSimulationSSCResult struct {
 	UsedGas       uint64                 `protobuf:"varint,4,opt,name=used_gas,json=usedGas,proto3" json:"used_gas,omitempty"`
 	Err           string                 `protobuf:"bytes,5,opt,name=err,proto3" json:"err,omitempty"`
 	TreeNode      *CallNodeData          `protobuf:"bytes,6,opt,name=tree_node,json=treeNode,proto3" json:"tree_node,omitempty"`
-	ConflictKeys  []*LockKey             `protobuf:"bytes,7,rep,name=conflict_keys,json=conflictKeys,proto3" json:"conflict_keys,omitempty"`
 	Base          *BaseBLSSignedMessage  `protobuf:"bytes,8,opt,name=base,proto3" json:"base,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
@@ -1298,13 +1289,6 @@ func (x *CXTSimulationSSCResult) GetErr() string {
 func (x *CXTSimulationSSCResult) GetTreeNode() *CallNodeData {
 	if x != nil {
 		return x.TreeNode
-	}
-	return nil
-}
-
-func (x *CXTSimulationSSCResult) GetConflictKeys() []*LockKey {
-	if x != nil {
-		return x.ConflictKeys
 	}
 	return nil
 }
@@ -2418,6 +2402,7 @@ type CXTCommitProof struct {
 	OriginShard   uint32                 `protobuf:"varint,6,opt,name=origin_shard,json=originShard,proto3" json:"origin_shard,omitempty"`
 	RelatedShards []uint32               `protobuf:"varint,7,rep,packed,name=related_shards,json=relatedShards,proto3" json:"related_shards,omitempty"`
 	Votes         []*CXTCommitSSCVote    `protobuf:"bytes,8,rep,name=votes,proto3" json:"votes,omitempty"`
+	ReleaseOnly   bool                   `protobuf:"varint,9,opt,name=release_only,json=releaseOnly,proto3" json:"release_only,omitempty"` // DSN-52: 只释放锁、不 close 交易（冲突让位后回重试池）
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -2506,6 +2491,13 @@ func (x *CXTCommitProof) GetVotes() []*CXTCommitSSCVote {
 		return x.Votes
 	}
 	return nil
+}
+
+func (x *CXTCommitProof) GetReleaseOnly() bool {
+	if x != nil {
+		return x.ReleaseOnly
+	}
+	return false
 }
 
 type TxSimKey struct {
@@ -4155,7 +4147,7 @@ const file_ssc_proto_rawDesc = "" +
 	"block_hash\x18\x06 \x01(\v2\v.sscpb.HashR\tblockHash\x12\x1f\n" +
 	"\x02tx\x18\a \x01(\v2\x0f.sscpb.RLPBytesR\x02tx\x12\"\n" +
 	"\x04from\x18\b \x01(\v2\x0e.sscpb.AddressR\x04from\x12\x19\n" +
-	"\bgas_pool\x18\t \x01(\x04R\agasPool\"\xbe\x02\n" +
+	"\bgas_pool\x18\t \x01(\x04R\agasPool\"\x89\x02\n" +
 	"\x13CXTSimulationResult\x12)\n" +
 	"\x04base\x18\x01 \x01(\v2\x15.sscpb.BaseSSCMessageR\x04base\x12%\n" +
 	"\x0erelated_shards\x18\x02 \x03(\rR\rrelatedShards\x12\x16\n" +
@@ -4163,16 +4155,14 @@ const file_ssc_proto_rawDesc = "" +
 	"\areceipt\x18\x04 \x01(\v2\x0f.sscpb.RLPBytesR\areceipt\x12\x19\n" +
 	"\bused_gas\x18\x05 \x01(\x04R\ausedGas\x12\x10\n" +
 	"\x03err\x18\x06 \x01(\tR\x03err\x120\n" +
-	"\ttree_node\x18\a \x01(\v2\x13.sscpb.CallNodeDataR\btreeNode\x123\n" +
-	"\rconflict_keys\x18\b \x03(\v2\x0e.sscpb.LockKeyR\fconflictKeys\"\xc7\x02\n" +
+	"\ttree_node\x18\a \x01(\v2\x13.sscpb.CallNodeDataR\btreeNode\"\x92\x02\n" +
 	"\x16CXTSimulationSSCResult\x12%\n" +
 	"\x0erelated_shards\x18\x01 \x03(\rR\rrelatedShards\x12\x16\n" +
 	"\x06result\x18\x02 \x01(\fR\x06result\x12)\n" +
 	"\areceipt\x18\x03 \x01(\v2\x0f.sscpb.RLPBytesR\areceipt\x12\x19\n" +
 	"\bused_gas\x18\x04 \x01(\x04R\ausedGas\x12\x10\n" +
 	"\x03err\x18\x05 \x01(\tR\x03err\x120\n" +
-	"\ttree_node\x18\x06 \x01(\v2\x13.sscpb.CallNodeDataR\btreeNode\x123\n" +
-	"\rconflict_keys\x18\a \x03(\v2\x0e.sscpb.LockKeyR\fconflictKeys\x12/\n" +
+	"\ttree_node\x18\x06 \x01(\v2\x13.sscpb.CallNodeDataR\btreeNode\x12/\n" +
 	"\x04base\x18\b \x01(\v2\x1b.sscpb.BaseBLSSignedMessageR\x04base\"\xd5\x03\n" +
 	"\rCXTSimulation\x12%\n" +
 	"\x0esimulation_num\x18\x01 \x01(\x05R\rsimulationNum\x12$\n" +
@@ -4295,7 +4285,7 @@ const file_ssc_proto_rawDesc = "" +
 	"\x04type\x18\x05 \x01(\x0e2\x14.sscpb.CXTCommitTypeR\x04type\x12.\n" +
 	"\x06reason\x18\x06 \x01(\x0e2\x16.sscpb.CXTCommitReasonR\x06reason\x12\x18\n" +
 	"\apayload\x18\a \x01(\fR\apayload\x12/\n" +
-	"\x04base\x18\b \x01(\v2\x1b.sscpb.BaseBLSSignedMessageR\x04base\"\xdb\x02\n" +
+	"\x04base\x18\b \x01(\v2\x1b.sscpb.BaseBLSSignedMessageR\x04base\"\xfe\x02\n" +
 	"\x0eCXTCommitProof\x12)\n" +
 	"\x04base\x18\x01 \x01(\v2\x15.sscpb.BaseSSCMessageR\x04base\x12$\n" +
 	"\atx_hash\x18\x02 \x01(\v2\v.sscpb.HashR\x06txHash\x12%\n" +
@@ -4304,7 +4294,8 @@ const file_ssc_proto_rawDesc = "" +
 	"\x06reason\x18\x05 \x01(\x0e2\x16.sscpb.CXTCommitReasonR\x06reason\x12!\n" +
 	"\forigin_shard\x18\x06 \x01(\rR\voriginShard\x12%\n" +
 	"\x0erelated_shards\x18\a \x03(\rR\rrelatedShards\x12-\n" +
-	"\x05votes\x18\b \x03(\v2\x17.sscpb.CXTCommitSSCVoteR\x05votes\"W\n" +
+	"\x05votes\x18\b \x03(\v2\x17.sscpb.CXTCommitSSCVoteR\x05votes\x12!\n" +
+	"\frelease_only\x18\t \x01(\bR\vreleaseOnly\"W\n" +
 	"\bTxSimKey\x12$\n" +
 	"\atx_hash\x18\x01 \x01(\v2\v.sscpb.HashR\x06txHash\x12%\n" +
 	"\x0esimulation_num\x18\x02 \x01(\x05R\rsimulationNum\"\x8c\x02\n" +
@@ -4582,134 +4573,132 @@ var file_ssc_proto_depIdxs = []int32{
 	17,  // 11: sscpb.CXTSimulationResult.base:type_name -> sscpb.BaseSSCMessage
 	10,  // 12: sscpb.CXTSimulationResult.receipt:type_name -> sscpb.RLPBytes
 	11,  // 13: sscpb.CXTSimulationResult.tree_node:type_name -> sscpb.CallNodeData
-	12,  // 14: sscpb.CXTSimulationResult.conflict_keys:type_name -> sscpb.LockKey
-	10,  // 15: sscpb.CXTSimulationSSCResult.receipt:type_name -> sscpb.RLPBytes
-	11,  // 16: sscpb.CXTSimulationSSCResult.tree_node:type_name -> sscpb.CallNodeData
-	12,  // 17: sscpb.CXTSimulationSSCResult.conflict_keys:type_name -> sscpb.LockKey
-	18,  // 18: sscpb.CXTSimulationSSCResult.base:type_name -> sscpb.BaseBLSSignedMessage
-	7,   // 19: sscpb.CXTSimulation.tx_hash:type_name -> sscpb.Hash
-	8,   // 20: sscpb.CXTSimulation.sender:type_name -> sscpb.Address
-	23,  // 21: sscpb.CXTSimulation.call_states:type_name -> sscpb.CXTCallState
-	16,  // 22: sscpb.CXTSimulation.chain_patch:type_name -> sscpb.RWSet
-	32,  // 23: sscpb.CXTSimulation.upstream_tx_list:type_name -> sscpb.TxSimKey
-	18,  // 24: sscpb.CXTSimulation.base:type_name -> sscpb.BaseBLSSignedMessage
-	19,  // 25: sscpb.CXTCallState.top_request:type_name -> sscpb.CXTSimulationRequest
-	25,  // 26: sscpb.CXTCallState.call_request:type_name -> sscpb.CXTCallSSCRequest
-	16,  // 27: sscpb.CXTCallState.rw_set:type_name -> sscpb.RWSet
-	27,  // 28: sscpb.CXTCallState.dependent_results:type_name -> sscpb.CXTCallSSCResult
-	27,  // 29: sscpb.CXTCallState.call_result:type_name -> sscpb.CXTCallSSCResult
-	21,  // 30: sscpb.CXTCallState.top_result:type_name -> sscpb.CXTSimulationSSCResult
-	17,  // 31: sscpb.CXTCallRequest.base:type_name -> sscpb.BaseSSCMessage
-	7,   // 32: sscpb.CXTCallRequest.tx_hash:type_name -> sscpb.Hash
-	8,   // 33: sscpb.CXTCallRequest.caller:type_name -> sscpb.Address
-	8,   // 34: sscpb.CXTCallRequest.addr:type_name -> sscpb.Address
-	9,   // 35: sscpb.CXTCallRequest.gas_price:type_name -> sscpb.BigInt
-	9,   // 36: sscpb.CXTCallRequest.value:type_name -> sscpb.BigInt
-	7,   // 37: sscpb.CXTCallSSCRequest.tx_hash:type_name -> sscpb.Hash
-	8,   // 38: sscpb.CXTCallSSCRequest.caller:type_name -> sscpb.Address
-	8,   // 39: sscpb.CXTCallSSCRequest.addr:type_name -> sscpb.Address
-	9,   // 40: sscpb.CXTCallSSCRequest.gas_price:type_name -> sscpb.BigInt
-	9,   // 41: sscpb.CXTCallSSCRequest.value:type_name -> sscpb.BigInt
-	18,  // 42: sscpb.CXTCallSSCRequest.base:type_name -> sscpb.BaseBLSSignedMessage
-	7,   // 43: sscpb.CXTCallSSCRequest.block_hash:type_name -> sscpb.Hash
-	7,   // 44: sscpb.CXTCallResult.tx_hash:type_name -> sscpb.Hash
-	7,   // 45: sscpb.CXTCallResult.block_hash:type_name -> sscpb.Hash
-	11,  // 46: sscpb.CXTCallResult.tree_node:type_name -> sscpb.CallNodeData
-	17,  // 47: sscpb.CXTCallResult.base:type_name -> sscpb.BaseSSCMessage
-	7,   // 48: sscpb.CXTCallSSCResult.tx_hash:type_name -> sscpb.Hash
-	7,   // 49: sscpb.CXTCallSSCResult.block_hash:type_name -> sscpb.Hash
-	11,  // 50: sscpb.CXTCallSSCResult.tree_node:type_name -> sscpb.CallNodeData
-	18,  // 51: sscpb.CXTCallSSCResult.base:type_name -> sscpb.BaseBLSSignedMessage
-	7,   // 52: sscpb.SimulationCommit.tx_hash:type_name -> sscpb.Hash
-	8,   // 53: sscpb.SimulationCommit.sender:type_name -> sscpb.Address
-	0,   // 54: sscpb.SimulationCommit.status:type_name -> sscpb.SimulationCommitStatus
-	18,  // 55: sscpb.SimulationCommit.base:type_name -> sscpb.BaseBLSSignedMessage
-	17,  // 56: sscpb.CXTCommitVote.base:type_name -> sscpb.BaseSSCMessage
-	7,   // 57: sscpb.CXTCommitVote.tx_hash:type_name -> sscpb.Hash
-	1,   // 58: sscpb.CXTCommitVote.type:type_name -> sscpb.CXTCommitType
-	2,   // 59: sscpb.CXTCommitVote.reason:type_name -> sscpb.CXTCommitReason
-	7,   // 60: sscpb.CXTCommitSSCVote.tx_hash:type_name -> sscpb.Hash
-	1,   // 61: sscpb.CXTCommitSSCVote.type:type_name -> sscpb.CXTCommitType
-	2,   // 62: sscpb.CXTCommitSSCVote.reason:type_name -> sscpb.CXTCommitReason
-	18,  // 63: sscpb.CXTCommitSSCVote.base:type_name -> sscpb.BaseBLSSignedMessage
-	17,  // 64: sscpb.CXTCommitProof.base:type_name -> sscpb.BaseSSCMessage
-	7,   // 65: sscpb.CXTCommitProof.tx_hash:type_name -> sscpb.Hash
-	1,   // 66: sscpb.CXTCommitProof.type:type_name -> sscpb.CXTCommitType
-	2,   // 67: sscpb.CXTCommitProof.reason:type_name -> sscpb.CXTCommitReason
-	30,  // 68: sscpb.CXTCommitProof.votes:type_name -> sscpb.CXTCommitSSCVote
-	7,   // 69: sscpb.TxSimKey.tx_hash:type_name -> sscpb.Hash
-	7,   // 70: sscpb.RetrySignal.tx_hash:type_name -> sscpb.Hash
-	4,   // 71: sscpb.RetrySignal.condition:type_name -> sscpb.ConflictCondition
-	16,  // 72: sscpb.RetrySignal.chain_patch:type_name -> sscpb.RWSet
-	33,  // 73: sscpb.RetrySignals.signals:type_name -> sscpb.RetrySignal
-	7,   // 74: sscpb.RetryTx.tx_hash:type_name -> sscpb.Hash
-	8,   // 75: sscpb.RetryTx.sender:type_name -> sscpb.Address
-	12,  // 76: sscpb.RetryTx.read_set:type_name -> sscpb.LockKey
-	12,  // 77: sscpb.RetryTx.write_set:type_name -> sscpb.LockKey
-	4,   // 78: sscpb.RetryTx.condition:type_name -> sscpb.ConflictCondition
-	5,   // 79: sscpb.RetryTx.status:type_name -> sscpb.RetryStatus
-	7,   // 80: sscpb.RetryCommitResp.tx_hash:type_name -> sscpb.Hash
-	7,   // 81: sscpb.Priority.tx_hash:type_name -> sscpb.Hash
-	7,   // 82: sscpb.ChainNode.tx_hash:type_name -> sscpb.Hash
-	16,  // 83: sscpb.ChainNode.patch:type_name -> sscpb.RWSet
-	32,  // 84: sscpb.ChainNode.upstream_tx_list:type_name -> sscpb.TxSimKey
-	39,  // 85: sscpb.HandleNewEpochRequest.new_epoch:type_name -> sscpb.NewEpoch
-	8,   // 86: sscpb.SLOpinion.from:type_name -> sscpb.Address
-	8,   // 87: sscpb.SLOpinion.to:type_name -> sscpb.Address
-	8,   // 88: sscpb.SelfOpinions.from:type_name -> sscpb.Address
-	43,  // 89: sscpb.SelfOpinions.opinions:type_name -> sscpb.SLOpinion
-	46,  // 90: sscpb.ModuleStatus.retry_scheduler:type_name -> sscpb.RetrySchedulerStatus
-	47,  // 91: sscpb.ModuleStatus.state_lock:type_name -> sscpb.StateLockStatus
-	48,  // 92: sscpb.ModuleStatus.temp_lock_view:type_name -> sscpb.TempLockViewStatus
-	49,  // 93: sscpb.ModuleStatus.simulator:type_name -> sscpb.SimulatorStatus
-	50,  // 94: sscpb.ModuleStatus.verifier:type_name -> sscpb.VerifierStatus
-	51,  // 95: sscpb.ModuleStatus.timer:type_name -> sscpb.TimerStatus
-	52,  // 96: sscpb.ModuleStatus.dag:type_name -> sscpb.DAGStatus
-	19,  // 97: sscpb.SSCShardService.StartSimulateCXTransaction:input_type -> sscpb.CXTSimulationRequest
-	19,  // 98: sscpb.SSCShardService.HandleSimulateRequest:input_type -> sscpb.CXTSimulationRequest
-	24,  // 99: sscpb.SSCShardService.RequestCallCXT:input_type -> sscpb.CXTCallRequest
-	25,  // 100: sscpb.SSCShardService.HandleCXTCall:input_type -> sscpb.CXTCallSSCRequest
-	28,  // 101: sscpb.SSCShardService.SignSimulationCommit:input_type -> sscpb.SimulationCommit
-	22,  // 102: sscpb.SSCShardService.SignCXTSimulation:input_type -> sscpb.CXTSimulation
-	29,  // 103: sscpb.SSCShardService.HandleCommitVote:input_type -> sscpb.CXTCommitVote
-	41,  // 104: sscpb.SSCShardService.SLTest:input_type -> sscpb.SLTestRequest
-	35,  // 105: sscpb.SSCShardService.AddRetryTx:input_type -> sscpb.RetryTx
-	7,   // 106: sscpb.SSCShardService.AddToPassivePool:input_type -> sscpb.Hash
-	7,   // 107: sscpb.SSCShardService.RetryCommit:input_type -> sscpb.Hash
-	7,   // 108: sscpb.SSCShardService.RetryCancel:input_type -> sscpb.Hash
-	40,  // 109: sscpb.SSCShardService.HandleNewEpoch:input_type -> sscpb.HandleNewEpochRequest
-	25,  // 110: sscpb.SSCCrossService.HandleCXTSSCCall:input_type -> sscpb.CXTCallSSCRequest
-	28,  // 111: sscpb.SSCCrossService.CommitSimulation:input_type -> sscpb.SimulationCommit
-	30,  // 112: sscpb.SSCCrossService.HandleCXTCommitSSCVote:input_type -> sscpb.CXTCommitSSCVote
-	31,  // 113: sscpb.SSCCrossService.HandleCXTCommitProof:input_type -> sscpb.CXTCommitProof
-	34,  // 114: sscpb.SSCCrossService.SignalReSimulation:input_type -> sscpb.RetrySignals
-	33,  // 115: sscpb.SSCCrossService.HandleRetrySignal:input_type -> sscpb.RetrySignal
-	6,   // 116: sscpb.SSCMonitorService.GetModuleStatus:input_type -> sscpb.Empty
-	21,  // 117: sscpb.SSCShardService.StartSimulateCXTransaction:output_type -> sscpb.CXTSimulationSSCResult
-	20,  // 118: sscpb.SSCShardService.HandleSimulateRequest:output_type -> sscpb.CXTSimulationResult
-	27,  // 119: sscpb.SSCShardService.RequestCallCXT:output_type -> sscpb.CXTCallSSCResult
-	26,  // 120: sscpb.SSCShardService.HandleCXTCall:output_type -> sscpb.CXTCallResult
-	45,  // 121: sscpb.SSCShardService.SignSimulationCommit:output_type -> sscpb.Bytes
-	45,  // 122: sscpb.SSCShardService.SignCXTSimulation:output_type -> sscpb.Bytes
-	6,   // 123: sscpb.SSCShardService.HandleCommitVote:output_type -> sscpb.Empty
-	42,  // 124: sscpb.SSCShardService.SLTest:output_type -> sscpb.SLTestResult
-	6,   // 125: sscpb.SSCShardService.AddRetryTx:output_type -> sscpb.Empty
-	6,   // 126: sscpb.SSCShardService.AddToPassivePool:output_type -> sscpb.Empty
-	36,  // 127: sscpb.SSCShardService.RetryCommit:output_type -> sscpb.RetryCommitResp
-	6,   // 128: sscpb.SSCShardService.RetryCancel:output_type -> sscpb.Empty
-	6,   // 129: sscpb.SSCShardService.HandleNewEpoch:output_type -> sscpb.Empty
-	27,  // 130: sscpb.SSCCrossService.HandleCXTSSCCall:output_type -> sscpb.CXTCallSSCResult
-	6,   // 131: sscpb.SSCCrossService.CommitSimulation:output_type -> sscpb.Empty
-	6,   // 132: sscpb.SSCCrossService.HandleCXTCommitSSCVote:output_type -> sscpb.Empty
-	6,   // 133: sscpb.SSCCrossService.HandleCXTCommitProof:output_type -> sscpb.Empty
-	6,   // 134: sscpb.SSCCrossService.SignalReSimulation:output_type -> sscpb.Empty
-	6,   // 135: sscpb.SSCCrossService.HandleRetrySignal:output_type -> sscpb.Empty
-	53,  // 136: sscpb.SSCMonitorService.GetModuleStatus:output_type -> sscpb.ModuleStatus
-	117, // [117:137] is the sub-list for method output_type
-	97,  // [97:117] is the sub-list for method input_type
-	97,  // [97:97] is the sub-list for extension type_name
-	97,  // [97:97] is the sub-list for extension extendee
-	0,   // [0:97] is the sub-list for field type_name
+	10,  // 14: sscpb.CXTSimulationSSCResult.receipt:type_name -> sscpb.RLPBytes
+	11,  // 15: sscpb.CXTSimulationSSCResult.tree_node:type_name -> sscpb.CallNodeData
+	18,  // 16: sscpb.CXTSimulationSSCResult.base:type_name -> sscpb.BaseBLSSignedMessage
+	7,   // 17: sscpb.CXTSimulation.tx_hash:type_name -> sscpb.Hash
+	8,   // 18: sscpb.CXTSimulation.sender:type_name -> sscpb.Address
+	23,  // 19: sscpb.CXTSimulation.call_states:type_name -> sscpb.CXTCallState
+	16,  // 20: sscpb.CXTSimulation.chain_patch:type_name -> sscpb.RWSet
+	32,  // 21: sscpb.CXTSimulation.upstream_tx_list:type_name -> sscpb.TxSimKey
+	18,  // 22: sscpb.CXTSimulation.base:type_name -> sscpb.BaseBLSSignedMessage
+	19,  // 23: sscpb.CXTCallState.top_request:type_name -> sscpb.CXTSimulationRequest
+	25,  // 24: sscpb.CXTCallState.call_request:type_name -> sscpb.CXTCallSSCRequest
+	16,  // 25: sscpb.CXTCallState.rw_set:type_name -> sscpb.RWSet
+	27,  // 26: sscpb.CXTCallState.dependent_results:type_name -> sscpb.CXTCallSSCResult
+	27,  // 27: sscpb.CXTCallState.call_result:type_name -> sscpb.CXTCallSSCResult
+	21,  // 28: sscpb.CXTCallState.top_result:type_name -> sscpb.CXTSimulationSSCResult
+	17,  // 29: sscpb.CXTCallRequest.base:type_name -> sscpb.BaseSSCMessage
+	7,   // 30: sscpb.CXTCallRequest.tx_hash:type_name -> sscpb.Hash
+	8,   // 31: sscpb.CXTCallRequest.caller:type_name -> sscpb.Address
+	8,   // 32: sscpb.CXTCallRequest.addr:type_name -> sscpb.Address
+	9,   // 33: sscpb.CXTCallRequest.gas_price:type_name -> sscpb.BigInt
+	9,   // 34: sscpb.CXTCallRequest.value:type_name -> sscpb.BigInt
+	7,   // 35: sscpb.CXTCallSSCRequest.tx_hash:type_name -> sscpb.Hash
+	8,   // 36: sscpb.CXTCallSSCRequest.caller:type_name -> sscpb.Address
+	8,   // 37: sscpb.CXTCallSSCRequest.addr:type_name -> sscpb.Address
+	9,   // 38: sscpb.CXTCallSSCRequest.gas_price:type_name -> sscpb.BigInt
+	9,   // 39: sscpb.CXTCallSSCRequest.value:type_name -> sscpb.BigInt
+	18,  // 40: sscpb.CXTCallSSCRequest.base:type_name -> sscpb.BaseBLSSignedMessage
+	7,   // 41: sscpb.CXTCallSSCRequest.block_hash:type_name -> sscpb.Hash
+	7,   // 42: sscpb.CXTCallResult.tx_hash:type_name -> sscpb.Hash
+	7,   // 43: sscpb.CXTCallResult.block_hash:type_name -> sscpb.Hash
+	11,  // 44: sscpb.CXTCallResult.tree_node:type_name -> sscpb.CallNodeData
+	17,  // 45: sscpb.CXTCallResult.base:type_name -> sscpb.BaseSSCMessage
+	7,   // 46: sscpb.CXTCallSSCResult.tx_hash:type_name -> sscpb.Hash
+	7,   // 47: sscpb.CXTCallSSCResult.block_hash:type_name -> sscpb.Hash
+	11,  // 48: sscpb.CXTCallSSCResult.tree_node:type_name -> sscpb.CallNodeData
+	18,  // 49: sscpb.CXTCallSSCResult.base:type_name -> sscpb.BaseBLSSignedMessage
+	7,   // 50: sscpb.SimulationCommit.tx_hash:type_name -> sscpb.Hash
+	8,   // 51: sscpb.SimulationCommit.sender:type_name -> sscpb.Address
+	0,   // 52: sscpb.SimulationCommit.status:type_name -> sscpb.SimulationCommitStatus
+	18,  // 53: sscpb.SimulationCommit.base:type_name -> sscpb.BaseBLSSignedMessage
+	17,  // 54: sscpb.CXTCommitVote.base:type_name -> sscpb.BaseSSCMessage
+	7,   // 55: sscpb.CXTCommitVote.tx_hash:type_name -> sscpb.Hash
+	1,   // 56: sscpb.CXTCommitVote.type:type_name -> sscpb.CXTCommitType
+	2,   // 57: sscpb.CXTCommitVote.reason:type_name -> sscpb.CXTCommitReason
+	7,   // 58: sscpb.CXTCommitSSCVote.tx_hash:type_name -> sscpb.Hash
+	1,   // 59: sscpb.CXTCommitSSCVote.type:type_name -> sscpb.CXTCommitType
+	2,   // 60: sscpb.CXTCommitSSCVote.reason:type_name -> sscpb.CXTCommitReason
+	18,  // 61: sscpb.CXTCommitSSCVote.base:type_name -> sscpb.BaseBLSSignedMessage
+	17,  // 62: sscpb.CXTCommitProof.base:type_name -> sscpb.BaseSSCMessage
+	7,   // 63: sscpb.CXTCommitProof.tx_hash:type_name -> sscpb.Hash
+	1,   // 64: sscpb.CXTCommitProof.type:type_name -> sscpb.CXTCommitType
+	2,   // 65: sscpb.CXTCommitProof.reason:type_name -> sscpb.CXTCommitReason
+	30,  // 66: sscpb.CXTCommitProof.votes:type_name -> sscpb.CXTCommitSSCVote
+	7,   // 67: sscpb.TxSimKey.tx_hash:type_name -> sscpb.Hash
+	7,   // 68: sscpb.RetrySignal.tx_hash:type_name -> sscpb.Hash
+	4,   // 69: sscpb.RetrySignal.condition:type_name -> sscpb.ConflictCondition
+	16,  // 70: sscpb.RetrySignal.chain_patch:type_name -> sscpb.RWSet
+	33,  // 71: sscpb.RetrySignals.signals:type_name -> sscpb.RetrySignal
+	7,   // 72: sscpb.RetryTx.tx_hash:type_name -> sscpb.Hash
+	8,   // 73: sscpb.RetryTx.sender:type_name -> sscpb.Address
+	12,  // 74: sscpb.RetryTx.read_set:type_name -> sscpb.LockKey
+	12,  // 75: sscpb.RetryTx.write_set:type_name -> sscpb.LockKey
+	4,   // 76: sscpb.RetryTx.condition:type_name -> sscpb.ConflictCondition
+	5,   // 77: sscpb.RetryTx.status:type_name -> sscpb.RetryStatus
+	7,   // 78: sscpb.RetryCommitResp.tx_hash:type_name -> sscpb.Hash
+	7,   // 79: sscpb.Priority.tx_hash:type_name -> sscpb.Hash
+	7,   // 80: sscpb.ChainNode.tx_hash:type_name -> sscpb.Hash
+	16,  // 81: sscpb.ChainNode.patch:type_name -> sscpb.RWSet
+	32,  // 82: sscpb.ChainNode.upstream_tx_list:type_name -> sscpb.TxSimKey
+	39,  // 83: sscpb.HandleNewEpochRequest.new_epoch:type_name -> sscpb.NewEpoch
+	8,   // 84: sscpb.SLOpinion.from:type_name -> sscpb.Address
+	8,   // 85: sscpb.SLOpinion.to:type_name -> sscpb.Address
+	8,   // 86: sscpb.SelfOpinions.from:type_name -> sscpb.Address
+	43,  // 87: sscpb.SelfOpinions.opinions:type_name -> sscpb.SLOpinion
+	46,  // 88: sscpb.ModuleStatus.retry_scheduler:type_name -> sscpb.RetrySchedulerStatus
+	47,  // 89: sscpb.ModuleStatus.state_lock:type_name -> sscpb.StateLockStatus
+	48,  // 90: sscpb.ModuleStatus.temp_lock_view:type_name -> sscpb.TempLockViewStatus
+	49,  // 91: sscpb.ModuleStatus.simulator:type_name -> sscpb.SimulatorStatus
+	50,  // 92: sscpb.ModuleStatus.verifier:type_name -> sscpb.VerifierStatus
+	51,  // 93: sscpb.ModuleStatus.timer:type_name -> sscpb.TimerStatus
+	52,  // 94: sscpb.ModuleStatus.dag:type_name -> sscpb.DAGStatus
+	19,  // 95: sscpb.SSCShardService.StartSimulateCXTransaction:input_type -> sscpb.CXTSimulationRequest
+	19,  // 96: sscpb.SSCShardService.HandleSimulateRequest:input_type -> sscpb.CXTSimulationRequest
+	24,  // 97: sscpb.SSCShardService.RequestCallCXT:input_type -> sscpb.CXTCallRequest
+	25,  // 98: sscpb.SSCShardService.HandleCXTCall:input_type -> sscpb.CXTCallSSCRequest
+	28,  // 99: sscpb.SSCShardService.SignSimulationCommit:input_type -> sscpb.SimulationCommit
+	22,  // 100: sscpb.SSCShardService.SignCXTSimulation:input_type -> sscpb.CXTSimulation
+	29,  // 101: sscpb.SSCShardService.HandleCommitVote:input_type -> sscpb.CXTCommitVote
+	41,  // 102: sscpb.SSCShardService.SLTest:input_type -> sscpb.SLTestRequest
+	35,  // 103: sscpb.SSCShardService.AddRetryTx:input_type -> sscpb.RetryTx
+	7,   // 104: sscpb.SSCShardService.AddToPassivePool:input_type -> sscpb.Hash
+	7,   // 105: sscpb.SSCShardService.RetryCommit:input_type -> sscpb.Hash
+	7,   // 106: sscpb.SSCShardService.RetryCancel:input_type -> sscpb.Hash
+	40,  // 107: sscpb.SSCShardService.HandleNewEpoch:input_type -> sscpb.HandleNewEpochRequest
+	25,  // 108: sscpb.SSCCrossService.HandleCXTSSCCall:input_type -> sscpb.CXTCallSSCRequest
+	28,  // 109: sscpb.SSCCrossService.CommitSimulation:input_type -> sscpb.SimulationCommit
+	30,  // 110: sscpb.SSCCrossService.HandleCXTCommitSSCVote:input_type -> sscpb.CXTCommitSSCVote
+	31,  // 111: sscpb.SSCCrossService.HandleCXTCommitProof:input_type -> sscpb.CXTCommitProof
+	34,  // 112: sscpb.SSCCrossService.SignalReSimulation:input_type -> sscpb.RetrySignals
+	33,  // 113: sscpb.SSCCrossService.HandleRetrySignal:input_type -> sscpb.RetrySignal
+	6,   // 114: sscpb.SSCMonitorService.GetModuleStatus:input_type -> sscpb.Empty
+	21,  // 115: sscpb.SSCShardService.StartSimulateCXTransaction:output_type -> sscpb.CXTSimulationSSCResult
+	20,  // 116: sscpb.SSCShardService.HandleSimulateRequest:output_type -> sscpb.CXTSimulationResult
+	27,  // 117: sscpb.SSCShardService.RequestCallCXT:output_type -> sscpb.CXTCallSSCResult
+	26,  // 118: sscpb.SSCShardService.HandleCXTCall:output_type -> sscpb.CXTCallResult
+	45,  // 119: sscpb.SSCShardService.SignSimulationCommit:output_type -> sscpb.Bytes
+	45,  // 120: sscpb.SSCShardService.SignCXTSimulation:output_type -> sscpb.Bytes
+	6,   // 121: sscpb.SSCShardService.HandleCommitVote:output_type -> sscpb.Empty
+	42,  // 122: sscpb.SSCShardService.SLTest:output_type -> sscpb.SLTestResult
+	6,   // 123: sscpb.SSCShardService.AddRetryTx:output_type -> sscpb.Empty
+	6,   // 124: sscpb.SSCShardService.AddToPassivePool:output_type -> sscpb.Empty
+	36,  // 125: sscpb.SSCShardService.RetryCommit:output_type -> sscpb.RetryCommitResp
+	6,   // 126: sscpb.SSCShardService.RetryCancel:output_type -> sscpb.Empty
+	6,   // 127: sscpb.SSCShardService.HandleNewEpoch:output_type -> sscpb.Empty
+	27,  // 128: sscpb.SSCCrossService.HandleCXTSSCCall:output_type -> sscpb.CXTCallSSCResult
+	6,   // 129: sscpb.SSCCrossService.CommitSimulation:output_type -> sscpb.Empty
+	6,   // 130: sscpb.SSCCrossService.HandleCXTCommitSSCVote:output_type -> sscpb.Empty
+	6,   // 131: sscpb.SSCCrossService.HandleCXTCommitProof:output_type -> sscpb.Empty
+	6,   // 132: sscpb.SSCCrossService.SignalReSimulation:output_type -> sscpb.Empty
+	6,   // 133: sscpb.SSCCrossService.HandleRetrySignal:output_type -> sscpb.Empty
+	53,  // 134: sscpb.SSCMonitorService.GetModuleStatus:output_type -> sscpb.ModuleStatus
+	115, // [115:135] is the sub-list for method output_type
+	95,  // [95:115] is the sub-list for method input_type
+	95,  // [95:95] is the sub-list for extension type_name
+	95,  // [95:95] is the sub-list for extension extendee
+	0,   // [0:95] is the sub-list for field type_name
 }
 
 func init() { file_ssc_proto_init() }

@@ -187,3 +187,78 @@ func (v *SSCVM) ProcessInternal(tx *SSCInternalTx, stateDB api.StateDB, header *
 
 ### 8.3 遗留
 - DSN-46（内部池进池仲裁/分组/DAG）仍未做；`CHAIN_RETRY_STATS` 仍 Debug 级（统计应 Info）。
+
+---
+
+## 9. 迁移遗留 Gap：`TempLockView.OnBlockCommitted` 未随内部交易迁移（2026-08-31 发现）
+
+### 9.1 问题
+
+`ssc/temp_lock_view.go` 的 `TempLockView.OnBlockCommitted(block)` 只扫描**普通交易** `block.Transactions()` 来释放 TLV 临时锁并产出 `releasedKeys`：
+
+```go
+blockTxHashes := make([]common.Hash, 0, len(block.Transactions()))
+for _, tx := range block.Transactions() {
+    blockTxHashes = append(blockTxHashes, tx.Hash())
+}
+```
+
+在 DSN-31 / DSN-46 / DSN-47 / DSN-48 之后，跨分片交易的提交产物已经**全部迁移到 SSC 内部交易**（SimTx/CRTx，承载于 `block.SSCTransactions()`），普通 `block.Transactions()` 里不再有跨分片提交。但本函数没有同步迁移，导致：
+
+- `releasedKeys` 恒为 0（所有 121 个区块实测均如此）；
+- `retryScheduler.OnBlockCommitted` 的 `querySubscribers(releasedKeys)` 永远返回 0 → **增量晋升通路彻底停摆**；
+- retryPool 涨到 ~4000 后冻结（实测 `retryPool=4156`、`globalFinished` 不再增长）；
+- 大量依赖「链上 key 释放」唤醒的重试交易永久卡死（实测 3914 笔，采样 59/80 为等链上锁释放）。
+
+### 9.2 根因
+
+`OnBlockCommitted` 隐含的旧假设「**已上链交易 = `block.Transactions()`**」在内部交易迁移后失效。真正的上链提交在 `block.SSCTransactions()`（SimTx/CRTx）里，且：
+
+- `txReadWriteSets`（TLV 锁登记表）**只可能被 `RetryCommit` 写入**（`TryLockWithPriority`），普通交易从不登记 → 扫 `block.Transactions()` 是无用功；
+- 因此 `OnBlockCommitted` **只需处理内部交易**，普通交易那段可以移除。
+
+### 9.3 锁生命周期（判定依据）
+
+| 事件 | 动作 | 锁状态 |
+|---|---|---|
+| `RetryCommit` | `TryLockWithPriority` 登记 TLV 临时锁（key=原始 tx hash） | TLV 锁获得 |
+| **SimTx 上链** | `VerifySimulation` → `SetAndLockState` | 链上锁（SLM）获得；TLV 临时锁作废 |
+| **CRTx 上链** | `CommitOrRollbackWithProof` → `CommitTx/RollbackTx` | 链上锁释放 |
+
+结论：
+- **SimTx** 负责「清 TLV 临时锁」（修 TLV 读锁泄漏，次要）；
+- **CRTx** 负责「上报被释放的链上 key → 唤醒等链上锁的重试交易」（主因，实测 59/80）。
+
+两者不能混在一个 `releasedKeys` 里，也不能只做其一。
+
+### 9.4 修改方案
+
+1. `TempLockView.OnBlockCommitted` **去掉** `block.Transactions()` 扫描，改为遍历 `block.SSCTransactions()`；
+2. **SimTx 桶**：反序列化 payload（`sscpb.CXTSimulationFromProto`）取 `simulation.TxHash`（原始跨分片交易 hash，即 `txReadWriteSets` 的 key）→ 清理该 tx 在 TLV 的读写锁（修泄漏）；
+3. **CRTx 桶**：反序列化 payload（`sscpb.CXTCommitProofFromProto`）取 `proof.TxHash` → 从 `stateLockManager` 拿到该交易实际释放的链上 key → 并入 retry 唤醒的 `releasedKeys`（或走独立的「链上释放→唤醒」通道）；
+4. 注意：SimTx/CRTx 的 `Hash()` 是内部交易自身的 hash，**不是**原始跨分片交易 hash，**不能**直接拿去查 `txReadWriteSets`，必须从 payload 解出原始 txHash。
+
+### 9.5 影响面
+
+- `ssc/temp_lock_view.go`：`OnBlockCommitted` 改造；
+- `ssc/retry_scheduler.go`：`OnBlockCommitted` 消费 `releasedKeys` 的语义需与「SimTx 清 TLV / CRTx 唤醒」对齐；
+- `ssc/state_lock_impl.go` / `ssc/state_locker.go`：确认 CRTx `CommitTx/RollbackTx` 能精确给出该交易释放的 key 集合；
+- 需要新增/复用 protobuf 解码（`CXTSimulationFromProto` / `CXTCommitProofFromProto`）。
+
+### 9.6 同类需迁移清单（原本扫普通交易 → 需改为处理内部交易）
+
+系统性排查 `block.Transactions()` 用法后发现，除 `TempLockView.OnBlockCommitted` 外还有同源遗留。以下清单用于后续逐项整改：
+
+| # | 位置 | 现状（旧模型） | 影响 | 优先级 |
+|---|---|---|---|---|
+| 1 | `ssc/temp_lock_view.go` `OnBlockCommitted` | 只扫 `block.Transactions()` 释放 TLV 锁 | retry 晋升通路停摆（本 DSN §9 主因） | **P0** |
+| 2 | `ssc/committee.go` `StateDataParser.ParseBlock` | 遍历 `block.Transactions()`，找 `To=SimulationCommitAddr` + `json.Unmarshal(tx.Data())` | SimTx 迁移后解析不到 → `MemberTxCounts/MemberSignedCounts/TxNum` 恒 0，**信誉/参与统计失效** | P1 |
+| 3 | `core/rawdb/accessors_indexes.go` `WriteBlockTxLookUpEntries` / `WriteTxLookupEntriesByBlock` | 只给 `block.Transactions()` 建 hash 索引 | 若 SimTx/CRTx 需要按 hash 可查（RPC/调试）则缺失；否则可忽略 | P2 |
+
+**已确认无需改动（已正确迁移）**：
+- `core/state_processor.go`：已按 SSC→普通→staking 处理 `block.SSCTransactions()` ✅
+- `core/block_validator.go`：`ValidateBody` 已补 `types.SSCTransactions(block.SSCTransactions())` ✅
+- `node/worker/worker.go`：出块已用 `sscTxns` / `ExtractSSCTransactions` ✅
+- `ssc/internal_pool.go`：清理已用 `block.SSCTransactions()` ✅
+
+> 整改 2、3 时同样注意：内部交易自身的 `Hash()` ≠ 原始跨分片交易 hash，需从 payload 解出原始 txHash（SimTx→`CXTSimulation.TxHash`，CRTx→`CXTCommitProof.TxHash`）。

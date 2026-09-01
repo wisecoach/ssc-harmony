@@ -236,6 +236,16 @@ type stateLockManager struct {
 	globalFinishedTxs    sync.Map // common.Hash → bool
 	globalLockStartBlock sync.Map // LockKey → uint64
 
+	// txPriority — txHash → api.Priority（DSN-52 §4.2）
+	// 记录每笔交易上链锁时的确定性优先级（Nonce>OriginShardID>TxHash），
+	// 供 VerifySimulation 冲突时比较「谁该让位」。
+	txPriority sync.Map
+
+	// txMetaMap — txHash → txMeta（DSN-52）
+	// 记录持有者的分片元数据（relatedShards/epochs），供 Wait-Die 优先级比较
+	// （dsn52ShouldYield 让位判定）与链下忽略低优先级锁（lowerPriorityLock）使用。
+	txMetaMap sync.Map
+
 	// 版本化（atomic 递增，用于 MVCC 过滤）
 	version atomic.Uint64 // 当前全局版本
 
@@ -506,6 +516,154 @@ func (s *stateLockManager) GetRWLockStates() (map[api.LockKey]*lockedState, map[
 	})
 
 	return writeLockedStates, readLockedStates
+}
+
+// RegisterTxPriority 记录一笔交易的确定性优先级（DSN-52 §4.2）。
+// 在 VerifySimulation 上锁时调用，供冲突比较使用。
+func (s *stateLockManager) RegisterTxPriority(txHash common.Hash, pri api.Priority) {
+	if s == nil {
+		return
+	}
+	if txHash == (common.Hash{}) {
+		return
+	}
+	s.txPriority.Store(txHash, pri)
+}
+
+// GetTxPriority 返回一笔交易的优先级；未注册时返回 (zero, false)。
+func (s *stateLockManager) GetTxPriority(txHash common.Hash) (api.Priority, bool) {
+	if s == nil || txHash == (common.Hash{}) {
+		return api.Priority{}, false
+	}
+	v, ok := s.txPriority.Load(txHash)
+	if !ok {
+		return api.Priority{}, false
+	}
+	return v.(api.Priority), true
+}
+
+// GetLockHolder 返回某 key 的链上写锁持有者 txHash（用于优先级比较）。
+func (s *stateLockManager) GetLockHolder(key api.LockKey) (common.Hash, bool) {
+	if s == nil {
+		return common.Hash{}, false
+	}
+	v, ok := s.globalLockedStates.Load(key)
+	if !ok {
+		return common.Hash{}, false
+	}
+	ls, ok := v.(*lockedState)
+	if !ok || ls == nil {
+		return common.Hash{}, false
+	}
+	if ls.lockedBy == (common.Hash{}) {
+		return common.Hash{}, false
+	}
+	return ls.lockedBy, true
+}
+
+// GetRLockHolder 返回某 key 的链上读锁持有者之一（用于优先级比较）。
+// DSN-52 Part B 对称补充：读锁可能被多个交易持有，返回第一个非空持有者。
+func (s *stateLockManager) GetRLockHolder(key api.LockKey) (common.Hash, bool) {
+	if s == nil {
+		return common.Hash{}, false
+	}
+	v, ok := s.globalRLockedStates.Load(key)
+	if !ok {
+		return common.Hash{}, false
+	}
+	rls, ok := v.(*rlockedState)
+	if !ok || rls == nil {
+		return common.Hash{}, false
+	}
+	for _, h := range rls.lockedBy {
+		if h != (common.Hash{}) {
+			return h, true
+		}
+	}
+	return common.Hash{}, false
+}
+
+// txMeta 记录一笔交易的链上锁分片元数据（DSN-52）。
+// 供 Wait-Die 优先级比较与链下忽略低优先级锁（lowerPriorityLock）查询 relatedShards / epochs / simulationNum。
+type txMeta struct {
+	RelatedShards api.RelatedShards
+	Epochs        []api.Epoch
+	SimulationNum int
+}
+
+// LockHolderMeta 描述某链上写锁持有者的完整元数据（优先级 + 分片 + 是否 Finalized）。
+type LockHolderMeta struct {
+	TxHash        common.Hash
+	Priority      api.Priority
+	RelatedShards api.RelatedShards
+	Epochs        []api.Epoch
+	SimulationNum int
+	Finalized     bool // 持有者 Patch 是否已 Finalized（不可踢）
+}
+
+// RegisterTxMeta 记录一笔交易的链上锁分片元数据（DSN-52 §10.6）。
+// 在 VerifySimulation 上锁时与 RegisterTxPriority 一并调用。
+func (s *stateLockManager) RegisterTxMeta(txHash common.Hash, relatedShards api.RelatedShards, epochs []api.Epoch, simulationNum int) {
+	if s == nil {
+		return
+	}
+	if txHash == (common.Hash{}) {
+		return
+	}
+	s.txMetaMap.Store(txHash, txMeta{
+		RelatedShards: append(api.RelatedShards(nil), relatedShards...),
+		Epochs:        append([]api.Epoch(nil), epochs...),
+		SimulationNum: simulationNum,
+	})
+}
+
+// GetTxMeta 返回一笔交易的分片元数据；未注册时返回 (zero, false)。
+func (s *stateLockManager) GetTxMeta(txHash common.Hash) (txMeta, bool) {
+	if s == nil || txHash == (common.Hash{}) {
+		return txMeta{}, false
+	}
+	v, ok := s.txMetaMap.Load(txHash)
+	if !ok {
+		return txMeta{}, false
+	}
+	return v.(txMeta), true
+}
+
+// offChainDAG 返回 stateLockManager 可达的 offChainDAG（用于 isPatchFinalized）。
+// 任一环节缺失返回 nil，调用方需保守处理。
+func (s *stateLockManager) offChainDAG() *offChainDAG {
+	if s == nil || s.sscService == nil || s.sscService.retryScheduler == nil {
+		return nil
+	}
+	return &s.sscService.retryScheduler.offChainDAG
+}
+
+// GetLockHolderMeta 返回某 key 链上写锁持有者的完整元数据（优先级 + 分片 + 是否 Finalized）。
+// 用于 Wait-Die 优先级比较（dsn52ShouldYield）与链下忽略低优先级锁（lowerPriorityLock）判定。
+func (s *stateLockManager) GetLockHolderMeta(key api.LockKey) (LockHolderMeta, bool) {
+	if s == nil {
+		return LockHolderMeta{}, false
+	}
+	v, ok := s.globalLockedStates.Load(key)
+	if !ok {
+		return LockHolderMeta{}, false
+	}
+	ls, ok := v.(*lockedState)
+	if !ok || ls == nil || ls.lockedBy == (common.Hash{}) {
+		return LockHolderMeta{}, false
+	}
+	holder := ls.lockedBy
+	meta := LockHolderMeta{TxHash: holder}
+	meta.Priority, _ = s.GetTxPriority(holder)
+	if tm, ok := s.GetTxMeta(holder); ok {
+		meta.RelatedShards = append(api.RelatedShards(nil), tm.RelatedShards...)
+		meta.Epochs = append([]api.Epoch(nil), tm.Epochs...)
+		meta.SimulationNum = tm.SimulationNum
+	}
+	if dag := s.offChainDAG(); dag != nil {
+		meta.Finalized = dag.isPatchFinalized(holder)
+	}
+	return meta, true
 }
 
 // GetPendingLockStates 返回一个 stateLocker 实例中待提交（pending）的锁状态。

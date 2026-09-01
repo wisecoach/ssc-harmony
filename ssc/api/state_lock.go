@@ -75,6 +75,16 @@ type StateLocker interface {
 	//  @Description:	rollback tx and unfreeze balance.
 	RollbackTx(txHash common.Hash) error
 
+	// ReleasePendingLocks
+	//  @Description:	force-release all of a holder's locks in pendingStates (same-block, uncommitted).
+	//  DSN-52 Part B：链上 wound 不仅要释放 globalLockedStates，也要释放同块 pending 锁。
+	ReleasePendingLocks(txHash common.Hash) int
+
+	// FindPendingLockHolder
+	//  @Description:	find the holder of a key in pendingStates (same-block, uncommitted).
+	//  DSN-52 Part B：冲突可能来自同块 pending 锁，需要能定位持有者。
+	FindPendingLockHolder(key LockKey) (common.Hash, bool)
+
 	// Commit
 	//  @Description: Commit the state lock, it should be called by stateDB
 	Commit(newRoot common.Hash) error

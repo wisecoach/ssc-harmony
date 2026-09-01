@@ -143,6 +143,7 @@ var chainRetryStats struct {
 	SigRetryCommitRpcErr  atomic.Int64 // RetryCommit RPC 通信失败
 	SigRetryCommitLocked  atomic.Int64 // 所有 related shard 都 locked=true
 	SigRetryCommitWounded atomic.Int64 // locked=true 但检测到被 Wound，放弃
+	SigOnChainWound       atomic.Int64 // DSN-52 §10.3：高优先级主动 Wound 低优先级链上持有者的次数
 	SigTriggerReSim       atomic.Int64 // 成功 TriggerReSimulation
 	SigRetryCommitFailed  atomic.Int64 // 全量失败（部分 locked）
 
@@ -221,6 +222,7 @@ func dumpChainRetryStats() {
 		Int64("retryCommitRpcErr", chainRetryStats.SigRetryCommitRpcErr.Swap(0)).
 		Int64("retryCommitLocked", chainRetryStats.SigRetryCommitLocked.Swap(0)).
 		Int64("retryCommitWounded", chainRetryStats.SigRetryCommitWounded.Swap(0)).
+		Int64("onChainWound", chainRetryStats.SigOnChainWound.Swap(0)).
 		Int64("triggerReSim", chainRetryStats.SigTriggerReSim.Swap(0)).
 		Int64("retryCommitFailed", chainRetryStats.SigRetryCommitFailed.Swap(0)).
 		Int64("retryCommitCalled", chainRetryStats.SigRetryCommitCalled.Swap(0)).
@@ -480,9 +482,20 @@ func (rs *retryScheduler) AddToRetry(tx *api.RetryTx) {
 	// 清理该交易在首次模拟中通过 GetState/SetState 获取的 TempLockView 锁
 	rs.tempLockView.GarbageCollect(tx.TxHash)
 
-	// 从 SimulationCallStates 提取 RWSet
+	// 从 SimulationCallStates 提取 RWSet（含 ForceSimulation 的 LockedKeys）
+	// 注意：GetState 撞锁时（simulator.go），冲突 key 只记入 callState.LockedKeys，
+	// 不会进 RWSet.WriteState。若不并入，retry 订阅不到这些 key，
+	// OnBlockCommitted 的 querySubscribers(releasedKeys) 永远选不中该交易 → 永不唤醒 → 超时。
 	readSet := make([]api.LockKey, 0)
 	writeSet := make([]api.LockKey, 0)
+	writeSeen := make(map[api.LockKey]struct{})
+	addWrite := func(k api.LockKey) {
+		if _, ok := writeSeen[k]; ok {
+			return
+		}
+		writeSeen[k] = struct{}{}
+		writeSet = append(writeSet, k)
+	}
 	if sim, ok := rs.state.GetSimState(tx.TxHash); ok && sim != nil {
 		if callStates, exists := sim.SimulationCallStates[tx.SimulationNum-1]; exists {
 			for _, callState := range callStates {
@@ -494,9 +507,13 @@ func (rs *retryScheduler) AddToRetry(tx *api.RetryTx) {
 					}
 					for addr, account := range callState.RWSet.WriteState.State {
 						for key := range account {
-							writeSet = append(writeSet, api.FormKey(addr, key))
+							addWrite(api.FormKey(addr, key))
 						}
 					}
+				}
+				// ForceSimulation 冲突 key（GetState/SetState 撞锁时记录）
+				for _, k := range callState.LockedKeys {
+					addWrite(k)
 				}
 			}
 		}
@@ -593,6 +610,46 @@ func (rs *retryScheduler) OnBlockCommitted(block *types.Block) {
 	candidates := rs.offChainDAG.querySubscribers(releasedKeys)
 	perf.RecordPkg("retryScheduler", "OnBlockCommitted", "querySubscribers", time.Since(t0Query))
 
+	// DSN-52 §14：TLV releasedKeys 在负载停后可能长期为 0，导致 retryPool 永不 promote
+	// （即使 on-chain 锁已被释放/wound）。这里兜底扫描 retryPool 中「on-chain 锁全部空闲」的
+	// 交易，并入 promote 候选，让 wound 循环能持续排空 pool、交易得以收敛。
+	t0Scan := time.Now()
+	candidateSet := make(map[common.Hash]struct{}, len(candidates))
+	for _, h := range candidates {
+		candidateSet[h] = struct{}{}
+	}
+	onChainFreeAdded := 0
+	if currentStateDB != nil {
+		rs.retryPool.Range(func(txHashVal, txVal interface{}) bool {
+			txHash := txHashVal.(common.Hash)
+			if _, inPassive := rs.passivePool.Load(txHash); inPassive {
+				return true
+			}
+			if _, done := candidateSet[txHash]; done {
+				return true
+			}
+			tx, ok := txVal.(*api.RetryTx)
+			if !ok || tx == nil {
+				return true
+			}
+			// 仅当该交易的所有 on-chain 锁空闲时才纳入候选（链上不允许 wound，冲突交给 Verify 的 Wait-Die）
+			for _, key := range tx.WriteSet {
+				if err := currentStateDB.CheckLock(key, txHash); err != nil {
+					return true // 仍有 on-chain 锁冲突，跳过
+				}
+			}
+			for _, key := range tx.ReadSet {
+				if err := currentStateDB.CheckLock(key, txHash); err != nil {
+					return true
+				}
+			}
+			candidateSet[txHash] = struct{}{}
+			onChainFreeAdded++
+			return true
+		})
+	}
+	perf.RecordPkg("retryScheduler", "OnBlockCommitted", "onChainFreeScan", time.Since(t0Scan))
+
 	t0Sort := time.Now()
 	// 按优先级排序：nonce 越小优先级越高
 	type prioTx struct {
@@ -600,7 +657,7 @@ func (rs *retryScheduler) OnBlockCommitted(block *types.Block) {
 		tx     *api.RetryTx
 	}
 	var sorted []prioTx
-	for _, txHash := range candidates {
+	for txHash := range candidateSet {
 		txVal, exists := rs.retryPool.Load(txHash)
 		if !exists {
 			continue
@@ -653,7 +710,8 @@ func (rs *retryScheduler) OnBlockCommitted(block *types.Block) {
 	perf.RecordPkg("retryScheduler", "OnBlockCommitted", "reservation", time.Since(t0Reserve))
 
 	utils.SSCLogger().Debug().
-		Int("candidateCount", len(candidates)).
+		Int("candidateCount", len(candidateSet)).
+		Int("onChainFreeAdded", onChainFreeAdded).
 		Int("selected", len(selectedTx)).
 		Int("reservedKeys", len(reservedKeySet)).
 		Msg("[retryScheduler] OnBlockCommitted: reservation completed")
@@ -1386,7 +1444,9 @@ func (rs *retryScheduler) RetryCommit(txHash common.Hash) *api.RetryCommitResp {
 		}
 	}
 
-	// 收集所有 stateDB 和 TempLock 层面冲突的 key
+	// 收集所有 stateDB 和 TempLock 层面冲突的 key。
+	// 严格门：链上锁冲突一律视为真实冲突（链上不允许 wound，冲突交给 Verify 的 Wait-Die 处理）；
+	// 冲突是否可被 TLV wound / DAG patch 化解，由 Phase 1（TryLockWithPriority）与 Phase 1b/2b（PatchPool）处理。
 	tCheckLock := time.Now()
 	var conflictKeys []api.LockKey
 	for _, key := range retryTx.WriteSet {

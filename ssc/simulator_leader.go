@@ -89,6 +89,39 @@ func (sim *Simulator) StartSimulateCXTransaction(req *api.CXTSimulationRequest) 
 		return <-waitingCh
 	}
 
+	// 唤醒所有等待者并发送结果。任何出口（成功/失败/冲突）都必须调用，
+	// 否则并发 StartSimulateCXTransaction 会在 <-waitingCh 上永久阻塞。
+	notifyWaiters := func(result *api.CXTSimulationSSCResult) {
+		var chs []chan *api.CXTSimulationSSCResult
+		if ch := sim.getChannels(txHash); ch != nil {
+			ch.mu.Lock()
+			chs = ch.waitingChs
+			ch.waitingChs = nil
+			ch.mu.Unlock()
+		}
+		for _, ch := range chs {
+			ch <- result
+		}
+	}
+
+	// 关闭并清空 resultCh，释放“本笔交易正在模拟”的占位标记。
+	// 若漏掉，后续对同一 tx 的调用都会因 resultCh != nil 而变成等待者，全部挂死。
+	closeResultCh := func() {
+		var resultCh chan *api.CXTSimulationSSCResult
+		if ch := sim.getChannels(txHash); ch != nil {
+			ch.mu.Lock()
+			if ch.resultCh != nil {
+				resultCh = ch.resultCh
+				close(ch.resultCh)
+				ch.resultCh = nil
+			}
+			ch.mu.Unlock()
+		}
+		if resultCh != nil {
+			<-resultCh
+		}
+	}
+
 	defer func() {
 		if ch := sim.getChannels(txHash); ch != nil {
 			ch.mu.Lock()
@@ -177,13 +210,30 @@ func (sim *Simulator) StartSimulateCXTransaction(req *api.CXTSimulationRequest) 
 		sscResult *api.CXTSimulationSSCResult
 		err       error
 	)
+	// 聚合结果。注意：不要硬编码 RelatedShards 为本分片 —— 跨分片交易必须携带
+	// 完整的 related shards，否则 CallForRetry / CommitSimulation 只会作用于本分片，
+	// 其它相关分片收不到重试/提交（重试将因凑不齐 shard 而失败）。
+	fallbackRelated := func() []uint32 {
+		if state != nil && len(state.RelatedShards) > 0 {
+			return state.RelatedShards
+		}
+		return []uint32{sim.committee.SelfShard}
+	}
+	effectiveRelated := func(primary []uint32) []uint32 {
+		if len(primary) > 0 {
+			return primary
+		}
+		return fallbackRelated()
+	}
+
 	if len(results) == t {
+		// 达到门限。results[0] 是“参考结果”（通常是本节点），其 RelatedShards
+		// 已被聚合路径视为完整集合（见 aggregateSimulationResults），错误分支也应沿用。
 		leaderRet := results[0].(*api.CXTSimulationResult)
 		if leaderRet.Err != "" {
 			sscResult = &api.CXTSimulationSSCResult{
 				Err:           leaderRet.Err,
-				RelatedShards: []uint32{sim.committee.SelfShard},
-				ConflictKeys:  leaderRet.ConflictKeys,
+				RelatedShards: effectiveRelated(leaderRet.RelatedShards),
 				BaseBLSSignedMessage: api.BaseBLSSignedMessage{
 					Epochs: leaderRet.Epochs,
 				},
@@ -192,23 +242,27 @@ func (sim *Simulator) StartSimulateCXTransaction(req *api.CXTSimulationRequest) 
 		} else {
 			sscResult, err = sim.aggregateSimulationResults(results)
 			if err != nil {
-				sscResult = &api.CXTSimulationSSCResult{Err: err.Error(), RelatedShards: []uint32{sim.committee.SelfShard},
+				sscResult = &api.CXTSimulationSSCResult{Err: err.Error(), RelatedShards: effectiveRelated(leaderRet.RelatedShards),
 					BaseBLSSignedMessage: api.BaseBLSSignedMessage{
 						Epochs: leaderRet.Epochs,
 					}}
 				utils.SSCLogger().Error().Str("txHash", txHash.String()).Err(err).Msg("failed to aggregate simulation results")
+				// 聚合失败同样要唤醒等待者并清空 resultCh，否则并发调用会永久挂死
+				notifyWaiters(sscResult)
+				closeResultCh()
 				return sscResult
 			}
 		}
 	} else {
+		// 未达到门限（成员响应不足/失败）：退回 TxState 已累积的 related shards
 		if len(results) == 0 {
-			sscResult = &api.CXTSimulationSSCResult{Err: "no response from other shards", RelatedShards: []uint32{sim.committee.SelfShard},
+			sscResult = &api.CXTSimulationSSCResult{Err: "no response from other shards", RelatedShards: fallbackRelated(),
 				BaseBLSSignedMessage: api.BaseBLSSignedMessage{
 					Epochs: req.Epochs,
 				}}
 		} else {
 			errRet := results[len(results)-1].(*api.CXTSimulationResult)
-			sscResult = &api.CXTSimulationSSCResult{Err: errRet.Err, RelatedShards: []uint32{sim.committee.SelfShard},
+			sscResult = &api.CXTSimulationSSCResult{Err: errRet.Err, RelatedShards: fallbackRelated(),
 				BaseBLSSignedMessage: api.BaseBLSSignedMessage{
 					Epochs: req.Epochs,
 				}}
@@ -237,11 +291,6 @@ func (sim *Simulator) StartSimulateCXTransaction(req *api.CXTSimulationRequest) 
 	} else {
 		simNumTag := fmt.Sprintf("[simNum=%d]", req.SimulationNum)
 		if vm.IsLockConflictErr(sscResult.Err) {
-			if len(sscResult.ConflictKeys) > 0 {
-				utils.SSCLogger().Debug().Str("txHash", simulationCommit.TxHash.Hex()).
-					Int("conflictKeys", len(sscResult.ConflictKeys)).
-					Msgf("ForceSimulation: conflict keys=%d, full RWSet available for retry", len(sscResult.ConflictKeys))
-			}
 			utils.SSCLogger().Debug().Str("txHash", simulationCommit.TxHash.Hex()).
 				Str("simNum", fmt.Sprintf("%d", req.SimulationNum)).
 				Str("reason", sscResult.Err).
@@ -258,9 +307,13 @@ func (sim *Simulator) StartSimulateCXTransaction(req *api.CXTSimulationRequest) 
 					SimulationNum: req.SimulationNum + 1,
 					Condition:     api.Simulate,
 					OriginShardID: state.OriginShardId,
+					Nonce:         req.Tx.Nonce(),
 				})
 			}
 			sim.state.SetTxStatus(txHash, api.WAITING_FOR_RESIMULATION_OFF_CHAIN)
+			// 冲突分支也必须唤醒等待者并清空 resultCh，否则并发调用会永久挂死
+			notifyWaiters(sscResult)
+			closeResultCh()
 			return sscResult
 		} else {
 			simulationCommit.Commit = false
@@ -273,25 +326,15 @@ func (sim *Simulator) StartSimulateCXTransaction(req *api.CXTSimulationRequest) 
 			simNumTag, simulationCommit.Commit, simulationCommit.Status.String(), simulationCommit.SimulationNum, simulationCommit.RelatedShards)
 	}
 
-	var chs []chan *api.CXTSimulationSSCResult
-
 	func() {
 		simState, _ := sim.GetSimState(txHash)
 		if simState != nil {
 			simState.SimulationCallStates[state.SimulationNum][0].TopSSCResult = sscResult
 			simState.SimulationResult = sscResult
 		}
-		if ch := sim.getChannels(txHash); ch != nil {
-			ch.mu.Lock()
-			chs = ch.waitingChs
-			ch.waitingChs = nil
-			ch.mu.Unlock()
-		}
 	}()
 
-	for _, ch := range chs {
-		ch <- sscResult
-	}
+	notifyWaiters(sscResult)
 
 	sim.thresholdSignSimulationCommit(simulationCommit)
 	tAggregate = time.Since(t0)
@@ -325,21 +368,7 @@ func (sim *Simulator) StartSimulateCXTransaction(req *api.CXTSimulationRequest) 
 			Msg("CommitSimulation Multicast failed (StartSimulateCXTransaction)")
 	}
 
-	var resultCh chan *api.CXTSimulationSSCResult
-	func() {
-		if ch := sim.getChannels(txHash); ch != nil {
-			ch.mu.Lock()
-			if ch.resultCh != nil {
-				resultCh = ch.resultCh
-				close(ch.resultCh)
-				ch.resultCh = nil
-			}
-			ch.mu.Unlock()
-		}
-	}()
-	if resultCh != nil {
-		<-resultCh
-	}
+	closeResultCh()
 
 	sim.stats.setCxtStage(txHash, 1)
 	tCommitSend = time.Since(t0)
@@ -368,7 +397,6 @@ func (sim *Simulator) aggregateSimulationResults(results []api.SSCMessage) (*api
 		UsedGas:       result.UsedGas,
 		Err:           result.Err,
 		TreeNode:      result.TreeNode,
-		ConflictKeys:  result.ConflictKeys,
 		BaseBLSSignedMessage: api.BaseBLSSignedMessage{
 			ShardId:    sim.committee.SelfShard,
 			Signatures: aggregatedSig,
@@ -785,11 +813,28 @@ func (sim *Simulator) StartReSimulation(txHash common.Hash, simulationNum int) {
 		sscResult *api.CXTSimulationSSCResult
 	)
 
+	// 聚合结果。注意：不要硬编码 RelatedShards 为本分片 —— 跨分片交易必须携带
+	// 完整的 related shards，否则 CallForRetry / CommitSimulation 只会作用于本分片，
+	// 其它相关分片收不到重试/提交（重试将因凑不齐 shard 而失败）。
+	fallbackRelated := func() []uint32 {
+		if txState != nil && len(txState.RelatedShards) > 0 {
+			return txState.RelatedShards
+		}
+		return []uint32{sim.committee.SelfShard}
+	}
+	effectiveRelated := func(primary []uint32) []uint32 {
+		if len(primary) > 0 {
+			return primary
+		}
+		return fallbackRelated()
+	}
+
 	if len(results) == t {
+		// 达到门限。results[0] 是“参考结果”（通常是本节点），其 RelatedShards
+		// 已被聚合路径视为完整集合（见 aggregateSimulationResults），错误分支也应沿用。
 		leaderRet := results[0].(*api.CXTSimulationResult)
 		if leaderRet.Err != "" {
-			sscResult = &api.CXTSimulationSSCResult{Err: leaderRet.Err, RelatedShards: []uint32{sim.committee.SelfShard},
-				ConflictKeys: leaderRet.ConflictKeys,
+			sscResult = &api.CXTSimulationSSCResult{Err: leaderRet.Err, RelatedShards: effectiveRelated(leaderRet.RelatedShards),
 				BaseBLSSignedMessage: api.BaseBLSSignedMessage{
 					Epochs: leaderRet.Epochs,
 				},
@@ -798,7 +843,7 @@ func (sim *Simulator) StartReSimulation(txHash common.Hash, simulationNum int) {
 		} else {
 			sscResult, err = sim.aggregateSimulationResults(results)
 			if err != nil {
-				sscResult = &api.CXTSimulationSSCResult{Err: err.Error(), RelatedShards: []uint32{sim.committee.SelfShard},
+				sscResult = &api.CXTSimulationSSCResult{Err: err.Error(), RelatedShards: effectiveRelated(leaderRet.RelatedShards),
 					BaseBLSSignedMessage: api.BaseBLSSignedMessage{
 						Epochs: leaderRet.Epochs,
 					},
@@ -809,7 +854,7 @@ func (sim *Simulator) StartReSimulation(txHash common.Hash, simulationNum int) {
 				if simState != nil {
 					simState.SimulationResult = sscResult
 					if len(simState.SimulationCallStates[simulationNum]) == 0 {
-						sscResult = &api.CXTSimulationSSCResult{Err: "callStates size is 0", RelatedShards: []uint32{sim.committee.SelfShard},
+						sscResult = &api.CXTSimulationSSCResult{Err: "callStates size is 0", RelatedShards: fallbackRelated(),
 							BaseBLSSignedMessage: api.BaseBLSSignedMessage{
 								Epochs: leaderRet.Epochs,
 							},
@@ -821,15 +866,16 @@ func (sim *Simulator) StartReSimulation(txHash common.Hash, simulationNum int) {
 			}
 		}
 	} else {
+		// 未达到门限（成员响应不足/失败）：退回 TxState 已累积的 related shards
 		if len(results) == 0 {
-			sscResult = &api.CXTSimulationSSCResult{Err: "no response from other shards", RelatedShards: []uint32{sim.committee.SelfShard},
+			sscResult = &api.CXTSimulationSSCResult{Err: "no response from other shards", RelatedShards: fallbackRelated(),
 				BaseBLSSignedMessage: api.BaseBLSSignedMessage{
 					Epochs: req.Epochs,
 				},
 			}
 		} else {
 			errRet := results[len(results)-1].(*api.CXTSimulationResult)
-			sscResult = &api.CXTSimulationSSCResult{Err: errRet.Err, RelatedShards: []uint32{sim.committee.SelfShard},
+			sscResult = &api.CXTSimulationSSCResult{Err: errRet.Err, RelatedShards: fallbackRelated(),
 				BaseBLSSignedMessage: api.BaseBLSSignedMessage{
 					Epochs: req.Epochs,
 				},
@@ -858,11 +904,6 @@ func (sim *Simulator) StartReSimulation(txHash common.Hash, simulationNum int) {
 				simulationCommit.Commit, simulationCommit.SimulationNum, simulationCommit.RelatedShards)
 	} else {
 		if vm.IsLockConflictErr(sscResult.Err) {
-			if len(sscResult.ConflictKeys) > 0 {
-				utils.SSCLogger().Debug().Str("txHash", txHash.Hex()).
-					Int("conflictKeys", len(sscResult.ConflictKeys)).
-					Msgf("ForceSimulation: resimulation conflict keys=%d, full RWSet available", len(sscResult.ConflictKeys))
-			}
 			utils.SSCLogger().Debug().Str("txHash", txHash.Hex()).Msgf("resimulation failed err=%s, it has subscribe to resimulate again, nextSimulationNum=%d", sscResult.Err, req.SimulationNum+1)
 			simulationCommit.Commit = false
 			simulationCommit.Status = api.LockConflict
@@ -879,6 +920,7 @@ func (sim *Simulator) StartReSimulation(txHash common.Hash, simulationNum int) {
 					SimulationNum: req.SimulationNum + 1,
 					Condition:     api.Simulate,
 					OriginShardID: originShardId,
+					Nonce:         req.Tx.Nonce(),
 				})
 			}
 			return

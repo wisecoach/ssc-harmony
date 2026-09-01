@@ -151,7 +151,6 @@ message CXTSimulationResult {
   uint64 used_gas = 5;
   string err = 6;
   CallNodeData tree_node = 7;
-  repeated LockKey conflict_keys = 8;
 }
 
 message CXTSimulationSSCResult {
@@ -161,7 +160,6 @@ message CXTSimulationSSCResult {
   uint64 used_gas = 4;
   string err = 5;
   CallNodeData tree_node = 6;
-  repeated LockKey conflict_keys = 7;
   BaseBLSSignedMessage base = 8;
 }
 
@@ -305,6 +303,7 @@ message CXTCommitProof {
   uint32 origin_shard = 6;
   repeated uint32 related_shards = 7;
   repeated CXTCommitSSCVote votes = 8;
+  bool release_only = 9;  // DSN-52: 只释放锁、不 close 交易（冲突让位后回重试池）
 }
 
 // ============================================================================

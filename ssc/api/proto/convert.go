@@ -390,7 +390,6 @@ func CXTSimulationResultFromProto(p *CXTSimulationResult) *api.CXTSimulationResu
 		UsedGas:        p.GetUsedGas(),
 		Err:            p.GetErr(),
 		TreeNode:       callNodeDataFromProto(p.GetTreeNode()),
-		ConflictKeys:   lockKeysFromProto(p.GetConflictKeys()),
 	}
 }
 
@@ -410,7 +409,6 @@ func CXTSimulationResultToProto(a *api.CXTSimulationResult) *CXTSimulationResult
 		UsedGas:       a.UsedGas,
 		Err:           a.Err,
 		TreeNode:      callNodeDataToProto(a.TreeNode),
-		ConflictKeys:  lockKeysToProto(a.ConflictKeys),
 	}
 }
 
@@ -434,7 +432,6 @@ func CXTSimulationSSCResultFromProto(p *CXTSimulationSSCResult) *api.CXTSimulati
 		UsedGas:              p.GetUsedGas(),
 		Err:                  p.GetErr(),
 		TreeNode:             callNodeDataFromProto(p.GetTreeNode()),
-		ConflictKeys:         lockKeysFromProto(p.GetConflictKeys()),
 		BaseBLSSignedMessage: baseBLSFromProto(p.GetBase()),
 	}
 }
@@ -454,7 +451,6 @@ func CXTSimulationSSCResultToProto(a *api.CXTSimulationSSCResult) *CXTSimulation
 		UsedGas:       a.UsedGas,
 		Err:           a.Err,
 		TreeNode:      callNodeDataToProto(a.TreeNode),
-		ConflictKeys:  lockKeysToProto(a.ConflictKeys),
 		Base:          baseBLSToProto(a.BaseBLSSignedMessage),
 	}
 }
@@ -922,6 +918,7 @@ func CXTCommitProofFromProto(p *CXTCommitProof) *api.CXTCommitProof {
 		OriginShard:    p.GetOriginShard(),
 		RelatedShards:  relatedShardsFromProto(p.GetRelatedShards()),
 		Votes:          votes,
+		ReleaseOnly:    p.GetReleaseOnly(),
 	}
 }
 
@@ -942,6 +939,7 @@ func CXTCommitProofToProto(a *api.CXTCommitProof) *CXTCommitProof {
 		OriginShard:   a.OriginShard,
 		RelatedShards: relatedShardsToProto(a.RelatedShards),
 		Votes:         votes,
+		ReleaseOnly:   a.ReleaseOnly,
 	}
 }
 

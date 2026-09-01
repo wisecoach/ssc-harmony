@@ -9,6 +9,8 @@ import (
 	"github.com/harmony-one/harmony/core/types"
 	"github.com/harmony-one/harmony/internal/utils"
 	"github.com/harmony-one/harmony/ssc/api"
+	sscpb "github.com/harmony-one/harmony/ssc/api/proto"
+	"google.golang.org/protobuf/proto"
 )
 
 // tempLockEntry records the lock holder and its priority for Wound-Wait.
@@ -35,11 +37,15 @@ type readHolderMap struct {
 // - tempWriteLocks: LoadOrStore 实现单 key 原子获取，失败回滚已拿 key
 // - tempReadLocks:  两层 sync.Map，O(1) 查找持有者
 // - txReadWriteSets: per-tx 数据，不同 tx 互不冲突
+// - onChainKeys:     SimTx 上链后该交易在链上持有的 key（txHash → *RWKeySet）。
+//                    SimTx 提交时从 txReadWriteSets 迁移过来，供后续 CRTx 提交时
+//                    产生 releasedKeys 唤醒等待这些 key 的重试交易。
 // - woundedTxs:      per-tx 标记，不同 tx 互不冲突
 type TempLockView struct {
 	tempWriteLocks   sync.Map // key: api.LockKey, value: tempLockEntry
 	tempReadLocks    sync.Map // key: api.LockKey, value: *readHolderMap
 	txReadWriteSets  sync.Map // key: common.Hash, value: *RWKeySet
+	onChainKeys      sync.Map // key: common.Hash, value: *RWKeySet
 	woundedTxs       sync.Map // key: common.Hash, value: struct{}{}
 	stateLockManager *stateLockManager
 }
@@ -226,6 +232,17 @@ func (v *TempLockView) IsTempLockedBySelf(txHash common.Hash, lockKey api.LockKe
 // HasConflict 检查指定 key 是否被**其他**交易在 TempLockView 中预约。
 // 用于 GetState/SetState 的锁仲裁：若当前 tx 自己持有，不算冲突。
 // lockKey 应为 api.FormKey(address, key) 的结果。
+// GetTempLockHolder 返回某写锁 key 在 TLV 中的持有者及其优先级（用于链下模拟忽略低优先锁，Part A）。
+func (v *TempLockView) GetTempLockHolder(key api.LockKey) (common.Hash, api.Priority, bool) {
+	if val, ok := v.tempWriteLocks.Load(key); ok {
+		entry := val.(tempLockEntry)
+		if entry.Holder != (common.Hash{}) {
+			return entry.Holder, entry.Priority, true
+		}
+	}
+	return common.Hash{}, api.Priority{}, false
+}
+
 func (v *TempLockView) HasConflict(txHash common.Hash, lockKey api.LockKey) bool {
 	// 检查写锁
 	if val, loaded := v.tempWriteLocks.Load(lockKey); loaded {
@@ -275,14 +292,18 @@ func (v *TempLockView) CanLock(txHash common.Hash, reads []api.LockKey, writes [
 	return true
 }
 
-// OnBlockCommitted 清理区块中所有交易的临时锁，并返回被释放的 key 集合。
+// OnBlockCommitted 清理区块中内部交易（SimTx/CRTx）对应的 TLV 临时锁，并返回被释放的 key 集合。
+//
+// DSN-47 §9：跨分片交易上链产物已从普通交易（block.Transactions()）迁移到 SSC 内部交易
+// （block.SSCTransactions()）。普通交易从不登记 TLV 锁（txReadWriteSets 只被 RetryCommit 写入），
+// 因此这里只处理内部交易：
+//   - SimTx 上链：链上锁获得，TLV 临时锁作废。把 TLV 记录迁移到 onChainKeys（供 CRTx 唤醒），
+//     并释放 TLV 锁、上报 releasedKeys（等待者会被 retryScheduler 的 CheckLock 过滤；
+//     若该 SimTx 验证失败已回滚，则这些 key 立即可用）。
+//   - CRTx 上链：链上锁释放。消费 onChainKeys（或 txReadWriteSets）中该交易的 key，
+//     释放 TLV 锁并上报 releasedKeys → 唤醒等待这些 key 的重试交易。
 func (v *TempLockView) OnBlockCommitted(block *types.Block) []api.LockKey {
 	t0 := time.Now()
-	blockTxHashes := make([]common.Hash, 0, len(block.Transactions()))
-	for _, tx := range block.Transactions() {
-		blockTxHashes = append(blockTxHashes, tx.Hash())
-	}
-	tBuildList := time.Since(t0)
 
 	// 统计日志（大致计数）
 	writeLockCount := 0
@@ -295,50 +316,77 @@ func (v *TempLockView) OnBlockCommitted(block *types.Block) []api.LockKey {
 		readLockCount++
 		return true
 	})
-	woundedCount := 0
-	v.woundedTxs.Range(func(_, _ interface{}) bool {
-		woundedCount++
-		return true
-	})
 
 	var releasedKeys []api.LockKey
-	for _, txHash := range blockTxHashes {
-		// 取出 tx 的读写集
-		rwSetVal, exists := v.txReadWriteSets.Load(txHash)
-		if !exists {
-			v.woundedTxs.Delete(txHash)
-			continue
-		}
-		rwSet := rwSetVal.(*RWKeySet)
+	processedTx := 0
 
-		// 清理写锁
-		for _, key := range rwSet.Writes {
-			if val, ok := v.tempWriteLocks.Load(key); ok {
-				entry := val.(tempLockEntry)
-				if bytes.Equal(entry.Holder.Bytes(), txHash.Bytes()) {
-					v.tempWriteLocks.Delete(key)
-					releasedKeys = append(releasedKeys, key)
-				}
+	ssc := block.SSCTransactions()
+
+	// SimTx 桶（InternalTxTypeSimTx）
+	if len(ssc) > int(types.InternalTxTypeSimTx) {
+		for _, tx := range ssc[types.InternalTxTypeSimTx] {
+			if tx == nil {
+				continue
 			}
-		}
-		// 清理读锁
-		for _, key := range rwSet.Reads {
-			if holdersVal, ok := v.tempReadLocks.Load(key); ok {
-				holders := holdersVal.(*readHolderMap)
-				holders.Delete(txHash)
-				releasedKeys = append(releasedKeys, key)
+			txHash, ok := v.simTxOriginalHash(tx)
+			if !ok {
+				continue
 			}
+			processedTx++
+			rwSetVal, exists := v.txReadWriteSets.Load(txHash)
+			if !exists {
+				v.woundedTxs.Delete(txHash)
+				continue
+			}
+			rwSet := rwSetVal.(*RWKeySet)
+			v.txReadWriteSets.Delete(txHash)
+			v.woundedTxs.Delete(txHash)
+			// 该交易现在在链上持有这些 key → 迁移到 onChainKeys，供后续 CRTx 消费
+			v.onChainKeys.Store(txHash, rwSet)
+			v.releaseTLVLock(txHash, rwSet)
+			// 上报全部 key：等待者会被 CheckLock 过滤（若 SimTx 验证失败已回滚则立即可用）
+			releasedKeys = append(releasedKeys, rwSet.Writes...)
+			releasedKeys = append(releasedKeys, rwSet.Reads...)
 		}
-		v.txReadWriteSets.Delete(txHash)
-		v.woundedTxs.Delete(txHash)
 	}
+
+	// CRTx 桶（InternalTxTypeCRTx）
+	if len(ssc) > int(types.InternalTxTypeCRTx) {
+		for _, tx := range ssc[types.InternalTxTypeCRTx] {
+			if tx == nil {
+				continue
+			}
+			txHash, ok := v.crTxOriginalHash(tx)
+			if !ok {
+				continue
+			}
+			processedTx++
+			var rwSet *RWKeySet
+			if rwSetVal, exists := v.onChainKeys.Load(txHash); exists {
+				rwSet = rwSetVal.(*RWKeySet)
+				v.onChainKeys.Delete(txHash)
+			} else if rwSetVal, exists := v.txReadWriteSets.Load(txHash); exists {
+				rwSet = rwSetVal.(*RWKeySet)
+				v.txReadWriteSets.Delete(txHash)
+			}
+			if rwSet == nil {
+				v.woundedTxs.Delete(txHash)
+				continue
+			}
+			v.woundedTxs.Delete(txHash)
+			v.releaseTLVLock(txHash, rwSet)
+			// 链上锁已释放 → 上报全部 key，唤醒等待者
+			releasedKeys = append(releasedKeys, rwSet.Writes...)
+			releasedKeys = append(releasedKeys, rwSet.Reads...)
+		}
+	}
+
 	tCleanupLoop := time.Since(t0)
 	utils.SSCLogger().Info().
 		Uint64("blockNum", block.NumberU64()).
-		Int("txCount", len(blockTxHashes)).
+		Int("txCount", processedTx).
 		Int("releasedKeys", len(releasedKeys)).
 		Int("keys", writeLockCount+readLockCount).
-		Dur("buildList", tBuildList).
 		Dur("cleanupLoop", tCleanupLoop).
 		Dur("total", time.Since(t0)).
 		Msg("[TempLockView] OnBlockCommitted timing breakdown")
@@ -355,8 +403,59 @@ func (v *TempLockView) OnBlockCommitted(block *types.Block) []api.LockKey {
 	return unique
 }
 
+// releaseTLVLock 释放一笔交易在 TLV 中占用的读写锁。
+// 只做 TLV 清理，不返回 key；releasedKeys 由调用方按 rwSet 全量上报。
+func (v *TempLockView) releaseTLVLock(txHash common.Hash, rwSet *RWKeySet) {
+	for _, key := range rwSet.Writes {
+		if val, ok := v.tempWriteLocks.Load(key); ok {
+			entry := val.(tempLockEntry)
+			if bytes.Equal(entry.Holder.Bytes(), txHash.Bytes()) {
+				v.tempWriteLocks.Delete(key)
+			}
+		}
+	}
+	for _, key := range rwSet.Reads {
+		if holdersVal, ok := v.tempReadLocks.Load(key); ok {
+			holders := holdersVal.(*readHolderMap)
+			holders.Delete(txHash)
+		}
+	}
+}
+
+// simTxOriginalHash 从 SimTx payload 解出原始跨分片交易 hash。
+// 注意：不能直接用 tx.Hash()（那是内部交易自身的 hash，不是原始跨分片交易 hash）。
+func (v *TempLockView) simTxOriginalHash(tx *types.SSCInternalTx) (common.Hash, bool) {
+	sim := &sscpb.CXTSimulation{}
+	if err := proto.Unmarshal(tx.Payload, sim); err != nil {
+		utils.SSCLogger().Debug().Err(err).Msg("[TempLockView] SimTx unmarshal failed")
+		return common.Hash{}, false
+	}
+	apiSim := sscpb.CXTSimulationFromProto(sim)
+	if apiSim == nil {
+		return common.Hash{}, false
+	}
+	return apiSim.TxHash, true
+}
+
+// crTxOriginalHash 从 CRTx payload 解出原始跨分片交易 hash。
+func (v *TempLockView) crTxOriginalHash(tx *types.SSCInternalTx) (common.Hash, bool) {
+	proof := &sscpb.CXTCommitProof{}
+	if err := proto.Unmarshal(tx.Payload, proof); err != nil {
+		utils.SSCLogger().Debug().Err(err).Msg("[TempLockView] CRTx unmarshal failed")
+		return common.Hash{}, false
+	}
+	apiProof := sscpb.CXTCommitProofFromProto(proof)
+	if apiProof == nil {
+		return common.Hash{}, false
+	}
+	return apiProof.TxHash, true
+}
+
 // GarbageCollect 清理 stale 交易（如 nonce 过期）。
 func (v *TempLockView) GarbageCollect(staleTxHash common.Hash) {
+	// 清理 onChainKeys（若该交易已 SimTx 上链但尚未 CRTx）
+	v.onChainKeys.Delete(staleTxHash)
+
 	// 取出 tx 的读写集
 	rwSetVal, exists := v.txReadWriteSets.Load(staleTxHash)
 	if !exists {
@@ -390,6 +489,7 @@ func (v *TempLockView) Stats() (writeLocks, readLocks, txSets, wounded int) {
 	v.tempWriteLocks.Range(func(_, _ any) bool { writeLocks++; return true })
 	v.tempReadLocks.Range(func(_, _ any) bool { readLocks++; return true })
 	v.txReadWriteSets.Range(func(_, _ any) bool { txSets++; return true })
+	v.onChainKeys.Range(func(_, _ any) bool { txSets++; return true })
 	v.woundedTxs.Range(func(_, _ any) bool { wounded++; return true })
 	return
 }

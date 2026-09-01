@@ -378,6 +378,63 @@ func (s *stateLocker) RollbackTx(txHash common.Hash) error {
 	return nil
 }
 
+// FindPendingLockHolder 返回某 key 在 pendingStates（同块未提交）中的写锁或读锁持有者。
+// DSN-52：冲突可能来自同块 pending 写锁，也可能来自 pending 读锁
+// （写路径 `Lockable` 会把 pending 读锁也判成冲突），供 Wait-Die 优先级比较
+// （dsn52ShouldYield）与链下忽略低优先级锁（lowerPriorityLock）定位持有者。
+func (s *stateLocker) FindPendingLockHolder(key api.LockKey) (common.Hash, bool) {
+	if s == nil || s.pendingStates == nil {
+		return common.Hash{}, false
+	}
+	// 写锁优先
+	if ls, ok := s.pendingStates.lockedStates[key]; ok && ls != nil {
+		if ls.lockedBy != (common.Hash{}) {
+			return ls.lockedBy, true
+		}
+	}
+	// 读锁：可能多个持有者，返回第一个
+	if rls, ok := s.pendingStates.rlockedStates[key]; ok && rls != nil {
+		for _, h := range rls.lockedBy {
+			if h != (common.Hash{}) {
+				return h, true
+			}
+		}
+	}
+	return common.Hash{}, false
+}
+
+// ReleasePendingLocks 强制释放某持有者在 pendingStates（同块未提交锁）里的全部写锁与读锁。
+// DSN-52：释放/回滚路径需同时清理 globalLockedStates 与同块 pending 锁，
+// 避免同块冲突（[TempLockView] locked by tx）残留。
+// 返回释放的写锁数量（用于监控）。
+func (s *stateLocker) ReleasePendingLocks(txHash common.Hash) int {
+	if s == nil || s.pendingStates == nil {
+		return 0
+	}
+	if txHash == (common.Hash{}) {
+		return 0
+	}
+	count := 0
+	// 写锁：按 txHash 反向索引遍历删除
+	if ci, ok := s.pendingStates.callIndex2lockedState[txHash]; ok {
+		for callIndexStr, keyMap := range ci {
+			for key := range keyMap {
+				s.pendingStates.deleteLockedState(txHash, callIndexStr, key)
+				count++
+			}
+		}
+	}
+	// 读锁
+	if ci, ok := s.pendingStates.callIndex2rlockedState[txHash]; ok {
+		for callIndexStr, keySet := range ci {
+			for key := range keySet {
+				s.pendingStates.deleteRLockedState(txHash, callIndexStr, key)
+			}
+		}
+	}
+	return count
+}
+
 // Commit commits the current locker state and creates a new version.
 // 改后：不再取 manager.mu.Lock()，改为 sync.Map 原子写入。
 func (s *stateLocker) Commit(newRoot common.Hash) error {
@@ -482,12 +539,21 @@ func (p *pendingUnlockCache) applyTo(locker *stateLocker) {
 		// 从 globalLockedStates（sync.Map）删除该 tx 的所有写锁
 		c2ls := mgr.lockedStates.getCallIndex2LockedStates(txHash)
 		if c2ls == nil {
-			// BUG-12 诊断: 跨块 rollback/commit 时反向写索引缺失 → applyTo 静默跳过, 锁可能永久残留
-			utils.SSCLogger().Warn().Str("txHash", txHash.Hex()).
-				Int("globalWriteLocks", countGlobalWriteLocks(mgr, txHash)).
-				Msg("[applyTo] reverse write-index nil for tx, locks may remain in globalLockedStates")
-		}
-		if c2ls != nil {
+			// BUG-12 修复: 跨块 rollback/commit 时反向写索引缺失。不能静默跳过，
+			// 否则锁永久残留在 globalLockedStates（LOCK_STALE 级联泄漏）。
+			// 改为按 lockedBy==txHash 从 globalLockedStates 扫描释放孤儿写锁。
+			released := releaseOrphanWriteLocks(mgr, txHash)
+			if released > 0 {
+				utils.SSCLogger().Warn().Str("txHash", txHash.Hex()).
+					Int("released", released).
+					Int("globalWriteLocks", countGlobalWriteLocks(mgr, txHash)).
+					Msg("[applyTo] reverse write-index nil, released orphan write locks by holder (BUG-12)")
+			} else {
+				utils.SSCLogger().Debug().Str("txHash", txHash.Hex()).
+					Int("globalWriteLocks", countGlobalWriteLocks(mgr, txHash)).
+					Msg("[applyTo] reverse write-index nil, no orphan write locks by holder")
+			}
+		} else {
 			for callIndex, lockKeyMap := range c2ls {
 				for lockKey := range lockKeyMap {
 					if v, ok := mgr.globalLockedStates.Load(lockKey); ok {
@@ -506,7 +572,10 @@ func (p *pendingUnlockCache) applyTo(locker *stateLocker) {
 
 		// 从 globalRLockedStates（sync.Map）删除该 tx 的所有读锁
 		c2rls := mgr.lockedStates.getCallIndex2RLockedStates(txHash)
-		if c2rls != nil {
+		if c2rls == nil {
+			// BUG-12 修复: 反向读索引缺失 → 按持有者扫描释放孤儿读锁
+			releaseOrphanReadLocks(mgr, txHash)
+		} else {
 			for callIndex, lockKeyMap := range c2rls {
 				for lockKey := range lockKeyMap {
 					mgr.globalRLockedStates.Delete(lockKey)
@@ -520,6 +589,46 @@ func (p *pendingUnlockCache) applyTo(locker *stateLocker) {
 		delete(mgr.lockedStates.callIndex2lockedState, txHash)
 		delete(mgr.lockedStates.callIndex2rlockedState, txHash)
 	}
+}
+
+// releaseOrphanWriteLocks 从 globalLockedStates 按 lockedBy==txHash 扫描并释放孤儿写锁。
+// 用于 applyTo 反向写索引缺失（BUG-12）时的兜底清理，避免锁永久残留在全局锁表。
+func releaseOrphanWriteLocks(mgr *stateLockManager, txHash common.Hash) int {
+	var orphan []api.LockKey
+	mgr.globalLockedStates.Range(func(k, v interface{}) bool {
+		key := k.(api.LockKey)
+		if ls, ok := v.(*lockedState); ok && bytes.Equal(ls.lockedBy.Bytes(), txHash.Bytes()) {
+			orphan = append(orphan, key)
+		}
+		return true
+	})
+	for _, key := range orphan {
+		mgr.globalLockedStates.Delete(key)
+		delete(mgr.lockedStates.lockedStates, key)
+	}
+	return len(orphan)
+}
+
+// releaseOrphanReadLocks 从 globalRLockedStates 按持有者包含 txHash 扫描并释放孤儿读锁。
+func releaseOrphanReadLocks(mgr *stateLockManager, txHash common.Hash) int {
+	var orphan []api.LockKey
+	mgr.globalRLockedStates.Range(func(k, v interface{}) bool {
+		key := k.(api.LockKey)
+		if rls, ok := v.(*rlockedState); ok {
+			for _, holder := range rls.lockedBy {
+				if bytes.Equal(holder.Bytes(), txHash.Bytes()) {
+					orphan = append(orphan, key)
+					break
+				}
+			}
+		}
+		return true
+	})
+	for _, key := range orphan {
+		mgr.globalRLockedStates.Delete(key)
+		delete(mgr.lockedStates.rlockedStates, key)
+	}
+	return len(orphan)
 }
 
 // BUG-12 诊断辅助: 统计 globalLockedStates 中由指定 txHash 持有 (lockedBy==txHash) 的写锁数量。

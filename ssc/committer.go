@@ -127,8 +127,15 @@ func (c *Committer) CommitOrRollbackWithProof(commitProofBytes []byte, stateDB a
 			utils.SSCLogger().Error().Str("txHash", txHash.String()).Err(err).Msg("failed to rollback tx with proof")
 			return err
 		}
-		c.state.SetStatus(txHash, api.CXT_ROLLBACKED)
-		c.state.CloseTx(txHash, false, commitProof.Reason.String())
+		// DSN-52: ReleaseOnly 表示「只释放锁、不 close 交易」——冲突让位后回重试池，
+		// 而不是永久判死。
+		if !commitProof.ReleaseOnly {
+			c.state.SetStatus(txHash, api.CXT_ROLLBACKED)
+			c.state.CloseTx(txHash, false, commitProof.Reason.String())
+		} else {
+			utils.SSCLogger().Debug().Str("txHash", txHash.Hex()).
+				Msg("rollback with proof (ReleaseOnly): released locks, tx stays in retry (DSN-52)")
+		}
 	}
 	tCloseTx := time.Since(t0)
 

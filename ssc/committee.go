@@ -18,7 +18,9 @@ import (
 	"github.com/harmony-one/harmony/crypto/bls"
 	"github.com/harmony-one/harmony/internal/utils"
 	"github.com/harmony-one/harmony/ssc/api"
+	sscpb "github.com/harmony-one/harmony/ssc/api/proto"
 	"github.com/pkg/errors"
+	"google.golang.org/protobuf/proto"
 )
 
 type CommitteeMechanism struct {
@@ -898,6 +900,50 @@ func (p *StateDataParser) ParseBlock(block *types.Block, committee *api.ShardSim
 	crossGasUsed := block.Header().CrossGasUsed()
 	delta.RewardIncrement = new(big.Int).Mul(new(big.Int).SetUint64(crossGasUsed), rewardPrice)
 
+	// 解析参与签名的成员（SimTx / 旧 SimulationCommit 共用）
+	countSimulation := func(bitmap []byte) {
+		if bitmap == nil {
+			utils.SSCLogger().Error().Msg("failed to parse simulation commit bitmap")
+			return
+		}
+		for _, member := range committee.Members {
+			i := committee.MemberIndex[member.Address]
+			byt := i >> 3
+			msk := byte(1) << uint(i&7)
+			if bitmap[byt]&msk != 0 {
+				delta.MemberSignedCounts[i]++
+			}
+			delta.MemberTxCounts[i]++
+		}
+		delta.TxCount++
+	}
+
+	// DSN-52 P1：迁移后 SimTx 作为 SSC 内部交易进块（block.SSCTransactions()[SimTx]），
+	// 不再进普通 types.Transaction，旧路径（只扫 block.Transactions()）统计恒为 0。
+	// 优先扫 SimTx 桶（protobuf 载荷）；旧块（无 SimTx）回退到旧路径以兼容历史重放。
+	sscTxns := block.SSCTransactions()
+	if len(sscTxns) > int(types.InternalTxTypeSimTx) && len(sscTxns[types.InternalTxTypeSimTx]) > 0 {
+		for _, tx := range sscTxns[types.InternalTxTypeSimTx] {
+			if tx == nil {
+				continue
+			}
+			utils.SSCLogger().Info().Msgf("SIMULATION_COMMIT_TX,Epoch=%d,TxHash=%s", block.Epoch(), tx.Hash().Hex())
+			simProto := &sscpb.CXTSimulation{}
+			if err := proto.Unmarshal(tx.Payload, simProto); err != nil {
+				utils.SSCLogger().Error().Err(err).Msg("failed to unmarshal simulation commit (SimTx)")
+				continue // 解析失败不影响其他交易
+			}
+			simulation := sscpb.CXTSimulationFromProto(simProto)
+			if simulation == nil {
+				utils.SSCLogger().Error().Msg("failed to convert simulation commit (SimTx)")
+				continue
+			}
+			countSimulation(simulation.GetBLSBitMap())
+		}
+		return delta
+	}
+
+	// 旧路径：迁移前 SimulationCommit 以普通跨分片交易形式进块（兼容历史重放）
 	transactions := block.Transactions()
 	for _, tx := range transactions {
 		if !tx.CrossShard() {
@@ -905,33 +951,17 @@ func (p *StateDataParser) ParseBlock(block *types.Block, committee *api.ShardSim
 		}
 
 		to := *tx.To()
-		if bytes.Compare(to.Bytes(), vm.SimulationCommitAddr.Bytes()) == 0 {
-			utils.SSCLogger().Info().Msgf("SIMULATION_COMMIT_TX,Epoch=%d,TxHash=%s", block.Epoch(), tx.Hash().Hex())
-			// SimulationCommit 交易，解析参与成员
-			simulation := &api.CXTSimulation{}
-			if err := json.Unmarshal(tx.Data(), simulation); err != nil {
-				utils.SSCLogger().Error().Err(err).Msg("failed to unmarshal simulation commit")
-				continue // 解析失败不影响其他交易
-			}
-
-			bitmap := simulation.GetBLSBitMap()
-			if bitmap == nil {
-				utils.SSCLogger().Error().Msg("failed to parse simulation commit bitmap")
-				continue
-			}
-
-			// 解析参与签名的成员
-			for _, member := range committee.Members {
-				i := committee.MemberIndex[member.Address]
-				byt := i >> 3
-				msk := byte(1) << uint(i&7)
-				if bitmap[byt]&msk != 0 {
-					delta.MemberSignedCounts[i]++
-				}
-				delta.MemberTxCounts[i]++
-			}
-			delta.TxCount++
+		if bytes.Compare(to.Bytes(), vm.SimulationCommitAddr.Bytes()) != 0 {
+			continue
 		}
+		utils.SSCLogger().Info().Msgf("SIMULATION_COMMIT_TX,Epoch=%d,TxHash=%s", block.Epoch(), tx.Hash().Hex())
+		// SimulationCommit 交易，解析参与成员
+		simulation := &api.CXTSimulation{}
+		if err := json.Unmarshal(tx.Data(), simulation); err != nil {
+			utils.SSCLogger().Error().Err(err).Msg("failed to unmarshal simulation commit")
+			continue // 解析失败不影响其他交易
+		}
+		countSimulation(simulation.GetBLSBitMap())
 	}
 
 	return delta

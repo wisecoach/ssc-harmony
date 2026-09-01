@@ -1,11 +1,15 @@
 package ssc
 
 import (
+	"sort"
 	"sync"
 
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/harmony-one/harmony/core/types"
 	"github.com/harmony-one/harmony/internal/utils"
+	"github.com/harmony-one/harmony/ssc/api"
+	sscpb "github.com/harmony-one/harmony/ssc/api/proto"
+	"google.golang.org/protobuf/proto"
 )
 
 // SSCInternalPool 最简内部交易池（DSN-48）。
@@ -56,6 +60,26 @@ func (p *SSCInternalPool) Extract(maxTotal int) [][]*types.SSCInternalTx {
 		if len(row) == 0 {
 			continue
 		}
+		// DSN-52 §4.6：同分片内 SimTx 按确定性优先级（Nonce>OriginShardID>TxHash）排序，
+		// 让各分片处理顺序尽量一致，降低随机冲突频率（辅助，不替代冲突时的 Wound-Wait 判定）。
+		// 解不出优先级的（损坏 payload）保持原相对顺序（放后面）。
+		if tt == types.InternalTxTypeSimTx {
+			// DSN-52 §4.6：SimTx 按确定性优先级（Nonce>OriginShardID>TxHash）排序。
+			sort.SliceStable(row, func(i, j int) bool {
+				pi, oki := p.simPriority(row[i])
+				pj, okj := p.simPriority(row[j])
+				if !oki {
+					return false
+				}
+				if !okj {
+					return true
+				}
+				return pi.Less(pj)
+			})
+			// DSN-52：DAG 依赖排序——被依赖的 SimTx 在依赖它的 SimTx 之前执行，
+			// 保证链式交易的 Upstream 先落块，避免下游 SimTx 在链上验证时上游还没就绪。
+			row = p.orderSimTxsByDAG(row)
+		}
 		if remaining <= 0 {
 			// 不限或已取满上限：整桶取
 			for _, tx := range row {
@@ -77,6 +101,107 @@ func (p *SSCInternalPool) Extract(maxTotal int) [][]*types.SSCInternalTx {
 		remaining -= n
 	}
 	return out
+}
+
+// simUpstreams 从 SimTx payload 解出其 DAG 上游依赖（UpstreamTxList 的 txHash 集合）。
+// 解不出（非 SimTx / payload 损坏）返回空集。
+func (p *SSCInternalPool) simUpstreams(tx *types.SSCInternalTx) []common.Hash {
+	if tx == nil || tx.Type != types.InternalTxTypeSimTx {
+		return nil
+	}
+	sim := &sscpb.CXTSimulation{}
+	if err := proto.Unmarshal(tx.Payload, sim); err != nil {
+		return nil
+	}
+	apiSim := sscpb.CXTSimulationFromProto(sim)
+	if apiSim == nil {
+		return nil
+	}
+	out := make([]common.Hash, 0, len(apiSim.UpstreamTxList))
+	for _, up := range apiSim.UpstreamTxList {
+		out = append(out, up.TxHash)
+	}
+	return out
+}
+
+// orderSimTxsByDAG 把同批 SimTx 按 DAG 依赖排序：被依赖（Upstream）的 SimTx 先于依赖者。
+// 入参 row 已按优先级排序；只考虑同在 batch 内的上游（batch 外上游不受本 batch 顺序约束）。
+// 出现环（异常）时按剩余顺序兜底，不阻塞。
+func (p *SSCInternalPool) orderSimTxsByDAG(row []*types.SSCInternalTx) []*types.SSCInternalTx {
+	if len(row) < 2 {
+		return row
+	}
+	inBatch := make(map[common.Hash]struct{}, len(row))
+	for _, tx := range row {
+		inBatch[tx.Hash()] = struct{}{}
+	}
+	// deps[h] = h 的、且在本 batch 内的上游集合
+	deps := make(map[common.Hash]map[common.Hash]struct{}, len(row))
+	for _, tx := range row {
+		h := tx.Hash()
+		deps[h] = make(map[common.Hash]struct{})
+		for _, up := range p.simUpstreams(tx) {
+			if _, ok := inBatch[up]; ok {
+				deps[h][up] = struct{}{}
+			}
+		}
+	}
+	out := make([]*types.SSCInternalTx, 0, len(row))
+	done := make(map[common.Hash]struct{}, len(row))
+	for len(out) < len(row) {
+		progress := false
+		for _, tx := range row {
+			h := tx.Hash()
+			if _, ok := done[h]; ok {
+				continue
+			}
+			ready := true
+			for up := range deps[h] {
+				if _, ok := done[up]; !ok {
+					ready = false
+					break
+				}
+			}
+			if ready {
+				out = append(out, tx)
+				done[h] = struct{}{}
+				progress = true
+			}
+		}
+		if !progress {
+			// 环（异常）：把剩余未排的按原顺序追加，避免死循环
+			for _, tx := range row {
+				if _, ok := done[tx.Hash()]; !ok {
+					out = append(out, tx)
+					done[tx.Hash()] = struct{}{}
+				}
+			}
+			break
+		}
+	}
+	return out
+}
+
+// simPriority 从 SimTx payload 解出原始跨分片交易的确定性优先级（DSN-52 §4.6）。
+// 优先级 `Nonce > OriginShardID > TxHash` 与 VerifySimulation 冲突判定（§4.2）一致，
+// 用于同分片内 SimTx 处理顺序排序。解不出（非 SimTx / payload 损坏）返回 (zero,false)。
+func (p *SSCInternalPool) simPriority(tx *types.SSCInternalTx) (api.Priority, bool) {
+	if tx == nil || tx.Type != types.InternalTxTypeSimTx {
+		return api.Priority{}, false
+	}
+	sim := &sscpb.CXTSimulation{}
+	if err := proto.Unmarshal(tx.Payload, sim); err != nil {
+		return api.Priority{}, false
+	}
+	apiSim := sscpb.CXTSimulationFromProto(sim)
+	if apiSim == nil {
+		return api.Priority{}, false
+	}
+	return api.Priority{
+		Nonce:         apiSim.Nonce,
+		OriginShardID: apiSim.OriginShardId,
+		TxHash:        apiSim.TxHash,
+	}, true
 }
 
 // Remove 把一条内部交易从池中删除（按 hash 匹配）。

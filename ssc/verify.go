@@ -70,6 +70,58 @@ func (vc *VerifyCommunicator) SendCommitVote(shardId uint32, vote *api.CXTCommit
 	vc.comm.Call(ctx, nil, targetLeader, api.Method_HandleCommitVote, vote)
 }
 
+// MulticastRollbackProof 由 origin 主动发送 Rollback 证明到所有相关分片，
+// 释放某笔交易已 Commit 的全部链上锁（DSN-52：跨分片锁释放）。
+//
+// 背景：跨分片交易的锁是「先 Commit、后确认」——某个分片验证成功即上锁，但整笔交易
+// 需要所有 related shard 验证通过才发 CRTx。若任一 shard（含 origin）验证失败，其它
+// 已上锁 shard 的锁会变成孤儿（LOCK_STALE 级联死锁）。此方法让 origin 在自身验证
+// 失败时主动广播 Rollback 证明，各分片通过 CommitOrRollbackWithProof 释放该交易锁。
+func (vc *VerifyCommunicator) MulticastRollbackProof(simulation *api.CXTSimulation, reason api.CXTCommitReason) {
+	if simulation == nil {
+		return
+	}
+	proof := &api.CXTCommitProof{
+		TxHash:        simulation.TxHash,
+		SimulationNum: simulation.SimulationNum,
+		Type:          api.Rollback,
+		Reason:        reason,
+		OriginShard:   simulation.OriginShardId,
+		RelatedShards: simulation.RelatedShards,
+		ReleaseOnly:   true, // DSN-52: 只释放锁、不 close 交易
+		BaseSSCMessage: api.BaseSSCMessage{
+			Epochs: simulation.Epochs,
+		},
+	}
+	if len(proof.RelatedShards) == 0 {
+		proof.RelatedShards = []uint32{simulation.OriginShardId}
+	}
+
+	members := make([]*api.Member, 0, len(proof.RelatedShards))
+	for _, shardId := range proof.RelatedShards {
+		leader := vc.committee.GetLeader(proof.Epochs[shardId], shardId)
+		if leader == nil {
+			utils.SSCLogger().Error().Str("txHash", simulation.TxHash.Hex()).
+				Uint32("shardId", shardId).
+				Msg("MulticastRollbackProof: leader not found")
+			continue
+		}
+		members = append(members, leader)
+	}
+	ctx, cancel := context.WithTimeout(vc.ctx, vc.config.CallTimeout)
+	defer cancel()
+	if err := vc.comm.Multicast(ctx, members, api.Method_HandleCXTCommitProof, proof); err != nil {
+		utils.SSCLogger().Error().Str("txHash", simulation.TxHash.Hex()).Err(err).
+			Msg("MulticastRollbackProof failed")
+		return
+	}
+	utils.SSCLogger().Warn().Str("txHash", simulation.TxHash.Hex()).
+		Uint32("originShard", simulation.OriginShardId).
+		Interface("relatedShards", proof.RelatedShards).
+		Int("simulationNum", simulation.SimulationNum).
+		Msg("MulticastRollbackProof: origin released cross-shard locks (DSN-52)")
+}
+
 // VerifierStateAccessor 封装 simulationState 的原子读写操作。
 // 所有操作内部自带锁，调用方不需要关心锁的范围。
 // 锁永远在 sscService 内部，Verifier 拿不到锁对象本身。
@@ -268,6 +320,17 @@ func (v *Verifier) VerifySimulation(simulationBytes []byte, stateDB api.StateDB,
 	}
 
 	txHash := simulation.TxHash
+
+	// DSN-52 §4.2/§10.6：注册本交易的确定性优先级 + 分片元数据，
+	// 供其它交易冲突时比较「谁该让位」、以及高优先级交易定向 Wound 持有者。
+	if mgr := v.retrySchd.tempLockView.stateLockManager; mgr != nil {
+		mgr.RegisterTxPriority(txHash, api.Priority{
+			Nonce:         simulation.Nonce,
+			OriginShardID: simulation.OriginShardId,
+			TxHash:        txHash,
+		})
+		mgr.RegisterTxMeta(txHash, simulation.RelatedShards, simulation.Epochs, simulation.SimulationNum)
+	}
 
 	tVs0 := time.Now()
 	var tVsPatch, tVsLockCheck, tVsExec, tVsLockState time.Duration
@@ -590,6 +653,18 @@ CallStates:
 		}
 
 		stateDB.RollbackTx(txHash)
+		// DSN-52 Wait-Die（用户决策：不恢复软重试，die 侧彻底回滚）：
+		//  - 低优先级（或持有者优先级未知，保守）→ die：发终局 Rollback vote（彻底回滚、彻底解锁、不重试）。
+		//  - 高优先级 → wait：不释放自身锁，也**不 wound 持有者**，回重试池等低优先级释放后重试。
+		// 降冲突靠链下/交易池提取策略（见 internal_pool / OnBlockCommitted 调度），而非软重试。
+		if v.dsn52ShouldYield(simulation, conflictLockKeys, stateDB) {
+			v.sendRollbackVoteForDie(txHash, simulation)
+			return
+		}
+		// Wait-Die：高优先级等待，不 wound 持有者。
+		utils.SSCLogger().Debug().Str("txHash", txHash.Hex()).
+			Int("conflictKeys", len(conflictLockKeys)).
+			Msg("DSN-52: higher priority, waiting for lower-priority holder to die (Wait-Die, no wound)")
 		if exceeded, lockedSimNum := v.checkRetryLimitExceeded(txHash, simulation); exceeded {
 			v.sendRollbackVoteForRetry(txHash, simulation.SimulationNum, simulation.Epochs, simulation.OriginShardId, lockedSimNum)
 		} else {
@@ -650,6 +725,150 @@ CallStates:
 	}
 }
 
+// dsn52ShouldYield 判断当前交易在链上锁冲突时是否应「让位」（低优先级）。
+//
+// DSN-52 §4.2：优先级 `Nonce > OriginShardID > TxHash` 是确定性全序，所有分片判定一致。
+//   - 若任一冲突 key 的持有者优先级比当前交易高 → 当前交易让位（释放锁 + 回重试池）。
+//   - 若持有者优先级不可知（保守）→ 让位，避免错误保留锁阻塞更高优先级交易。
+//   - 若当前交易比所有冲突持有者都高 → 不让位（保留自身锁，等低优先级释放后胜出）。
+func (v *Verifier) dsn52ShouldYield(simulation *api.CXTSimulation, conflictLockKeys []api.LockKey, stateDB api.StateDB) bool {
+	if simulation == nil {
+		return true
+	}
+	mgr := v.retrySchd.tempLockView.stateLockManager
+	if mgr == nil {
+		return true
+	}
+	cur := api.Priority{
+		Nonce:         simulation.Nonce,
+		OriginShardID: simulation.OriginShardId,
+		TxHash:        simulation.TxHash,
+	}
+	var db *corestate.DB
+	if sdb, ok := stateDB.(*corestate.DB); ok {
+		db = sdb
+	}
+	for _, key := range conflictLockKeys {
+		// 持有者可能来自 globalLockedStates（跨块）或 pendingStates（同块）。
+		// 之前只看 global，导致同块 pending 冲突被误判（看不到持有者 → 不进让位分支）。
+		holder, ok := mgr.GetLockHolder(key)
+		if !ok && db != nil {
+			if h, found := db.FindPendingLockHolder(key); found {
+				holder, ok = h, true
+			}
+		}
+		if !ok {
+			continue
+		}
+		holderPri, ok := mgr.GetTxPriority(holder)
+		if !ok {
+			// 持有者优先级未知 → 保守让位
+			return true
+		}
+		// holderPri.Less(cur) 表示持有者优先级更高 → 当前交易让位
+		if holderPri.Less(cur) {
+			return true
+		}
+	}
+	return false
+}
+
+// woundLowerPriorityHolders 让当前交易 C（已判定优先级高于冲突持有者）主动 Wound 低优先级持有者 H。
+//
+// ⚠️ 已弃用（不再调用）：DSN-52 已从 Wound-Wait 改为 Wait-Die。
+// 链上 wound（主动抢占已投过 commit vote 的持有者）违反投票协议“一票一投、不可重复”的语义，
+// 可能导致交易“既被 commit 又被拉回重试”的双重处理。现冲突分支高优先级侧改为“等待（wait）”，
+// 不再调用本函数；仅保留代码以便对照/回滚。验证信号：`onChainWound` 应为 0。
+//
+// 原语义：wound 直接释放 victim 的锁（已在链上，无需走 CRTx）。
+//   - 持有者可能来自 globalLockedStates（跨块）或 pendingStates（同块未提交）。
+//   - 两种都释放（releaseOrphanWriteLocks 清 global + ReleasePendingLocksFor 清 pending）。
+//   - 然后把 victim 拉回重试流：重新上锁由 victim 重新 VerifySimulation 完成。
+//
+// 仅在以下条件才 wound：H 优先级更低、H 的 Patch 未 Finalized、且 H 不是 C 自己。
+// 返回实际触发 wound 的持有者数（用于日志/监控）。
+func (v *Verifier) woundLowerPriorityHolders(simulation *api.CXTSimulation, conflictLockKeys []api.LockKey, stateDB api.StateDB) int {
+	if simulation == nil {
+		return 0
+	}
+	mgr := v.retrySchd.tempLockView.stateLockManager
+	if mgr == nil {
+		return 0
+	}
+	cur := api.Priority{
+		Nonce:         simulation.Nonce,
+		OriginShardID: simulation.OriginShardId,
+		TxHash:        simulation.TxHash,
+	}
+	isLeader := v.committee.IsLeader(simulation.Epochs[v.committee.SelfShard])
+	var db *corestate.DB
+	if sdb, ok := stateDB.(*corestate.DB); ok {
+		db = sdb
+	}
+	woundedSet := make(map[common.Hash]struct{})
+	count := 0
+	for _, key := range conflictLockKeys {
+		// 1) 先查 globalLockedStates（跨块）；2) 再查 pendingStates（同块未提交）
+		holder, ok := mgr.GetLockHolderMeta(key)
+		if !ok && db != nil {
+			if h, found := db.FindPendingLockHolder(key); found {
+				holder = LockHolderMeta{TxHash: h}
+				holder.Priority, _ = mgr.GetTxPriority(h)
+				if tm, ok2 := mgr.GetTxMeta(h); ok2 {
+					holder.RelatedShards = tm.RelatedShards
+					holder.Epochs = tm.Epochs
+					holder.SimulationNum = tm.SimulationNum
+				}
+				if dag := mgr.offChainDAG(); dag != nil {
+					holder.Finalized = dag.isPatchFinalized(h)
+				}
+				ok = true
+			}
+		}
+		if !ok {
+			continue
+		}
+		if holder.TxHash == simulation.TxHash {
+			continue // 自己，不 wound
+		}
+		if holder.Finalized {
+			continue // 已实质提交，不可踢（与 TLV canWound 一致）
+		}
+		if !cur.Less(holder.Priority) {
+			// 当前交易并不比该持有者优先级更高（可能是优先级未知/持平）→ 保守不 wound
+			continue
+		}
+		if _, seen := woundedSet[holder.TxHash]; seen {
+			continue // 同一持有者只 wound 一次
+		}
+		woundedSet[holder.TxHash] = struct{}{}
+		if isLeader {
+			chainRetryStats.SigOnChainWound.Add(1)
+			// ① 释放 victim 的锁：globalLockedStates（跨块）+ pendingStates（同块）
+			released := releaseOrphanWriteLocks(mgr, holder.TxHash)
+			if db != nil {
+				released += db.ReleasePendingLocksFor(holder.TxHash)
+			}
+			// ② 把 victim 拉回重试流：wound 不负责重新上锁，重新上锁由 victim
+			//    重新 VerifySimulation 完成（否则 victim 变成孤儿，永不重新验证）。
+			v.retrySchd.CallForRetry(&api.RetryTx{
+				TxHash:        holder.TxHash,
+				Epochs:        holder.Epochs,
+				RelatedShards: holder.RelatedShards,
+				SimulationNum: holder.SimulationNum + 1,
+				Condition:     api.Verify,
+				OriginShardID: holder.Priority.OriginShardID,
+				Nonce:         holder.Priority.Nonce,
+			})
+			utils.SSCLogger().Warn().Str("txHash", holder.TxHash.Hex()).
+				Int("releasedLocks", released).
+				Msg("DSN-52: wounded lower-priority holder, released global+pending locks, pulled back to retry")
+		}
+		count++
+	}
+	return count
+}
+
 // checkRetryLimitExceeded 检查链上重试次数是否超限
 func (v *Verifier) checkRetryLimitExceeded(txHash common.Hash, simulation *api.CXTSimulation) (bool, int) {
 	lockedSimNum := 0
@@ -690,6 +909,27 @@ func (v *Verifier) sendRollbackVoteForRetry(txHash common.Hash, simulationNum in
 	go v.communicator.SendCommitVote(v.committee.SelfShard, vote)
 }
 
+// sendRollbackVoteForDie 发送 Wait-Die die 侧的终局回滚投票（用户决策：不恢复软重试）。
+// 当前（低优先级/未知）交易在链上撞到更高优先级持有者 → 彻底回滚判死，释放自己在所有分片的锁。
+// 降冲突交给链下/交易池提取策略（internal_pool / OnBlockCommitted），而非软重试。
+func (v *Verifier) sendRollbackVoteForDie(txHash common.Hash, simulation *api.CXTSimulation) {
+	utils.SSCLogger().Warn().Str("txHash", txHash.Hex()).
+		Uint32("originShard", simulation.OriginShardId).
+		Msg("DSN-52 Wait-Die: lower priority, sending terminal rollback vote (no retry)")
+	payload := &api.CXTInvalidSimulationPayload{Type: api.InvalidExecution}
+	payloadBytes, _ := json.Marshal(payload)
+	vote := &api.CXTCommitVote{
+		TxHash:         txHash,
+		ShardId:        v.committee.SelfShard,
+		Type:           api.Rollback,
+		OriginShardId:  simulation.OriginShardId,
+		Reason:         api.ReasonConflictRWSetFailedLock,
+		Payload:        payloadBytes,
+		BaseSSCMessage: api.BaseSSCMessage{Epochs: simulation.Epochs},
+	}
+	go v.communicator.SendCommitVote(v.committee.SelfShard, vote)
+}
+
 // callForRetry 通过 retryScheduler 调度下一轮链下重试
 func (v *Verifier) callForRetry(txHash common.Hash, simulation *api.CXTSimulation) {
 	if !v.committee.IsLeader(simulation.Epochs[v.committee.SelfShard]) {
@@ -703,6 +943,7 @@ func (v *Verifier) callForRetry(txHash common.Hash, simulation *api.CXTSimulatio
 		SimulationNum: simulation.SimulationNum + 1,
 		Condition:     api.Verify,
 		OriginShardID: simulation.OriginShardId,
+		Nonce:         simulation.Nonce,
 	})
 }
 

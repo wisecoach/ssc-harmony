@@ -1169,6 +1169,22 @@ func (db *DB) RollbackTx(txHash common.Hash) error {
 	return db.locker.RollbackTx(txHash)
 }
 
+// FindPendingLockHolder 返回某 key 在同块 pendingStates 中的写锁持有者（DSN-52 Part B）。
+func (db *DB) FindPendingLockHolder(key api.LockKey) (common.Hash, bool) {
+	if db.locker != nil {
+		return db.locker.FindPendingLockHolder(key)
+	}
+	return common.Hash{}, false
+}
+
+// ReleasePendingLocksFor 强制释放某持有者在同块 pendingStates 中的全部锁（DSN-52 Part B）。
+func (db *DB) ReleasePendingLocksFor(txHash common.Hash) int {
+	if db.locker != nil {
+		return db.locker.ReleasePendingLocks(txHash)
+	}
+	return 0
+}
+
 // Commit writes the state to the underlying in-memory trie database.
 func (db *DB) Commit(deleteEmptyObjects bool) (common.Hash, error) {
 	if db.dbErr != nil {

@@ -1072,12 +1072,11 @@ func (sim *Simulator) HandleSimulateRequest(ctx context.Context, req *api.CXTSim
 		}
 		if result.VMErr != nil {
 			if vm.IsLockConflictErr(result.VMErr.Error()) && sim.timerMgr.GetTimeoutConfig() != nil && sim.timerMgr.GetTimeoutConfig().ForceSimulation {
-				// ForceSimulation: conflict but execution completed, mark conflict keys
+				// ForceSimulation: conflict but execution completed; 冲突 key 已记入
+				// callState.LockedKeys，由 retryScheduler.AddToRetry 从本地 states 提取，
+				// 无需再通过结果字段回传。
 				utils.SSCLogger().Debug().Str("txHash", txHash.Hex()).
 					Msgf("ForceSimulation: lock conflict, continuing execution")
-				if callState.LockedByOtherTx != nil && len(callState.LockedKeys) > 0 {
-					ret.ConflictKeys = callState.LockedKeys
-				}
 				ret.Err = api.ErrLockConflict_OnChain.Error()
 			} else {
 				ret.Err = result.VMErr.Error()
