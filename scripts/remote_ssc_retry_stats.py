@@ -35,6 +35,8 @@ def main(logdir):
     chain_dist = defaultdict(Counter)  # distribution dicts
     stats = Counter()        # STATS DUMP fields
     msg = Counter()          # message-substring counters
+    dag_pb = {'max': 0, 'blocks_gt1': 0}  # per-block same-key writes (leader-only lines)
+    chain_fate = Counter()   # [chainTxFate] no-commit close reason (leader-only, DAG-rescued txs)
 
     # retry-limit pairs: (simulationNum, lockedSimulationNum)
     retry_lim = Counter()
@@ -43,6 +45,18 @@ def main(logdir):
     for f in files:
         with open(f, 'r', errors='replace') as fh:
             for line in fh:
+                if '[dagPerBlock]' in line:
+                    d = parse_line(line)
+                    if d is not None:
+                        v = d.get('maxSameKeyWrites')
+                        if isinstance(v, int):
+                            dag_pb['max'] = max(dag_pb['max'], v)
+                            if v > 1:
+                                dag_pb['blocks_gt1'] += 1
+                if '[chainTxFate]' in line:
+                    d = parse_line(line)
+                    if d is not None:
+                        chain_fate[d.get('reason', '?')] += 1
                 if 'CHAIN_RETRY_STATS' in line:
                     d = parse_line(line)
                     if d is None:
@@ -95,6 +109,10 @@ def main(logdir):
                         'retry commit failed',
                         'retry commit success but local tx was wounded',
                         'tryToReSimulation: already in flight, skipping',
+                        # DSN-54 广播 / 反查
+                        'imported simDAGPatch subgraph',
+                        'sent simDAGPatch subgraph to members',
+                        'genuinely-uncovered lock conflict',
                     ):
                         if marker in line:
                             msg[marker] += 1
@@ -103,19 +121,30 @@ def main(logdir):
     # ── print ──
     print("\n===== CHAIN_RETRY_STATS (DAG / retry pipeline) =====")
     key_order = [
-        'chainTxDetected', 'retrySignalReceived', 'retryCommitCall', 'retryCommitFail',
+        'chainTxDetected', 'chainTxCRCommitted', 'retrySignalReceived',
+        'retryCommitCall', 'retryCommitFail',
         'retryCommitRpcErr', 'retryCommitLocked', 'retryCommitWounded',
         'triggerReSim', 'retryCommitFailed', 'retryCommitCalled',
         'retryCommitWoundedPre', 'retryCommitPatchHit', 'retryCommitPatchMiss',
         'retryCommitPrevWounded', 'retryCommitTryLockOk',
         'retryCommitTryLockFail', 'retryCommitTryLockWounded',
         'tryReSimStarted',
+        # DSN-54: covered-but-invisible(命中) vs genuinely-uncovered(真冲突)
+        'simDAGPatchHit', 'simDAGPatchMiss',
+        # DSN-55: chain-ready 局部 admission（前插放行 / 候选）+ rev2 得锁后保锁
+        'chainReadyAdmission', 'chainReadyCandidate', 'dagHoldProtected',
     ]
     for k in key_order:
         if chain[k]:
             print(f"  {k:28s} {chain[k]:>12d}")
+    # 语义标注：
+    #  - chainDepthDist / chainDepthCommitDist：key = 真实 DAG 深度（node.Depth，DSN-50 判定链深用）
+    #  - chainLengthDist / chainCommitDist：key = simulationNum（重试轮次），不是 DAG 深度，勿当深度读
     for k, c in sorted(chain_dist.items()):
-        print(f"  {k} = {dict(sorted(c.items()))}")
+        if k in ('chainDepthDist', 'chainDepthCommitDist'):
+            print(f"  {k} = {dict(sorted(c.items()))}  <- key 是真实 DAG 深度(node.Depth)")
+        else:
+            print(f"  {k} = {dict(sorted(c.items()))}  <- key 是 simulationNum(重试轮次)，非 DAG 深度")
 
     print("\n===== STATS DUMP (tempLock / retry / timers) =====")
     for k in ('tempLockTryTotal', 'tempLockTryFail', 'retryAdd', 'retryReady',
@@ -132,7 +161,11 @@ def main(logdir):
               'consumed patches found, skipping TLV locks',
               'chain tx detected', 'retry commit success', 'retry commit failed',
               'retry commit success but local tx was wounded',
-              'tryToReSimulation: already in flight, skipping'):
+              'tryToReSimulation: already in flight, skipping',
+              # DSN-54 广播 / 反查
+              'imported simDAGPatch subgraph',
+              'sent simDAGPatch subgraph to members',
+              'genuinely-uncovered lock conflict'):
         if msg[k]:
             print(f"  {k:50s} {msg[k]:>10d}")
 
@@ -152,7 +185,17 @@ def main(logdir):
     print(f"  PatchHit={patch_hit} PatchMiss={patch_miss} "
           f"DAG-rescue-share={patch_hit/(patch_hit+tl_fail)*100 if patch_hit+tl_fail else 0:.1f}% of conflicts")
     print(f"  triggerReSim={trig}")
+    # 每块同 key 写入（leader Info 日志 [dagPerBlock]）：跨所有节点取最大 = 全局“一个 key 一块最多改几次”
+    print(f"  dagPerBlockMaxSameKey={dag_pb['max']}  (blocks with same-key-writes>1: {dag_pb['blocks_gt1']})")
 
+    print("\n===== DAG 去向 (chain-rescued tx fate, leader 口径) =====")
+    committed = chain.get('chainTxCRCommitted', 0)
+    no_commit = sum(chain_fate.values())
+    print(f"  chainTxCRCommitted          {committed:>10d}  <- isChainTx 最终 CR commit")
+    print(f"  chainTxNoCommitClose        {no_commit:>10d}  <- 被救起但以非 commit 终局 close")
+    print(f"  ~仍在途/未终局(近似)         {max(trig - committed - no_commit, 0):>10d}  <- triggerReSim - 上面两项")
+    for k, c in chain_fate.most_common(20):
+        print(f"      reason={k:45s} {c:>8d}")
 
     # ── result.txt (if resolvable from RATE in dir name) ──
     import re, glob as _glob

@@ -147,6 +147,12 @@ func (s *stateLocker) Lockable(key api.LockKey, txHash common.Hash) error {
 	if err := s.globalCheckLock(key, txHash, false); err != nil {
 		s.sscService.stats.LockableFailBase.Add(1)
 		s.sscService.stats.RecordLockConflict(string(key))
+		// 真实链上锁冲突：定位 global 写持有者并记 CMH waitEdge(leader)。
+		if v, ok := s.globalLockedStates.Load(key); ok {
+			if st := v.(*lockedState); st != nil && st.lockedBy != (common.Hash{}) {
+				s.maybeRecordChainBlocked(txHash, st.lockedBy, key)
+			}
+		}
 		return err
 	}
 
@@ -155,19 +161,36 @@ func (s *stateLocker) Lockable(key api.LockKey, txHash common.Hash) error {
 		if !ls.lockable(txHash) {
 			s.sscService.stats.LockableFailPending.Add(1)
 			s.sscService.stats.RecordLockConflict(string(key))
+			// pending(同块)真实链上锁冲突：记 CMH waitEdge(leader)。
+			s.maybeRecordChainBlocked(txHash, ls.lockedBy, key)
 			return errors.Wrap(api.ErrLockConflict_OnChain,
 				fmt.Sprintf("[TempLockView] locked by tx %s", ls.lockedBy.Hex()))
 		}
 	}
 
 	// 检查 pending states 的读锁
-	if ls, exists := s.pendingStates.rlockedStates[key]; exists {
+	if h, ok := s.FindPendingLockHolder(key); ok {
 		s.sscService.stats.LockableFailRlock.Add(1)
+		s.maybeRecordChainBlocked(txHash, h, key)
 		return errors.Wrap(api.ErrLockConflict_OnChain,
-			fmt.Sprintf("[TempLockView] rlocked by tx %s", ls.lockedBy))
+			fmt.Sprintf("[TempLockView] rlocked by tx %s", h.Hex()))
 	}
 
 	return nil
+}
+
+// maybeRecordChainBlocked 在链上锁判定(Lockable)判出真实链上锁冲突后调用：
+// 把"请求方 req 想拿 key 却被 holder(global/pending) 占住"记成 CMH waitEdge。
+// 仅分片 leader 有效（内部 onChainBlocked 会门控）；TLV 不作 waitEdge 来源。
+func (s *stateLocker) maybeRecordChainBlocked(req, holder common.Hash, key api.LockKey) {
+	if s == nil || holder == (common.Hash{}) || holder == req {
+		return
+	}
+	if s.sscService == nil || s.sscService.retryScheduler == nil {
+		return
+	}
+	holderPri, _ := s.GetTxPriority(holder)
+	s.sscService.retryScheduler.onChainBlocked(req, holder, key, holderPri)
 }
 
 // Lock 获取一个写锁。写入 pendingStates（隔离），追加 journal 条目。

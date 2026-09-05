@@ -336,15 +336,16 @@ func CXTSimulationRequestFromProto(p *CXTSimulationRequest) *api.CXTSimulationRe
 		rlp.DecodeBytes(p.GetTx().GetData(), tx)
 	}
 	return &api.CXTSimulationRequest{
-		BlockNum:      p.GetBlockNum(),
-		Epochs:        epochsFromProto(p.GetEpochs()),
-		TxHash:        hashFromProto(p.GetTxHash()),
-		SimulationNum: int(p.GetSimulationNum()),
-		Author:        addrPtrFromProto(p.GetAuthor()),
-		BlockHash:     hashFromProto(p.GetBlockHash()),
-		Tx:            tx,
-		From:          addrFromProto(p.GetFrom()),
-		GasPool:       p.GetGasPool(),
+		BlockNum:       p.GetBlockNum(),
+		Epochs:         epochsFromProto(p.GetEpochs()),
+		TxHash:         hashFromProto(p.GetTxHash()),
+		SimulationNum:  int(p.GetSimulationNum()),
+		Author:         addrPtrFromProto(p.GetAuthor()),
+		BlockHash:      hashFromProto(p.GetBlockHash()),
+		Tx:             tx,
+		From:           addrFromProto(p.GetFrom()),
+		GasPool:        p.GetGasPool(),
+		UpstreamTxList: txSimKeysFromProto(p.GetUpstreamTxList()),
 	}
 }
 
@@ -357,15 +358,16 @@ func CXTSimulationRequestToProto(a *api.CXTSimulationRequest) *CXTSimulationRequ
 		txData, _ = rlp.EncodeToBytes(a.Tx)
 	}
 	return &CXTSimulationRequest{
-		BlockNum:      a.BlockNum,
-		Epochs:        epochsToProto(a.Epochs),
-		TxHash:        hashToProto(a.TxHash),
-		SimulationNum: int32(a.SimulationNum),
-		Author:        addrPtrToProto(a.Author),
-		BlockHash:     hashToProto(a.BlockHash),
-		Tx:            &RLPBytes{Data: txData},
-		From:          addrToProto(a.From),
-		GasPool:       a.GasPool,
+		BlockNum:       a.BlockNum,
+		Epochs:         epochsToProto(a.Epochs),
+		TxHash:         hashToProto(a.TxHash),
+		SimulationNum:  int32(a.SimulationNum),
+		Author:         addrPtrToProto(a.Author),
+		BlockHash:      hashToProto(a.BlockHash),
+		Tx:             &RLPBytes{Data: txData},
+		From:           addrToProto(a.From),
+		GasPool:        a.GasPool,
+		UpstreamTxList: txSimKeysToProto(a.UpstreamTxList),
 	}
 }
 
@@ -472,7 +474,6 @@ func CXTSimulationFromProto(p *CXTSimulation) *api.CXTSimulation {
 		OriginShardId:        p.GetOriginShardId(),
 		RelatedShards:        relatedShardsFromProto(p.GetRelatedShards()),
 		CallStates:           callStatesFromProto(p.GetCallStates()),
-		ChainPatch:           rwSetFromProto(p.GetChainPatch()),
 		UpstreamTxList:       txSimKeysFromProto(p.GetUpstreamTxList()),
 		BaseBLSSignedMessage: baseBLSFromProto(p.GetBase()),
 	}
@@ -491,7 +492,6 @@ func CXTSimulationToProto(a *api.CXTSimulation) *CXTSimulation {
 		OriginShardId:  a.OriginShardId,
 		RelatedShards:  relatedShardsToProto(a.RelatedShards),
 		CallStates:     callStatesToProto(a.CallStates),
-		ChainPatch:     rwSetToProto(a.ChainPatch),
 		UpstreamTxList: txSimKeysToProto(a.UpstreamTxList),
 		Base:           baseBLSToProto(a.BaseBLSSignedMessage),
 	}
@@ -988,13 +988,13 @@ func RetrySignalFromProto(p *RetrySignal) *api.RetrySignal {
 		return nil
 	}
 	return &api.RetrySignal{
-		TxHash:        hashFromProto(p.GetTxHash()),
-		FromShard:     p.GetFromShard(),
-		Epoch:         api.Epoch(p.GetEpoch()),
-		SimulationNum: int(p.GetSimulationNum()),
-		Condition:     conflictConditionFromProto(p.GetCondition()),
-		Ready:         p.GetReady(),
-		ChainPatch:    rwSetFromProto(p.GetChainPatch()),
+		TxHash:         hashFromProto(p.GetTxHash()),
+		FromShard:      p.GetFromShard(),
+		Epoch:          api.Epoch(p.GetEpoch()),
+		SimulationNum:  int(p.GetSimulationNum()),
+		Condition:      conflictConditionFromProto(p.GetCondition()),
+		Ready:          p.GetReady(),
+		UpstreamTxList: txSimKeysFromProto(p.GetUpstreamTxList()),
 	}
 }
 
@@ -1003,13 +1003,13 @@ func RetrySignalToProto(a *api.RetrySignal) *RetrySignal {
 		return nil
 	}
 	return &RetrySignal{
-		TxHash:        hashToProto(a.TxHash),
-		FromShard:     a.FromShard,
-		Epoch:         uint64(a.Epoch),
-		SimulationNum: int32(a.SimulationNum),
-		Condition:     conflictConditionToProto(a.Condition),
-		Ready:         a.Ready,
-		ChainPatch:    rwSetToProto(a.ChainPatch),
+		TxHash:         hashToProto(a.TxHash),
+		FromShard:      a.FromShard,
+		Epoch:          uint64(a.Epoch),
+		SimulationNum:  int32(a.SimulationNum),
+		Condition:      conflictConditionToProto(a.Condition),
+		Ready:          a.Ready,
+		UpstreamTxList: txSimKeysToProto(a.UpstreamTxList),
 	}
 }
 
@@ -1372,6 +1372,180 @@ func retryStatusToProto(a api.RetryStatus) RetryStatus {
 }
 
 // ============================================================================
+// Deadlock probe types (priority-aware reverse CMH)
+// ============================================================================
+
+func hashesFromProto(p []*Hash) []common.Hash {
+	if p == nil {
+		return nil
+	}
+	out := make([]common.Hash, len(p))
+	for i, h := range p {
+		out[i] = hashFromProto(h)
+	}
+	return out
+}
+
+func hashesToProto(hs []common.Hash) []*Hash {
+	if hs == nil {
+		return nil
+	}
+	out := make([]*Hash, len(hs))
+	for i, h := range hs {
+		out[i] = hashToProto(h)
+	}
+	return out
+}
+
+func lockLayerFromProto(p LockLayer) api.LockLayer {
+	switch p {
+	case LockLayer_LOCK_LAYER_TLV:
+		return api.LockLayerTLV
+	default:
+		return api.LockLayerOnChain
+	}
+}
+
+func lockLayerToProto(a api.LockLayer) LockLayer {
+	switch a {
+	case api.LockLayerTLV:
+		return LockLayer_LOCK_LAYER_TLV
+	default:
+		return LockLayer_LOCK_LAYER_ONCHAIN
+	}
+}
+
+func DeadlockProbeFromProto(p *DeadlockProbe) *api.DeadlockProbe {
+	if p == nil {
+		return nil
+	}
+	out := &api.DeadlockProbe{
+		Init:                 hashFromProto(p.GetInit()),
+		Sender:               hashFromProto(p.GetSender()),
+		Current:              hashFromProto(p.GetCurrent()),
+		Path:                 hashesFromProto(p.GetPath()),
+		Layer:                lockLayerFromProto(p.GetLayer()),
+		WaitKey:              lockKeyFromProto(p.GetWaitKey()),
+		Epoch:                p.GetEpoch(),
+		BlockNum:             p.GetBlockNum(),
+		Nonce:                p.GetNonce(),
+		Shard:                p.GetShard(),
+		BaseBLSSignedMessage: baseBLSFromProto(p.GetBase()),
+	}
+	// Proof：沿途各跳探针链（扁平化，不带各自 Proof），递归转换。
+	if n := len(p.GetProof()); n > 0 {
+		out.Proof = make([]*api.DeadlockProbe, 0, n)
+		for _, hop := range p.GetProof() {
+			if hp := DeadlockProbeFromProto(hop); hp != nil {
+				out.Proof = append(out.Proof, hp)
+			}
+		}
+	}
+	return out
+}
+
+func DeadlockProbeToProto(a *api.DeadlockProbe) *DeadlockProbe {
+	if a == nil {
+		return nil
+	}
+	out := &DeadlockProbe{
+		Init:     hashToProto(a.Init),
+		Sender:   hashToProto(a.Sender),
+		Current:  hashToProto(a.Current),
+		Path:     hashesToProto(a.Path),
+		Layer:    lockLayerToProto(a.Layer),
+		WaitKey:  lockKeyToProto(a.WaitKey),
+		Epoch:    a.Epoch,
+		BlockNum: a.BlockNum,
+		Nonce:    a.Nonce,
+		Shard:    a.Shard,
+		Base:     baseBLSToProto(a.BaseBLSSignedMessage),
+	}
+	// Proof：沿途各跳探针链（扁平化，不带各自 Proof），递归转换。
+	if n := len(a.Proof); n > 0 {
+		out.Proof = make([]*DeadlockProbe, 0, n)
+		for _, hop := range a.Proof {
+			if hp := DeadlockProbeToProto(hop); hp != nil {
+				out.Proof = append(out.Proof, hp)
+			}
+		}
+	}
+	return out
+}
+
+func DeadlockProbeAckFromProto(p *DeadlockProbeAck) *api.DeadlockProbeAck {
+	if p == nil {
+		return nil
+	}
+	return &api.DeadlockProbeAck{
+		Init:     hashFromProto(p.GetInit()),
+		Current:  hashFromProto(p.GetCurrent()),
+		Shard:    p.GetShard(),
+		Accepted: p.GetAccepted(),
+	}
+}
+
+func DeadlockProbeAckToProto(a *api.DeadlockProbeAck) *DeadlockProbeAck {
+	if a == nil {
+		return nil
+	}
+	return &DeadlockProbeAck{
+		Init:     hashToProto(a.Init),
+		Current:  hashToProto(a.Current),
+		Shard:    a.Shard,
+		Accepted: a.Accepted,
+	}
+}
+
+// VictimTxFromProto 反序列化 VictimTx（含 Proof 链，扁平化递归）。
+func VictimTxFromProto(p *VictimTx) *api.VictimTx {
+	if p == nil {
+		return nil
+	}
+	out := &api.VictimTx{
+		TxHash:        hashFromProto(p.GetTxHash()),
+		Nonce:         p.GetNonce(),
+		OriginShardId: p.GetOriginShardId(),
+		RelatedShards: p.GetRelatedShards(),
+		Epochs:        epochsFromProto(p.GetEpochs()),
+		SimulationNum: int(p.GetSimulationNum()),
+	}
+	if n := len(p.GetProof()); n > 0 {
+		out.Proof = make([]*api.DeadlockProbe, 0, n)
+		for _, hop := range p.GetProof() {
+			if hp := DeadlockProbeFromProto(hop); hp != nil {
+				out.Proof = append(out.Proof, hp)
+			}
+		}
+	}
+	return out
+}
+
+// VictimTxToProto 序列化 VictimTx（含 Proof 链，扁平化递归）。
+func VictimTxToProto(a *api.VictimTx) *VictimTx {
+	if a == nil {
+		return nil
+	}
+	out := &VictimTx{
+		TxHash:        hashToProto(a.TxHash),
+		Nonce:         a.Nonce,
+		OriginShardId: a.OriginShardId,
+		RelatedShards: a.RelatedShards,
+		Epochs:        epochsToProto(a.Epochs),
+		SimulationNum: uint32(a.SimulationNum),
+	}
+	if n := len(a.Proof); n > 0 {
+		out.Proof = make([]*DeadlockProbe, 0, n)
+		for _, hop := range a.Proof {
+			if hp := DeadlockProbeToProto(hop); hp != nil {
+				out.Proof = append(out.Proof, hp)
+			}
+		}
+	}
+	return out
+}
+
+// ============================================================================
 // ModuleStatus converters (monitoring gRPC service)
 // ============================================================================
 
@@ -1386,20 +1560,20 @@ func ModuleStatusToProto(m *api.ModuleStatus) *ModuleStatus {
 		TxTraces:     int64(m.TxTraces),
 		InternalPool: int64(m.InternalPool),
 		RetryScheduler: &RetrySchedulerStatus{
-			RetryPool:       int64(m.RetryScheduler.RetryPool),
-			PassivePool:     int64(m.RetryScheduler.PassivePool),
-			StaleTxs:        int64(m.RetryScheduler.StaleTxs),
-			Signals:         int64(m.RetryScheduler.Signals),
-			Patches:         int64(m.RetryScheduler.Patches),
-			OnChainPatches:  int64(m.RetryScheduler.OnChainPatches),
-			LocalPatches:    int64(m.RetryScheduler.LocalPatches),
-			KeyIndex:        int64(m.RetryScheduler.KeyIndex),
-			Subscriber:      int64(m.RetryScheduler.Subscriber),
-			TxSubKeys:       int64(m.RetryScheduler.TxSubKeys),
-			ConsumedPatches: int64(m.RetryScheduler.ConsumedPatches),
-			ReSimInFlight:   int64(m.RetryScheduler.ReSimInFlight),
-			WoundedRetryTxs: int64(m.RetryScheduler.WoundedRetryTxs),
-			LockWait:        int64(m.RetryScheduler.LockWait),
+			RetryPool:         int64(m.RetryScheduler.RetryPool),
+			PassivePool:       int64(m.RetryScheduler.PassivePool),
+			StaleTxs:          int64(m.RetryScheduler.StaleTxs),
+			Signals:           int64(m.RetryScheduler.Signals),
+			Patches:           int64(m.RetryScheduler.Patches),
+			OnChainDagPatches: int64(m.RetryScheduler.OnChainDAGPatches),
+			LocalPatches:      int64(m.RetryScheduler.LocalPatches),
+			KeyIndex:          int64(m.RetryScheduler.KeyIndex),
+			Subscriber:        int64(m.RetryScheduler.Subscriber),
+			TxSubKeys:         int64(m.RetryScheduler.TxSubKeys),
+			ConsumedPatches:   int64(m.RetryScheduler.ConsumedPatches),
+			ReSimInFlight:     int64(m.RetryScheduler.ReSimInFlight),
+			WoundedRetryTxs:   int64(m.RetryScheduler.WoundedRetryTxs),
+			LockWait:          int64(m.RetryScheduler.LockWait),
 		},
 		StateLock: &StateLockStatus{
 			GlobalLocked:      int64(m.StateLock.GlobalLocked),
@@ -1450,20 +1624,20 @@ func ModuleStatusFromProto(p *ModuleStatus) *api.ModuleStatus {
 	}
 	if rs := p.GetRetryScheduler(); rs != nil {
 		m.RetryScheduler = api.RetrySchedulerStatus{
-			RetryPool:       int(rs.GetRetryPool()),
-			PassivePool:     int(rs.GetPassivePool()),
-			StaleTxs:        int(rs.GetStaleTxs()),
-			Signals:         int(rs.GetSignals()),
-			Patches:         int(rs.GetPatches()),
-			OnChainPatches:  int(rs.GetOnChainPatches()),
-			LocalPatches:    int(rs.GetLocalPatches()),
-			KeyIndex:        int(rs.GetKeyIndex()),
-			Subscriber:      int(rs.GetSubscriber()),
-			TxSubKeys:       int(rs.GetTxSubKeys()),
-			ConsumedPatches: int(rs.GetConsumedPatches()),
-			ReSimInFlight:   int(rs.GetReSimInFlight()),
-			WoundedRetryTxs: int(rs.GetWoundedRetryTxs()),
-			LockWait:        int(rs.GetLockWait()),
+			RetryPool:         int(rs.GetRetryPool()),
+			PassivePool:       int(rs.GetPassivePool()),
+			StaleTxs:          int(rs.GetStaleTxs()),
+			Signals:           int(rs.GetSignals()),
+			Patches:           int(rs.GetPatches()),
+			OnChainDAGPatches: int(rs.GetOnChainDagPatches()),
+			LocalPatches:      int(rs.GetLocalPatches()),
+			KeyIndex:          int(rs.GetKeyIndex()),
+			Subscriber:        int(rs.GetSubscriber()),
+			TxSubKeys:         int(rs.GetTxSubKeys()),
+			ConsumedPatches:   int(rs.GetConsumedPatches()),
+			ReSimInFlight:     int(rs.GetReSimInFlight()),
+			WoundedRetryTxs:   int(rs.GetWoundedRetryTxs()),
+			LockWait:          int(rs.GetLockWait()),
 		}
 	}
 	if sl := p.GetStateLock(); sl != nil {
@@ -1512,4 +1686,82 @@ func ModuleStatusFromProto(p *ModuleStatus) *api.ModuleStatus {
 		}
 	}
 	return m
+}
+
+// ============================================================================
+// DSN-54: 模拟期链下 DAG patch 子图 (StoreSimDAGPatch)
+// ============================================================================
+
+func SimPatchNodeFromProto(p *SimPatchNode) *api.SimPatchNode {
+	if p == nil {
+		return nil
+	}
+	return &api.SimPatchNode{
+		TxSim:    TxSimKeyFromProto(p.GetTxSim()),
+		Upstream: txSimKeysFromProto(p.GetUpstream()),
+		Writes:   rwSetFromProto(p.GetPatch()),
+	}
+}
+
+func SimPatchNodeToProto(n *api.SimPatchNode) *SimPatchNode {
+	if n == nil {
+		return nil
+	}
+	return &SimPatchNode{
+		TxSim:    TxSimKeyToProto(n.TxSim),
+		Upstream: txSimKeysToProto(n.Upstream),
+		Patch:    rwSetToProto(n.Writes),
+	}
+}
+
+func SimPatchSubgraphFromProto(p *SimPatchSubgraph) *api.SimPatchSubgraph {
+	if p == nil {
+		return nil
+	}
+	nodes := make([]*api.SimPatchNode, 0, len(p.GetNodes()))
+	for _, n := range p.GetNodes() {
+		if v := SimPatchNodeFromProto(n); v != nil {
+			nodes = append(nodes, v)
+		}
+	}
+	return &api.SimPatchSubgraph{
+		TxHash:        hashFromProto(p.GetTxHash()),
+		SimulationNum: int(p.GetSimulationNum()),
+		Nodes:         nodes,
+	}
+}
+
+func SimPatchSubgraphToProto(s *api.SimPatchSubgraph) *SimPatchSubgraph {
+	if s == nil {
+		return nil
+	}
+	nodes := make([]*SimPatchNode, 0, len(s.Nodes))
+	for _, n := range s.Nodes {
+		if v := SimPatchNodeToProto(n); v != nil {
+			nodes = append(nodes, v)
+		}
+	}
+	return &SimPatchSubgraph{
+		TxHash:        hashToProto(s.TxHash),
+		SimulationNum: int32(s.SimulationNum),
+		Nodes:         nodes,
+	}
+}
+
+func StoreSimDAGPatchRequestFromProto(p *StoreSimDAGPatchRequest) *api.StoreSimDAGPatchRequest {
+	if p == nil {
+		return nil
+	}
+	return &api.StoreSimDAGPatchRequest{
+		Subgraph: SimPatchSubgraphFromProto(p.GetSubgraph()),
+	}
+}
+
+func StoreSimDAGPatchRequestToProto(a *api.StoreSimDAGPatchRequest) *StoreSimDAGPatchRequest {
+	if a == nil {
+		return nil
+	}
+	return &StoreSimDAGPatchRequest{
+		Subgraph: SimPatchSubgraphToProto(a.Subgraph),
+	}
 }

@@ -795,6 +795,10 @@ func (vm *SSCVM) ProcessInternal(tx *types.SSCInternalTx, stateDB api.StateDB, h
 	case types.InternalTxTypeCRTx:
 		// CRTx：提交或回滚
 		return vm.SSCService.CommitOrRollbackWithProof(tx.Payload, stateDB, header.Number().Uint64())
+	case types.InternalTxTypeVictimTx:
+		// VictimTx：CMH 判环后打进本分片的控制交易。不碰状态、不抢锁；
+		// 每个 validator 执行到它就向本分片 leader 投一张 rollback 票（VictimTx 方案）。
+		return vm.SSCService.HandleVictimTx(tx.Payload)
 	case types.InternalTxTypeNewEpoch:
 		return vm.SSCService.NewEpoch(tx.Payload, vm, stateDB, header.Number().Uint64())
 	case types.InternalTxTypeUploadOpinions:

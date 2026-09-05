@@ -286,7 +286,7 @@ type ShardSimulateCommitteeConfig struct {
 
 // ChainConfig controls the simulation dependency chaining (DAG chaining).
 // When enabled, submitting a SimTx triggers chainNextSim which searches the
-// retry pool for dependent transactions and sends them ChainPatch signals so
+// retry pool for dependent transactions and sends them DAG upstream-index signals so
 // they can simulate in the same block without waiting for block confirmation.
 type ChainConfig struct {
 	Enabled     bool `json:"enabled" yaml:"enabled"`             // master switch
@@ -315,6 +315,11 @@ type TimeoutConfig struct {
 	ForceSimulation      bool   `json:"force_simulation" yaml:"force_simulation"`               // continue execution on lock conflict, get full RWSet
 	EnableLockOnConflict bool   `json:"enable_lock_on_conflict" yaml:"enable_lock_on_conflict"` // lock conflict callState via lockStateWithExecution before CallForRetry
 	MaxChainDepth        int    `json:"max_chain_depth" yaml:"max_chain_depth"`                 // DSN-50: 链下 DAG 链深上限（<=0 时使用默认值 5）
+	// EnableDAG 控制整个链下 off-chain DAG / PatchPool 子系统是否启用。
+	// 默认 false（消融/调试用）：禁用后 AddNode/MarkReady/consume/release 全部空转，
+	// isPatchFinalized 恒为 true（所有锁都视为不可 wound），conflict 不再被 patch 救援。
+	// 置 true 时恢复原有 DAG 链式救援行为。实验/消融开关。
+	EnableDAG bool `json:"enable_dag" yaml:"enable_dag"`
 }
 
 type ReputationConfig struct {
@@ -411,6 +416,8 @@ type CXTSimulationRequest struct {
 	Tx            *types.Transaction
 	From          common.Address
 	GasPool       uint64
+	// UpstreamTxList — DSN-54：leader 已分配的上游引用，成员据此从 simDAGPatches 反查上游写集。
+	UpstreamTxList []TxSimKey
 }
 
 // CXTSimulationResult is the result of the cross-shard transaction simulation
@@ -554,7 +561,6 @@ type CXTSimulation struct {
 	OriginShardId  uint32
 	RelatedShards  RelatedShards
 	CallStates     []*CXTCallState // all cross-shard call of cxt related to this shard
-	ChainPatch     *RWSet          `json:"chain_patch,omitempty"`      // merged upstream WriteSet for chained retries
 	UpstreamTxList []TxSimKey      `json:"upstream_tx_list,omitempty"` // all upstream SimTxs (DAG)
 	BaseBLSSignedMessage
 }
@@ -569,7 +575,6 @@ func (m *CXTSimulation) Bytes() []byte {
 		OriginShardId  uint32
 		RelatedShards  RelatedShards
 		CallStates     []*CXTCallState
-		ChainPatch     *RWSet
 		UpstreamTxList []TxSimKey
 	}
 	msg := CXTSimulationWithoutSignature{
@@ -581,7 +586,6 @@ func (m *CXTSimulation) Bytes() []byte {
 		OriginShardId:  m.OriginShardId,
 		RelatedShards:  m.RelatedShards,
 		CallStates:     m.CallStates,
-		ChainPatch:     m.ChainPatch,
 		UpstreamTxList: m.UpstreamTxList,
 	}
 	bytes, err := json.Marshal(msg)
@@ -1029,11 +1033,13 @@ type RetrySignal struct {
 	SimulationNum int
 	Condition     ConflictCondition
 	Ready         bool
-	// ChainPatch carries the WriteSet from the upstream SimTx in a simulation
-	// dependency chain. When set, the origin shard stores this in
-	// CXTSimulationState.ChainPatch so downstream retry simulations read the
-	// upstream's produced state values without waiting for block confirmation.
-	ChainPatch *RWSet `json:"chain_patch,omitempty"`
+	// UpstreamTxList is the DAG upstream edge set (the source of truth). When a
+	// tx is rescued as a DAG chain member, this must travel with the retry signal
+	// so the origin shard persists the upstream node into its offChainDAG and the
+	// later CommitSimulation can build a SimTx that carries a non-empty
+	// UpstreamTxList → Verify judges chain → skips lock conflict.
+	// (DSN-56：不再携带扁平 merged ChainPatch；上游写集从 offChainDAG/simDAGPatches 反查。)
+	UpstreamTxList []TxSimKey `json:"upstream_tx_list,omitempty"`
 }
 
 // ChainNode represents a node in the simulation dependency chain.
@@ -1049,6 +1055,27 @@ type ChainNode struct {
 type TxSimKey struct {
 	TxHash        common.Hash
 	SimulationNum int
+}
+
+// SimPatchNode — DSN-54 模拟期链下 DAG patch 子图的一个节点。
+// Writes 用 RWSet 承载本节点写集（只看 WriteState）；Upstream 为上游边（供传递依赖反查）。
+type SimPatchNode struct {
+	TxSim    TxSimKey
+	Upstream []TxSimKey
+	Writes   *RWSet
+}
+
+// SimPatchSubgraph — leader 从 offChainDAG 为该交易某一轮模拟构建的上游 patch 子图，
+// 广播给成员后，成员按 (txHash, simulationNum) 存入 simDAGPatches。
+type SimPatchSubgraph struct {
+	TxHash        common.Hash
+	SimulationNum int
+	Nodes         []*SimPatchNode
+}
+
+// StoreSimDAGPatchRequest — 广播 RPC 的载荷。
+type StoreSimDAGPatchRequest struct {
+	Subgraph *SimPatchSubgraph
 }
 
 // Priority defines a global ordering for retryTx lock contention.
@@ -1167,35 +1194,26 @@ type SimulationState struct {
 	SimulationCallStates  map[int]SimulationCallStates
 	LockedCallIndex       CallIndex
 	CallForest            *CallForest
-	ChainPatch            *RWSet        `json:"chain_patch,omitempty"`
 	SimulateCh            chan struct{} `json:"-"`
 	SimulationReentryLock sync.Mutex    `json:"-"`
 }
 
 type CXTSimulationState struct {
-	Nonce                uint64
-	TxSender             common.Address
-	Epochs               []Epoch
-	CurrentCallFrame     *CallFrame
-	CallStack            *CallStack
-	Status               CXTStatus
-	SimulationRequest    *CXTSimulationRequest // the simulation request, only origin member has this
-	SimulationResult     *CXTSimulationSSCResult
-	SimulationCallStates map[int]SimulationCallStates
-	SimulationNum        int       // the number of the simulation used to identify the recall
-	LockedCallIndex      CallIndex // the locked call index, only the recall after this call index need to be executed
-	OriginShardId        uint32
-	RelatedShards        RelatedShards
-	RetrySignals         map[int]map[uint32]*RetrySignal
-	CallForest           *CallForest
-	// ChainPatch stores state values from an upstream SimTx's WriteSet in a
-	// simulation dependency chain. When set, GetState() checks this patch FIRST
-	// before querying stateDB, allowing downstream retry simulations to read
-	// the upstream's produced state values from the same block's chain.
-	ChainPatch *RWSet `json:"chain_patch,omitempty"`
-	// ChainPatchRef 引用：当此 tx 是链式 retry 时，指向 RetryScheduler.offChainDAG 中的节点
-	// GetState 时递归查 offChainDAG 链读取上游 WriteSet
-	ChainPatchRef         *TxSimKey          `json:"chain_patch_ref,omitempty"`
+	Nonce                 uint64
+	TxSender              common.Address
+	Epochs                []Epoch
+	CurrentCallFrame      *CallFrame
+	CallStack             *CallStack
+	Status                CXTStatus
+	SimulationRequest     *CXTSimulationRequest // the simulation request, only origin member has this
+	SimulationResult      *CXTSimulationSSCResult
+	SimulationCallStates  map[int]SimulationCallStates
+	SimulationNum         int       // the number of the simulation used to identify the recall
+	LockedCallIndex       CallIndex // the locked call index, only the recall after this call index need to be executed
+	OriginShardId         uint32
+	RelatedShards         RelatedShards
+	RetrySignals          map[int]map[uint32]*RetrySignal
+	CallForest            *CallForest
 	SimulateCh            chan struct{}      `json:"-"`
 	SimulationReentryLock sync.Mutex         `json:"-"`
 	Ctx                   context.Context    `json:"-"`
@@ -1395,4 +1413,122 @@ type RetryCommitResp struct {
 	TxHash              common.Hash
 	Locked              bool
 	OnChainLockConflict bool // 锁定失败的原因是链上锁冲突（用于 v2 被动池决策）
+}
+
+// LockLayer 标明一条等待边来自哪一层锁（DSN-53 §3.3）。
+type LockLayer uint8
+
+const (
+	LockLayerOnChain LockLayer = iota // 链上 SLM（主目标，持久）
+	LockLayerTLV                      // 链下 TLV（仅当持有者已 Finalized/将上链才构成持久边）
+)
+
+func (l LockLayer) String() string {
+	switch l {
+	case LockLayerOnChain:
+		return "onchain"
+	case LockLayerTLV:
+		return "tlv"
+	default:
+		return "unknown"
+	}
+}
+
+// DeadlockProbe 是跨分片优先级感知反向 CMH 探针。
+// 每个转发 hop 由发送分片 SSC 委员会阈值聚合 BLS 签名背书。
+// Bytes() 对除 BaseBLSSignedMessage 外的全部字段做确定性序列化，供 BLS 签名/验证。
+type DeadlockProbe struct {
+	Init     common.Hash   // 发起者（探针回到 Init 即成环）
+	Sender   common.Hash   // 当前发送者（上一跳被卡的交易）
+	Current  common.Hash   // 当前接收者（要检查它是否在等别人）
+	Path     []common.Hash // 已访问路径（用于选 victim）
+	Layer    LockLayer     // 上一跳 waitEdge 来自哪一层
+	WaitKey  LockKey       // 上一跳 waitEdge 的冲突 key（可选）
+	Epoch    uint64        // 当前所在 epoch（防跨 epoch 重放）
+	BlockNum uint64        // 触发时的块号（防 stale）
+	Nonce    uint64        // 发起者唯一 nonce（去重/防重放）
+	Shard    uint32        // 当前所在分片
+	// Proof 是 A 方案（VictimTx 证明）：探针在转发过程中累积的、沿途各跳已
+	// 门限签名的探针消息链。用于最后一跳判环后，作为“这笔确实被 CMH 判成链上
+	// 死锁”的证据带进 VictimTx。
+	// 注意：Proof 不进入 Bytes() 的签名范围（各跳自身仍各自签名），因此不影响
+	// 既有探针验签；它只是随探针携带的只读证据累积。存储的每个 hop 均不带各自
+	// 的 Proof（扁平化，避免 O(n^2) 递归膨胀）。
+	Proof []*DeadlockProbe `json:"proof,omitempty"`
+	BaseBLSSignedMessage
+}
+
+func (m *DeadlockProbe) Bytes() []byte {
+	type DeadlockProbeWithoutSignature struct {
+		Init     common.Hash
+		Sender   common.Hash
+		Current  common.Hash
+		Path     []common.Hash
+		Layer    LockLayer
+		WaitKey  LockKey
+		Epoch    uint64
+		BlockNum uint64
+		Nonce    uint64
+		Shard    uint32
+	}
+	msg := DeadlockProbeWithoutSignature{
+		Init:     m.Init,
+		Sender:   m.Sender,
+		Current:  m.Current,
+		Path:     m.Path,
+		Layer:    m.Layer,
+		WaitKey:  m.WaitKey,
+		Epoch:    m.Epoch,
+		BlockNum: m.BlockNum,
+		Nonce:    m.Nonce,
+		Shard:    m.Shard,
+	}
+	b, err := json.Marshal(msg)
+	if err != nil {
+		return nil
+	}
+	return b
+}
+
+// DeadlockProbeAck 是探针的受理回执（可选，用于监控/确认）。
+type DeadlockProbeAck struct {
+	Init     common.Hash
+	Current  common.Hash
+	Shard    uint32
+	Accepted bool
+}
+
+func (m *DeadlockProbeAck) Bytes() []byte {
+	b, err := json.Marshal(struct {
+		Init     common.Hash
+		Current  common.Hash
+		Shard    uint32
+		Accepted bool
+	}{
+		Init:     m.Init,
+		Current:  m.Current,
+		Shard:    m.Shard,
+		Accepted: m.Accepted,
+	})
+	if err != nil {
+		return nil
+	}
+	return b
+}
+
+// VictimTx 是 CMH 判环后、由“最后一跳发现环的 shard”的 leader 构造并打进本分片
+// 的内部控制交易（DSN-53 VictimTx 方案）。它不碰状态、不与任何 SimTx 抢锁，
+// 只是让本分片每个 validator 在块内看到后，各自向 leader 投一张 Rollback vote，
+// 从而凑够委员会门限、沿既有 rollback 路径终局回滚 victim。
+//
+// Proof 携带“判环这一路上各跳的签名探测消息链”（A 方案），是 validator 验证
+// “victim 确实被 CMH 判成链上死锁”的证明。
+type VictimTx struct {
+	TxHash        common.Hash      // victim 交易 hash
+	Nonce         uint64           // victim nonce（用于同桶内按 priority 排序）
+	OriginShardId uint32           // victim 的 origin shard
+	RelatedShards []uint32         // victim 的 related shards
+	Epochs        []Epoch          // victim 各分片 epoch（对齐 CXTCommitVote 语义）
+	SimulationNum int              // victim 当前 simulation 代数
+	Proof         []*DeadlockProbe // 跨分片探测证据链（沿途各跳签名探针）
 }

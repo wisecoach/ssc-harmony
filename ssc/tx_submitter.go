@@ -97,6 +97,20 @@ func (t *txSubmitter) SubmitCommitOrRollbackTx(proof *api.CXTCommitProof) error 
 	return t.submitInternal(types.InternalTxTypeCRTx, t.selfShard, payload, proof.TxHash)
 }
 
+// SubmitVictimTx 提交 VictimTx 到内部池（仅本分片）。
+// VictimTx 是 CMH 判环后由最后一跳 shard leader 打进来的控制交易，只发给本分片，
+// 不广播给其它分片；进块后让本分片每个 validator 各自投 rollback 票。
+func (t *txSubmitter) SubmitVictimTx(victimTx *api.VictimTx) error {
+	if victimTx == nil {
+		return nil
+	}
+	payload, err := proto.Marshal(sscpb.VictimTxToProto(victimTx))
+	if err != nil {
+		return err
+	}
+	return t.submitInternal(types.InternalTxTypeVictimTx, t.selfShard, payload, victimTx.TxHash)
+}
+
 // SubmitEmptyTx 提交空内部交易到内部池。
 func (t *txSubmitter) SubmitEmptyTx() error {
 	return t.submitInternal(types.InternalTxTypeEmpty, t.selfShard, []byte{}, common.Hash{})

@@ -10,20 +10,20 @@ package api
 
 // RetrySchedulerStatus 重试调度器内部各池/索引的条目数。
 type RetrySchedulerStatus struct {
-	RetryPool       int `json:"retry_pool"`
-	PassivePool     int `json:"passive_pool"`
-	StaleTxs        int `json:"stale_txs"`
-	Signals         int `json:"signals"`
-	Patches         int `json:"patches"`
-	OnChainPatches  int `json:"on_chain_patches"`
-	LocalPatches    int `json:"local_patches"`
-	KeyIndex        int `json:"key_index"`
-	Subscriber      int `json:"subscriber"`
-	TxSubKeys       int `json:"tx_sub_keys"`
-	ConsumedPatches int `json:"consumed_patches"`
-	ReSimInFlight   int `json:"re_sim_in_flight"`
-	WoundedRetryTxs int `json:"wounded_retry_txs"`
-	LockWait        int `json:"lock_wait"`
+	RetryPool         int `json:"retry_pool"`
+	PassivePool       int `json:"passive_pool"`
+	StaleTxs          int `json:"stale_txs"`
+	Signals           int `json:"signals"`
+	Patches           int `json:"patches"`
+	OnChainDAGPatches int `json:"on_chain_dag_patches"`
+	LocalPatches      int `json:"local_patches"`
+	KeyIndex          int `json:"key_index"`
+	Subscriber        int `json:"subscriber"`
+	TxSubKeys         int `json:"tx_sub_keys"`
+	ConsumedPatches   int `json:"consumed_patches"`
+	ReSimInFlight     int `json:"re_sim_in_flight"`
+	WoundedRetryTxs   int `json:"wounded_retry_txs"`
+	LockWait          int `json:"lock_wait"`
 }
 
 // StateLockStatus 状态锁管理器各全局 sync.Map 的条目数。
@@ -64,11 +64,14 @@ type TimerStatus struct {
 	PoolTimeoutBuckets int `json:"pool_timeout_buckets"`
 }
 
-// DAGStatus DAG / ChainPatch 使用情况（累计值，不随日志差分重置）。
+// DAGStatus DAG 使用情况（累计值，不随日志差分重置）。
 type DAGStatus struct {
-	ChainTxDetected      int `json:"chain_tx_detected"`       // VerifySimulation 判定为链式交易（跳过锁检查）次数
-	RetryCommitPatchHit  int `json:"retry_commit_patch_hit"`  // RetryCommit 被 DAG Patch 救回次数
-	RetryCommitPatchMiss int `json:"retry_commit_patch_miss"` // RetryCommit Patch 匹配但消费失败次数
+	ChainTxDetected      int `json:"chain_tx_detected"`      // VerifySimulation 判定为链式交易（跳过锁检查）次数
+	RetryCommitPatchHit  int `json:"retry_commit_patch_hit"` // RetryCommit 被 DAG Patch 救回次数
+	RetryCommitPatchMiss int `json:"retry_commit_patch_miss"`
+	ChainTxCRCommitted   int `json:"chain_tx_cr_committed"` // 链式(isChainTx)交易最终 CR commit 的次数（累计）
+	// DagPerBlockMaxSameKey — 单个块内同一 key 最多被几笔 SimTx 写入（leader 计，运行累计最大值）。
+	DagPerBlockMaxSameKey int `json:"dag_per_block_max_same_key"`
 }
 
 // ModuleStatus 汇总 sscService 及所有子模块的数据量。

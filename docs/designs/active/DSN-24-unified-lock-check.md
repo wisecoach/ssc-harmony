@@ -2,7 +2,7 @@
 
 > **版本**：v1（2026-07-08）
 > **状态**：设计阶段
-> **关联文档**：`DSN-23-patchpool-dag-design.md`（DAG 多 Patch）、`DSN-22-retrycommit-lock-order-fix.md`（三阶段 RetryCommit）
+> **关联文档**：`../archived/DSN-23-patchpool-dag-design.md`（DAG 多 Patch）、`DSN-22-retrycommit-lock-order-fix.md`（三阶段 RetryCommit）
 
 ---
 

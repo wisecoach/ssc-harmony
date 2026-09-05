@@ -27,11 +27,15 @@ const (
 	Method_SignalReSimulation         = "ssc_signalReSimulation"
 	Method_AddRetryTx                 = "ssc_addRetryTx"
 	Method_RetryCommit                = "ssc_retryCommit"
+	Method_RetryCommitDAG             = "ssc_retryCommitDAG"
 	Method_RetryCancel                = "ssc_retryCancel"
 	Method_HandleRetrySignal          = "ssc_handleRetrySignal"
 	Method_SLTest                     = "ssc_sLTest"
 	Method_HandleNewEpoch             = "ssc_handleNewEpoch"
 	Method_AddToPassivePool           = "ssc_addToPassivePool"
+	Method_SignDeadlockProbe          = "ssc_signDeadlockProbe"
+	Method_DetectDeadlockProbe        = "ssc_detectDeadlockProbe"
+	Method_StoreSimDAGPatch           = "ssc_storeSimDAGPatch"
 )
 
 type ShardLocator interface {
@@ -66,6 +70,7 @@ type TxSubmitter interface {
 	SubmitSimulationTx(simulation *CXTSimulation) error
 	SubmitSimulationTxWithSigner(simulation *CXTSimulation, signerType string) error
 	SubmitCommitOrRollbackTx(proof *CXTCommitProof) error
+	SubmitVictimTx(victimTx *VictimTx) error
 	SubmitEmptyTx() error
 	SubmitNewEpoch(newEpoch *NewEpoch) error
 	SubmitUploadOpinions(uploadOpinions *SelfOpinions) error
@@ -163,6 +168,10 @@ type InternalService interface {
 
 	CommitOrRollbackWithProof(commitProofBytes []byte, stateDB StateDB, blockNum uint64) error
 
+	// HandleVictimTx 处理块内 VictimTx（CMH 判环后打进本分片的控制交易）：
+	// 本节点作为本分片 validator，向本分片 leader 投一张 rollback 票（VictimTx 方案）。
+	HandleVictimTx(victimTxBytes []byte) error
+
 	NewEpoch(newEpochBytes []byte, vm VM, stateDB StateDB, blockNum uint64) error
 
 	UploadSLOpinion(opinionsBytes []byte, stateDB StateDB) error
@@ -213,6 +222,10 @@ type ShardService interface {
 	//  @Description: sign the cross-shard tx simulation from ssc'S leader
 	SignCXTSimulation(simulation *CXTSimulation) []byte
 
+	// SignDeadlockProbe
+	//  @Description: sign a deadlock probe for BLS committee aggregation
+	SignDeadlockProbe(probe *DeadlockProbe) []byte
+
 	// HandleCommitVote
 	//  @Description: handle the commit vote from ssc'S member, aggregate the votes after reaching threshold, then send
 	HandleCommitVote(vote *CXTCommitVote)
@@ -223,11 +236,19 @@ type ShardService interface {
 
 	RetryCommit(txHash common.Hash) *RetryCommitResp
 
+	// RetryCommitDAG — DSN-55 rev2：DAG 救援 attempt 的 RetryCommit。
+	// 与 RetryCommit 唯一区别：取得 TLV 锁后提权保锁(不被 wound)。
+	RetryCommitDAG(txHash common.Hash) *RetryCommitResp
+
 	RetryCancel(txHash common.Hash)
 
 	AddToPassivePool(txHash common.Hash)
 
 	HandleNewEpoch(newEpoch *NewEpoch, blockNum uint64) error
+
+	// StoreSimDAGPatch — DSN-54：leader 在 RetryCommit 消费上游后，向本分片成员广播
+	// 该交易本轮模拟所需的链下 DAG patch 子图；成员据此写入本地 simDAGPatches。
+	StoreSimDAGPatch(req *StoreSimDAGPatchRequest)
 }
 
 // CrossService
@@ -263,9 +284,13 @@ type CrossService interface {
 	// HandleRetrySignal
 	//  @Description: handle the retry signal from another shard's leader.
 	//  When a SimTx is submitted, the retry scheduler sends this signal
-	//  to the origin shard with a ChainPatch so the downstream retry simulation
+	//  to the origin shard with its UpstreamTxList so the downstream retry simulation
 	//  can read the upstream's produced state values directly.
 	HandleRetrySignal(signal *RetrySignal)
+
+	// DetectDeadlockProbe
+	//  @Description: handle a priority-aware reverse CMH deadlock probe from another shard.
+	DetectDeadlockProbe(probe *DeadlockProbe) *DeadlockProbeAck
 }
 
 type Service interface {

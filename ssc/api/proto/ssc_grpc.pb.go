@@ -33,6 +33,8 @@ type SSCShardServiceClient interface {
 	// Leader → Members, request BLS signing of a simulation commit
 	SignSimulationCommit(ctx context.Context, in *SimulationCommit, opts ...grpc.CallOption) (*Bytes, error)
 	SignCXTSimulation(ctx context.Context, in *CXTSimulation, opts ...grpc.CallOption) (*Bytes, error)
+	// Leader → Members, request BLS signing of a deadlock probe
+	SignDeadlockProbe(ctx context.Context, in *DeadlockProbe, opts ...grpc.CallOption) (*Bytes, error)
 	// Member → Leader, submit commit vote
 	HandleCommitVote(ctx context.Context, in *CXTCommitVote, opts ...grpc.CallOption) (*Empty, error)
 	// Reputation / SL test
@@ -41,9 +43,13 @@ type SSCShardServiceClient interface {
 	AddRetryTx(ctx context.Context, in *RetryTx, opts ...grpc.CallOption) (*Empty, error)
 	AddToPassivePool(ctx context.Context, in *Hash, opts ...grpc.CallOption) (*Empty, error)
 	RetryCommit(ctx context.Context, in *Hash, opts ...grpc.CallOption) (*RetryCommitResp, error)
+	// DSN-55 rev2: DAG 救援 attempt 的 RetryCommit —— 得锁(TLV)后提权保锁(不被 wound)
+	RetryCommitDAG(ctx context.Context, in *Hash, opts ...grpc.CallOption) (*RetryCommitResp, error)
 	RetryCancel(ctx context.Context, in *Hash, opts ...grpc.CallOption) (*Empty, error)
 	// Epoch transition
 	HandleNewEpoch(ctx context.Context, in *HandleNewEpochRequest, opts ...grpc.CallOption) (*Empty, error)
+	// DSN-54: leader → member, 广播该交易本轮模拟所需的链下 DAG patch 子图
+	StoreSimDAGPatch(ctx context.Context, in *StoreSimDAGPatchRequest, opts ...grpc.CallOption) (*Empty, error)
 }
 
 type sSCShardServiceClient struct {
@@ -108,6 +114,15 @@ func (c *sSCShardServiceClient) SignCXTSimulation(ctx context.Context, in *CXTSi
 	return out, nil
 }
 
+func (c *sSCShardServiceClient) SignDeadlockProbe(ctx context.Context, in *DeadlockProbe, opts ...grpc.CallOption) (*Bytes, error) {
+	out := new(Bytes)
+	err := c.cc.Invoke(ctx, "/sscpb.SSCShardService/SignDeadlockProbe", in, out, opts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 func (c *sSCShardServiceClient) HandleCommitVote(ctx context.Context, in *CXTCommitVote, opts ...grpc.CallOption) (*Empty, error) {
 	out := new(Empty)
 	err := c.cc.Invoke(ctx, "/sscpb.SSCShardService/HandleCommitVote", in, out, opts...)
@@ -153,6 +168,15 @@ func (c *sSCShardServiceClient) RetryCommit(ctx context.Context, in *Hash, opts 
 	return out, nil
 }
 
+func (c *sSCShardServiceClient) RetryCommitDAG(ctx context.Context, in *Hash, opts ...grpc.CallOption) (*RetryCommitResp, error) {
+	out := new(RetryCommitResp)
+	err := c.cc.Invoke(ctx, "/sscpb.SSCShardService/RetryCommitDAG", in, out, opts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 func (c *sSCShardServiceClient) RetryCancel(ctx context.Context, in *Hash, opts ...grpc.CallOption) (*Empty, error) {
 	out := new(Empty)
 	err := c.cc.Invoke(ctx, "/sscpb.SSCShardService/RetryCancel", in, out, opts...)
@@ -165,6 +189,15 @@ func (c *sSCShardServiceClient) RetryCancel(ctx context.Context, in *Hash, opts 
 func (c *sSCShardServiceClient) HandleNewEpoch(ctx context.Context, in *HandleNewEpochRequest, opts ...grpc.CallOption) (*Empty, error) {
 	out := new(Empty)
 	err := c.cc.Invoke(ctx, "/sscpb.SSCShardService/HandleNewEpoch", in, out, opts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *sSCShardServiceClient) StoreSimDAGPatch(ctx context.Context, in *StoreSimDAGPatchRequest, opts ...grpc.CallOption) (*Empty, error) {
+	out := new(Empty)
+	err := c.cc.Invoke(ctx, "/sscpb.SSCShardService/StoreSimDAGPatch", in, out, opts...)
 	if err != nil {
 		return nil, err
 	}
@@ -186,6 +219,8 @@ type SSCShardServiceServer interface {
 	// Leader → Members, request BLS signing of a simulation commit
 	SignSimulationCommit(context.Context, *SimulationCommit) (*Bytes, error)
 	SignCXTSimulation(context.Context, *CXTSimulation) (*Bytes, error)
+	// Leader → Members, request BLS signing of a deadlock probe
+	SignDeadlockProbe(context.Context, *DeadlockProbe) (*Bytes, error)
 	// Member → Leader, submit commit vote
 	HandleCommitVote(context.Context, *CXTCommitVote) (*Empty, error)
 	// Reputation / SL test
@@ -194,9 +229,13 @@ type SSCShardServiceServer interface {
 	AddRetryTx(context.Context, *RetryTx) (*Empty, error)
 	AddToPassivePool(context.Context, *Hash) (*Empty, error)
 	RetryCommit(context.Context, *Hash) (*RetryCommitResp, error)
+	// DSN-55 rev2: DAG 救援 attempt 的 RetryCommit —— 得锁(TLV)后提权保锁(不被 wound)
+	RetryCommitDAG(context.Context, *Hash) (*RetryCommitResp, error)
 	RetryCancel(context.Context, *Hash) (*Empty, error)
 	// Epoch transition
 	HandleNewEpoch(context.Context, *HandleNewEpochRequest) (*Empty, error)
+	// DSN-54: leader → member, 广播该交易本轮模拟所需的链下 DAG patch 子图
+	StoreSimDAGPatch(context.Context, *StoreSimDAGPatchRequest) (*Empty, error)
 	mustEmbedUnimplementedSSCShardServiceServer()
 }
 
@@ -222,6 +261,9 @@ func (UnimplementedSSCShardServiceServer) SignSimulationCommit(context.Context, 
 func (UnimplementedSSCShardServiceServer) SignCXTSimulation(context.Context, *CXTSimulation) (*Bytes, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method SignCXTSimulation not implemented")
 }
+func (UnimplementedSSCShardServiceServer) SignDeadlockProbe(context.Context, *DeadlockProbe) (*Bytes, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method SignDeadlockProbe not implemented")
+}
 func (UnimplementedSSCShardServiceServer) HandleCommitVote(context.Context, *CXTCommitVote) (*Empty, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method HandleCommitVote not implemented")
 }
@@ -237,11 +279,17 @@ func (UnimplementedSSCShardServiceServer) AddToPassivePool(context.Context, *Has
 func (UnimplementedSSCShardServiceServer) RetryCommit(context.Context, *Hash) (*RetryCommitResp, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method RetryCommit not implemented")
 }
+func (UnimplementedSSCShardServiceServer) RetryCommitDAG(context.Context, *Hash) (*RetryCommitResp, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method RetryCommitDAG not implemented")
+}
 func (UnimplementedSSCShardServiceServer) RetryCancel(context.Context, *Hash) (*Empty, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method RetryCancel not implemented")
 }
 func (UnimplementedSSCShardServiceServer) HandleNewEpoch(context.Context, *HandleNewEpochRequest) (*Empty, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method HandleNewEpoch not implemented")
+}
+func (UnimplementedSSCShardServiceServer) StoreSimDAGPatch(context.Context, *StoreSimDAGPatchRequest) (*Empty, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method StoreSimDAGPatch not implemented")
 }
 func (UnimplementedSSCShardServiceServer) mustEmbedUnimplementedSSCShardServiceServer() {}
 
@@ -364,6 +412,24 @@ func _SSCShardService_SignCXTSimulation_Handler(srv interface{}, ctx context.Con
 	return interceptor(ctx, in, info, handler)
 }
 
+func _SSCShardService_SignDeadlockProbe_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(DeadlockProbe)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(SSCShardServiceServer).SignDeadlockProbe(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: "/sscpb.SSCShardService/SignDeadlockProbe",
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(SSCShardServiceServer).SignDeadlockProbe(ctx, req.(*DeadlockProbe))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 func _SSCShardService_HandleCommitVote_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
 	in := new(CXTCommitVote)
 	if err := dec(in); err != nil {
@@ -454,6 +520,24 @@ func _SSCShardService_RetryCommit_Handler(srv interface{}, ctx context.Context, 
 	return interceptor(ctx, in, info, handler)
 }
 
+func _SSCShardService_RetryCommitDAG_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(Hash)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(SSCShardServiceServer).RetryCommitDAG(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: "/sscpb.SSCShardService/RetryCommitDAG",
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(SSCShardServiceServer).RetryCommitDAG(ctx, req.(*Hash))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 func _SSCShardService_RetryCancel_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
 	in := new(Hash)
 	if err := dec(in); err != nil {
@@ -490,6 +574,24 @@ func _SSCShardService_HandleNewEpoch_Handler(srv interface{}, ctx context.Contex
 	return interceptor(ctx, in, info, handler)
 }
 
+func _SSCShardService_StoreSimDAGPatch_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(StoreSimDAGPatchRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(SSCShardServiceServer).StoreSimDAGPatch(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: "/sscpb.SSCShardService/StoreSimDAGPatch",
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(SSCShardServiceServer).StoreSimDAGPatch(ctx, req.(*StoreSimDAGPatchRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 // SSCShardService_ServiceDesc is the grpc.ServiceDesc for SSCShardService service.
 // It's only intended for direct use with grpc.RegisterService,
 // and not to be introspected or modified (even as a copy)
@@ -522,6 +624,10 @@ var SSCShardService_ServiceDesc = grpc.ServiceDesc{
 			Handler:    _SSCShardService_SignCXTSimulation_Handler,
 		},
 		{
+			MethodName: "SignDeadlockProbe",
+			Handler:    _SSCShardService_SignDeadlockProbe_Handler,
+		},
+		{
 			MethodName: "HandleCommitVote",
 			Handler:    _SSCShardService_HandleCommitVote_Handler,
 		},
@@ -542,12 +648,20 @@ var SSCShardService_ServiceDesc = grpc.ServiceDesc{
 			Handler:    _SSCShardService_RetryCommit_Handler,
 		},
 		{
+			MethodName: "RetryCommitDAG",
+			Handler:    _SSCShardService_RetryCommitDAG_Handler,
+		},
+		{
 			MethodName: "RetryCancel",
 			Handler:    _SSCShardService_RetryCancel_Handler,
 		},
 		{
 			MethodName: "HandleNewEpoch",
 			Handler:    _SSCShardService_HandleNewEpoch_Handler,
+		},
+		{
+			MethodName: "StoreSimDAGPatch",
+			Handler:    _SSCShardService_StoreSimDAGPatch_Handler,
 		},
 	},
 	Streams:  []grpc.StreamDesc{},
@@ -570,6 +684,8 @@ type SSCCrossServiceClient interface {
 	SignalReSimulation(ctx context.Context, in *RetrySignals, opts ...grpc.CallOption) (*Empty, error)
 	// Cross-shard: handle retry signal (with ChainPatch)
 	HandleRetrySignal(ctx context.Context, in *RetrySignal, opts ...grpc.CallOption) (*Empty, error)
+	// Cross-shard: priority-aware reverse CMH deadlock probe
+	DetectDeadlockProbe(ctx context.Context, in *DeadlockProbe, opts ...grpc.CallOption) (*DeadlockProbeAck, error)
 }
 
 type sSCCrossServiceClient struct {
@@ -634,6 +750,15 @@ func (c *sSCCrossServiceClient) HandleRetrySignal(ctx context.Context, in *Retry
 	return out, nil
 }
 
+func (c *sSCCrossServiceClient) DetectDeadlockProbe(ctx context.Context, in *DeadlockProbe, opts ...grpc.CallOption) (*DeadlockProbeAck, error) {
+	out := new(DeadlockProbeAck)
+	err := c.cc.Invoke(ctx, "/sscpb.SSCCrossService/DetectDeadlockProbe", in, out, opts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 // SSCCrossServiceServer is the server API for SSCCrossService service.
 // All implementations must embed UnimplementedSSCCrossServiceServer
 // for forward compatibility
@@ -650,6 +775,8 @@ type SSCCrossServiceServer interface {
 	SignalReSimulation(context.Context, *RetrySignals) (*Empty, error)
 	// Cross-shard: handle retry signal (with ChainPatch)
 	HandleRetrySignal(context.Context, *RetrySignal) (*Empty, error)
+	// Cross-shard: priority-aware reverse CMH deadlock probe
+	DetectDeadlockProbe(context.Context, *DeadlockProbe) (*DeadlockProbeAck, error)
 	mustEmbedUnimplementedSSCCrossServiceServer()
 }
 
@@ -674,6 +801,9 @@ func (UnimplementedSSCCrossServiceServer) SignalReSimulation(context.Context, *R
 }
 func (UnimplementedSSCCrossServiceServer) HandleRetrySignal(context.Context, *RetrySignal) (*Empty, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method HandleRetrySignal not implemented")
+}
+func (UnimplementedSSCCrossServiceServer) DetectDeadlockProbe(context.Context, *DeadlockProbe) (*DeadlockProbeAck, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method DetectDeadlockProbe not implemented")
 }
 func (UnimplementedSSCCrossServiceServer) mustEmbedUnimplementedSSCCrossServiceServer() {}
 
@@ -796,6 +926,24 @@ func _SSCCrossService_HandleRetrySignal_Handler(srv interface{}, ctx context.Con
 	return interceptor(ctx, in, info, handler)
 }
 
+func _SSCCrossService_DetectDeadlockProbe_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(DeadlockProbe)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(SSCCrossServiceServer).DetectDeadlockProbe(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: "/sscpb.SSCCrossService/DetectDeadlockProbe",
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(SSCCrossServiceServer).DetectDeadlockProbe(ctx, req.(*DeadlockProbe))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 // SSCCrossService_ServiceDesc is the grpc.ServiceDesc for SSCCrossService service.
 // It's only intended for direct use with grpc.RegisterService,
 // and not to be introspected or modified (even as a copy)
@@ -826,6 +974,10 @@ var SSCCrossService_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "HandleRetrySignal",
 			Handler:    _SSCCrossService_HandleRetrySignal_Handler,
+		},
+		{
+			MethodName: "DetectDeadlockProbe",
+			Handler:    _SSCCrossService_DetectDeadlockProbe_Handler,
 		},
 	},
 	Streams:  []grpc.StreamDesc{},

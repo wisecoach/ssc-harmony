@@ -36,27 +36,65 @@ Current branch: `ssc_shared_address_space` (ahead of main, experimental SSC work
 
 ## 2. Design Documents (Read on Demand)
 
-Docs are in `docs/` following DSN / EXP / DEC / BUG naming.
+Docs live under `docs/designs/` (`planned/`, `active/`, `archived/`) following `DSN-xx` naming.
+**Always read the relevant active DSN before modifying a system** — the full index is `docs/README.md`.
+
+### Current / active (read first)
 
 | DSN | Title | Key Topic |
 |-----|-------|-----------|
 | DSN-01 | SSCC Refactor Plan | Module split (Simulator/Verifier/Committer/RetryScheduler) |
-| DSN-02 | Lock Retry Mechanism | Original retry + lock design |
+| DSN-02 | Lock Retry Mechanism | Lock + retry design (TLV / SLM / stateDB three layers) |
 | DSN-03 | CR Priority Optimization | Commit/Rollback priority ordering |
-| DSN-05 | HotKey Retry Design | Priority + chain retry for hot keys |
-| DSN-06 | Lock Priority Coordination | Wound-Wait + priority |
-| DSN-07 | Force Simulation | Force re-simulation when state locked |
-| DSN-09 | Active-Passive Retry Pool | Passive pool + active scheduling |
+| DSN-04 | On-Chain Retry Limit | On-chain retry bound (design thread; impl via DSN-08) |
+| DSN-05 | HotKey Retry Design | Hot-key chain / PatchPool lineage |
+| DSN-06 | Lock Priority Coordination | Wound-Wait / priority coordination lineage |
+| DSN-08 | Retry Limit | Chain + total retry limits (implemented) |
+| DSN-09 | Retry Timeout & Limit | Off-chain retryScheduler timeout / cap |
+| DSN-10 / 11 | Log guide / log lifecycle | SSC log levels & lifecycle catalog (运维参考, 非设计) |
 | DSN-22 | RetryCommit Lock Order Fix | Three-phase RetryCommit (TLV → stateDB → DAG) |
-| DSN-23 | PatchPool DAG Design | Multi-Patch DAG covering upstream txs |
 | DSN-24 | Unified Lock Check | TLV + SLM + Patch three-layer arbitration |
 | DSN-25 | RetryCommit StateDB Cache | OnBlockCommitted stateDB cache for retry race |
-| DSN-26 | PatchPool DAG → TLV Phase 1 | Using Patch to cover TLV lock conflict |
-| DSN-27 | TLV → sync.Map | Remove global v.mu, full sync.Map (DONE, committed) |
+| DSN-27 | TLV → sync.Map | Remove global v.mu, full sync.Map |
+| DSN-28 | SLM lock-free | MVCC / per-tx lock refactor (draft) |
+| DSN-45~48 | Internal tx / pool / parallel verify | SSC internal-tx structure + pool (current basis) |
+| DSN-49~51 | Off-chain DAG | offChainDAG unify + rescue caps + DAG rewrite (in flight) |
+| DSN-52 | Deadlock resolution | Wait-Die + TLV wound layered convergence (implemented) |
+| DSN-53 | Deadlock detection | Priority-aware reverse CMH probe (active) |
 
-Research reports (EXP) in `docs/research/` for deep bug analysis.
+### Archived (历史只读, `docs/designs/archived/`)
 
-**Always read the relevant DSN before modifying a system.** The docs directory indexes everything — start there.
+Superseded / deprecated / one-off / shelved designs — keep for history only:
+`DSN-07` (ForceSimulation 暂关), `DSN-09` passive pool (deprecated), `DSN-12` (rollback v1 pool, done),
+`DSN-13~16` (old chaining/lock), `DSN-23/26/29/30` (old PatchPool/DAG generation, rewritten by DSN-49~51).
+
+Research reports (EXP / RSH) in `docs/research/` for deep bug analysis.
+
+### 从 hindsight 检索文档摘要 / 关系（镜像检索，非权威）
+
+每份 DSN / DEC 文档的「一句话摘要 + 与其它文档的关系」会被同步到本机 **hindsight** 记忆库
+（bank = `harmony-sscc`，UI: http://localhost:9999/banks/harmony-sscc）。
+它是 `docs/README.md` 的**可检索镜像**——需要快速判断“某设计讲什么、和谁相关/被谁取代”时优先用它，
+但**任何改动前请回到仓库里读原始 DSN 全文**（`docs/` 是唯一权威来源）。
+
+- bank 中每条 memory：`document_id` = DSN/DEC 编号；`metadata.path` 指向仓库相对路径；`tags` 含目录/状态；`content` 含摘要与关系。
+- 摄入脚本（增量维护，改 manifest 后重跑）：
+  ```bash
+  python3 docs/tools/hindsight/ingest.py --dry-run   # 预览
+  python3 docs/tools/hindsight/ingest.py             # 写入 harmony-sscc（async）
+  ```
+- 检索示例（数据面 API，:8888；控制面 :9999 只是 UI）：
+  ```bash
+  # 语义检索（需 LLM 可用）
+  curl -s -X POST http://localhost:8888/v1/default/banks/harmony-sscc/memories/recall \
+    -H 'content-type: application/json' \
+    -d '{"query":"跨分片死锁 Wait-Die 由哪个 DSN 实现？","tags":["doc"]}'
+
+  # 无 LLM 的稳妥回退：按 document_id（=DSN/DEC 编号）精确取回该文档被抽取的事实
+  curl -s "http://localhost:8888/v1/default/banks/harmony-sscc/memories/list?document_id=DSN-52&limit=20"
+  # 或按关键词 q 过滤：curl ".../memories/list?q=Wait-Die"
+  ```
+  `recall` 返回语义命中的事实文本（适合“找相关设计/关系”）；若 LLM 不可用，用 `list?document_id=<编号>` 直接取回单份文档的事实（含关系边），不需要 LLM。
 
 ## 3. Architecture — Key Components
 

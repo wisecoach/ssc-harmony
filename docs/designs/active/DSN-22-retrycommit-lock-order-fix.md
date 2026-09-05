@@ -2,7 +2,7 @@
 
 > **版本**：v2（2026-07-07）
 > **状态**：设计阶段（v1 实现已验证，提交率从 96% 降至 51%，缺少 Phase 2b 失败后的等待机制）
-> **关联文档**：`designs/active/DSN-09-active-passive-retry-pool.md`（被动池）、`designs/active/DSN-05-hotkey-retry-design.md`（PatchPool 原始设计）
+> **关联文档**：`../archived/DSN-09-active-passive-retry-pool.md`（被动池）、`designs/active/DSN-05-hotkey-retry-design.md`（PatchPool 原始设计）
 
 ---
 

@@ -333,6 +333,52 @@ func (RetryStatus) EnumDescriptor() ([]byte, []int) {
 	return file_ssc_proto_rawDescGZIP(), []int{5}
 }
 
+type LockLayer int32
+
+const (
+	LockLayer_LOCK_LAYER_ONCHAIN LockLayer = 0
+	LockLayer_LOCK_LAYER_TLV     LockLayer = 1
+)
+
+// Enum value maps for LockLayer.
+var (
+	LockLayer_name = map[int32]string{
+		0: "LOCK_LAYER_ONCHAIN",
+		1: "LOCK_LAYER_TLV",
+	}
+	LockLayer_value = map[string]int32{
+		"LOCK_LAYER_ONCHAIN": 0,
+		"LOCK_LAYER_TLV":     1,
+	}
+)
+
+func (x LockLayer) Enum() *LockLayer {
+	p := new(LockLayer)
+	*p = x
+	return p
+}
+
+func (x LockLayer) String() string {
+	return protoimpl.X.EnumStringOf(x.Descriptor(), protoreflect.EnumNumber(x))
+}
+
+func (LockLayer) Descriptor() protoreflect.EnumDescriptor {
+	return file_ssc_proto_enumTypes[6].Descriptor()
+}
+
+func (LockLayer) Type() protoreflect.EnumType {
+	return &file_ssc_proto_enumTypes[6]
+}
+
+func (x LockLayer) Number() protoreflect.EnumNumber {
+	return protoreflect.EnumNumber(x)
+}
+
+// Deprecated: Use LockLayer.Descriptor instead.
+func (LockLayer) EnumDescriptor() ([]byte, []int) {
+	return file_ssc_proto_rawDescGZIP(), []int{6}
+}
+
 // Empty is used for fire-and-forget RPC methods that return nothing.
 type Empty struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
@@ -1019,8 +1065,10 @@ type CXTSimulationRequest struct {
 	Tx            *RLPBytes              `protobuf:"bytes,7,opt,name=tx,proto3" json:"tx,omitempty"` // RLP-encoded *types.Transaction
 	From          *Address               `protobuf:"bytes,8,opt,name=from,proto3" json:"from,omitempty"`
 	GasPool       uint64                 `protobuf:"varint,9,opt,name=gas_pool,json=gasPool,proto3" json:"gas_pool,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
+	// DSN-54: leader 已分配的上游引用，成员据此从 simDAGPatches 反查上游写集。
+	UpstreamTxList []*TxSimKey `protobuf:"bytes,10,rep,name=upstream_tx_list,json=upstreamTxList,proto3" json:"upstream_tx_list,omitempty"`
+	unknownFields  protoimpl.UnknownFields
+	sizeCache      protoimpl.SizeCache
 }
 
 func (x *CXTSimulationRequest) Reset() {
@@ -1114,6 +1162,13 @@ func (x *CXTSimulationRequest) GetGasPool() uint64 {
 		return x.GasPool
 	}
 	return 0
+}
+
+func (x *CXTSimulationRequest) GetUpstreamTxList() []*TxSimKey {
+	if x != nil {
+		return x.UpstreamTxList
+	}
+	return nil
 }
 
 type CXTSimulationResult struct {
@@ -1310,7 +1365,6 @@ type CXTSimulation struct {
 	OriginShardId  uint32                 `protobuf:"varint,6,opt,name=origin_shard_id,json=originShardId,proto3" json:"origin_shard_id,omitempty"`
 	RelatedShards  []uint32               `protobuf:"varint,7,rep,packed,name=related_shards,json=relatedShards,proto3" json:"related_shards,omitempty"`
 	CallStates     []*CXTCallState        `protobuf:"bytes,8,rep,name=call_states,json=callStates,proto3" json:"call_states,omitempty"`
-	ChainPatch     *RWSet                 `protobuf:"bytes,9,opt,name=chain_patch,json=chainPatch,proto3" json:"chain_patch,omitempty"`
 	UpstreamTxList []*TxSimKey            `protobuf:"bytes,10,rep,name=upstream_tx_list,json=upstreamTxList,proto3" json:"upstream_tx_list,omitempty"`
 	Base           *BaseBLSSignedMessage  `protobuf:"bytes,11,opt,name=base,proto3" json:"base,omitempty"`
 	unknownFields  protoimpl.UnknownFields
@@ -1399,13 +1453,6 @@ func (x *CXTSimulation) GetRelatedShards() []uint32 {
 func (x *CXTSimulation) GetCallStates() []*CXTCallState {
 	if x != nil {
 		return x.CallStates
-	}
-	return nil
-}
-
-func (x *CXTSimulation) GetChainPatch() *RWSet {
-	if x != nil {
-		return x.ChainPatch
 	}
 	return nil
 }
@@ -2552,6 +2599,171 @@ func (x *TxSimKey) GetSimulationNum() int32 {
 	return 0
 }
 
+// DSN-54: 模拟期链下 DAG patch 子图（leader 从 offChainDAG 构建，广播给成员）。
+type SimPatchNode struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	TxSim         *TxSimKey              `protobuf:"bytes,1,opt,name=tx_sim,json=txSim,proto3" json:"tx_sim,omitempty"`
+	Upstream      []*TxSimKey            `protobuf:"bytes,2,rep,name=upstream,proto3" json:"upstream,omitempty"` // 上游边
+	Patch         *RWSet                 `protobuf:"bytes,3,opt,name=patch,proto3" json:"patch,omitempty"`       // 本节点写集
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *SimPatchNode) Reset() {
+	*x = SimPatchNode{}
+	mi := &file_ssc_proto_msgTypes[27]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *SimPatchNode) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*SimPatchNode) ProtoMessage() {}
+
+func (x *SimPatchNode) ProtoReflect() protoreflect.Message {
+	mi := &file_ssc_proto_msgTypes[27]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use SimPatchNode.ProtoReflect.Descriptor instead.
+func (*SimPatchNode) Descriptor() ([]byte, []int) {
+	return file_ssc_proto_rawDescGZIP(), []int{27}
+}
+
+func (x *SimPatchNode) GetTxSim() *TxSimKey {
+	if x != nil {
+		return x.TxSim
+	}
+	return nil
+}
+
+func (x *SimPatchNode) GetUpstream() []*TxSimKey {
+	if x != nil {
+		return x.Upstream
+	}
+	return nil
+}
+
+func (x *SimPatchNode) GetPatch() *RWSet {
+	if x != nil {
+		return x.Patch
+	}
+	return nil
+}
+
+type SimPatchSubgraph struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	TxHash        *Hash                  `protobuf:"bytes,1,opt,name=tx_hash,json=txHash,proto3" json:"tx_hash,omitempty"`
+	SimulationNum int32                  `protobuf:"varint,2,opt,name=simulation_num,json=simulationNum,proto3" json:"simulation_num,omitempty"`
+	Nodes         []*SimPatchNode        `protobuf:"bytes,3,rep,name=nodes,proto3" json:"nodes,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *SimPatchSubgraph) Reset() {
+	*x = SimPatchSubgraph{}
+	mi := &file_ssc_proto_msgTypes[28]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *SimPatchSubgraph) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*SimPatchSubgraph) ProtoMessage() {}
+
+func (x *SimPatchSubgraph) ProtoReflect() protoreflect.Message {
+	mi := &file_ssc_proto_msgTypes[28]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use SimPatchSubgraph.ProtoReflect.Descriptor instead.
+func (*SimPatchSubgraph) Descriptor() ([]byte, []int) {
+	return file_ssc_proto_rawDescGZIP(), []int{28}
+}
+
+func (x *SimPatchSubgraph) GetTxHash() *Hash {
+	if x != nil {
+		return x.TxHash
+	}
+	return nil
+}
+
+func (x *SimPatchSubgraph) GetSimulationNum() int32 {
+	if x != nil {
+		return x.SimulationNum
+	}
+	return 0
+}
+
+func (x *SimPatchSubgraph) GetNodes() []*SimPatchNode {
+	if x != nil {
+		return x.Nodes
+	}
+	return nil
+}
+
+type StoreSimDAGPatchRequest struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Subgraph      *SimPatchSubgraph      `protobuf:"bytes,1,opt,name=subgraph,proto3" json:"subgraph,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *StoreSimDAGPatchRequest) Reset() {
+	*x = StoreSimDAGPatchRequest{}
+	mi := &file_ssc_proto_msgTypes[29]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *StoreSimDAGPatchRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*StoreSimDAGPatchRequest) ProtoMessage() {}
+
+func (x *StoreSimDAGPatchRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_ssc_proto_msgTypes[29]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use StoreSimDAGPatchRequest.ProtoReflect.Descriptor instead.
+func (*StoreSimDAGPatchRequest) Descriptor() ([]byte, []int) {
+	return file_ssc_proto_rawDescGZIP(), []int{29}
+}
+
+func (x *StoreSimDAGPatchRequest) GetSubgraph() *SimPatchSubgraph {
+	if x != nil {
+		return x.Subgraph
+	}
+	return nil
+}
+
 type RetrySignal struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	TxHash        *Hash                  `protobuf:"bytes,1,opt,name=tx_hash,json=txHash,proto3" json:"tx_hash,omitempty"`
@@ -2560,14 +2772,17 @@ type RetrySignal struct {
 	SimulationNum int32                  `protobuf:"varint,4,opt,name=simulation_num,json=simulationNum,proto3" json:"simulation_num,omitempty"`
 	Condition     ConflictCondition      `protobuf:"varint,5,opt,name=condition,proto3,enum=sscpb.ConflictCondition" json:"condition,omitempty"`
 	Ready         bool                   `protobuf:"varint,6,opt,name=ready,proto3" json:"ready,omitempty"`
-	ChainPatch    *RWSet                 `protobuf:"bytes,7,opt,name=chain_patch,json=chainPatch,proto3" json:"chain_patch,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
+	// DAG 上游边（唯一事实来源）：随链式 retry signal 传播到 origin shard，
+	// 使 origin 侧 offChainDAG 记录本 tx 的上游节点 → CommitSimulation 的
+	// UpstreamTxList 非空 → Verify 判 chain。（DSN-56：不再携带扁平 ChainPatch。）
+	UpstreamTxList []*TxSimKey `protobuf:"bytes,8,rep,name=upstream_tx_list,json=upstreamTxList,proto3" json:"upstream_tx_list,omitempty"`
+	unknownFields  protoimpl.UnknownFields
+	sizeCache      protoimpl.SizeCache
 }
 
 func (x *RetrySignal) Reset() {
 	*x = RetrySignal{}
-	mi := &file_ssc_proto_msgTypes[27]
+	mi := &file_ssc_proto_msgTypes[30]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2579,7 +2794,7 @@ func (x *RetrySignal) String() string {
 func (*RetrySignal) ProtoMessage() {}
 
 func (x *RetrySignal) ProtoReflect() protoreflect.Message {
-	mi := &file_ssc_proto_msgTypes[27]
+	mi := &file_ssc_proto_msgTypes[30]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2592,7 +2807,7 @@ func (x *RetrySignal) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use RetrySignal.ProtoReflect.Descriptor instead.
 func (*RetrySignal) Descriptor() ([]byte, []int) {
-	return file_ssc_proto_rawDescGZIP(), []int{27}
+	return file_ssc_proto_rawDescGZIP(), []int{30}
 }
 
 func (x *RetrySignal) GetTxHash() *Hash {
@@ -2637,9 +2852,9 @@ func (x *RetrySignal) GetReady() bool {
 	return false
 }
 
-func (x *RetrySignal) GetChainPatch() *RWSet {
+func (x *RetrySignal) GetUpstreamTxList() []*TxSimKey {
 	if x != nil {
-		return x.ChainPatch
+		return x.UpstreamTxList
 	}
 	return nil
 }
@@ -2656,7 +2871,7 @@ type RetrySignals struct {
 
 func (x *RetrySignals) Reset() {
 	*x = RetrySignals{}
-	mi := &file_ssc_proto_msgTypes[28]
+	mi := &file_ssc_proto_msgTypes[31]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2668,7 +2883,7 @@ func (x *RetrySignals) String() string {
 func (*RetrySignals) ProtoMessage() {}
 
 func (x *RetrySignals) ProtoReflect() protoreflect.Message {
-	mi := &file_ssc_proto_msgTypes[28]
+	mi := &file_ssc_proto_msgTypes[31]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2681,7 +2896,7 @@ func (x *RetrySignals) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use RetrySignals.ProtoReflect.Descriptor instead.
 func (*RetrySignals) Descriptor() ([]byte, []int) {
-	return file_ssc_proto_rawDescGZIP(), []int{28}
+	return file_ssc_proto_rawDescGZIP(), []int{31}
 }
 
 func (x *RetrySignals) GetOriginShard() uint32 {
@@ -2732,7 +2947,7 @@ type RetryTx struct {
 
 func (x *RetryTx) Reset() {
 	*x = RetryTx{}
-	mi := &file_ssc_proto_msgTypes[29]
+	mi := &file_ssc_proto_msgTypes[32]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2744,7 +2959,7 @@ func (x *RetryTx) String() string {
 func (*RetryTx) ProtoMessage() {}
 
 func (x *RetryTx) ProtoReflect() protoreflect.Message {
-	mi := &file_ssc_proto_msgTypes[29]
+	mi := &file_ssc_proto_msgTypes[32]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2757,7 +2972,7 @@ func (x *RetryTx) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use RetryTx.ProtoReflect.Descriptor instead.
 func (*RetryTx) Descriptor() ([]byte, []int) {
-	return file_ssc_proto_rawDescGZIP(), []int{29}
+	return file_ssc_proto_rawDescGZIP(), []int{32}
 }
 
 func (x *RetryTx) GetTxHash() *Hash {
@@ -2855,7 +3070,7 @@ type RetryCommitResp struct {
 
 func (x *RetryCommitResp) Reset() {
 	*x = RetryCommitResp{}
-	mi := &file_ssc_proto_msgTypes[30]
+	mi := &file_ssc_proto_msgTypes[33]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2867,7 +3082,7 @@ func (x *RetryCommitResp) String() string {
 func (*RetryCommitResp) ProtoMessage() {}
 
 func (x *RetryCommitResp) ProtoReflect() protoreflect.Message {
-	mi := &file_ssc_proto_msgTypes[30]
+	mi := &file_ssc_proto_msgTypes[33]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2880,7 +3095,7 @@ func (x *RetryCommitResp) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use RetryCommitResp.ProtoReflect.Descriptor instead.
 func (*RetryCommitResp) Descriptor() ([]byte, []int) {
-	return file_ssc_proto_rawDescGZIP(), []int{30}
+	return file_ssc_proto_rawDescGZIP(), []int{33}
 }
 
 func (x *RetryCommitResp) GetTxHash() *Hash {
@@ -2904,6 +3119,303 @@ func (x *RetryCommitResp) GetOnChainLockConflict() bool {
 	return false
 }
 
+type DeadlockProbe struct {
+	state    protoimpl.MessageState `protogen:"open.v1"`
+	Init     *Hash                  `protobuf:"bytes,1,opt,name=init,proto3" json:"init,omitempty"`
+	Sender   *Hash                  `protobuf:"bytes,2,opt,name=sender,proto3" json:"sender,omitempty"`
+	Current  *Hash                  `protobuf:"bytes,3,opt,name=current,proto3" json:"current,omitempty"`
+	Path     []*Hash                `protobuf:"bytes,4,rep,name=path,proto3" json:"path,omitempty"`
+	Layer    LockLayer              `protobuf:"varint,5,opt,name=layer,proto3,enum=sscpb.LockLayer" json:"layer,omitempty"`
+	WaitKey  *LockKey               `protobuf:"bytes,6,opt,name=wait_key,json=waitKey,proto3" json:"wait_key,omitempty"`
+	Epoch    uint64                 `protobuf:"varint,7,opt,name=epoch,proto3" json:"epoch,omitempty"`
+	BlockNum uint64                 `protobuf:"varint,8,opt,name=block_num,json=blockNum,proto3" json:"block_num,omitempty"`
+	Nonce    uint64                 `protobuf:"varint,9,opt,name=nonce,proto3" json:"nonce,omitempty"`
+	Shard    uint32                 `protobuf:"varint,10,opt,name=shard,proto3" json:"shard,omitempty"`
+	Base     *BaseBLSSignedMessage  `protobuf:"bytes,11,opt,name=base,proto3" json:"base,omitempty"`
+	// proof：A 方案累积的沿途各跳已签名探针链（扁平化，不带各自 proof），
+	// 用于判环后作为 VictimTx 的证明。非签名范围。
+	Proof         []*DeadlockProbe `protobuf:"bytes,12,rep,name=proof,proto3" json:"proof,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *DeadlockProbe) Reset() {
+	*x = DeadlockProbe{}
+	mi := &file_ssc_proto_msgTypes[34]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *DeadlockProbe) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*DeadlockProbe) ProtoMessage() {}
+
+func (x *DeadlockProbe) ProtoReflect() protoreflect.Message {
+	mi := &file_ssc_proto_msgTypes[34]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use DeadlockProbe.ProtoReflect.Descriptor instead.
+func (*DeadlockProbe) Descriptor() ([]byte, []int) {
+	return file_ssc_proto_rawDescGZIP(), []int{34}
+}
+
+func (x *DeadlockProbe) GetInit() *Hash {
+	if x != nil {
+		return x.Init
+	}
+	return nil
+}
+
+func (x *DeadlockProbe) GetSender() *Hash {
+	if x != nil {
+		return x.Sender
+	}
+	return nil
+}
+
+func (x *DeadlockProbe) GetCurrent() *Hash {
+	if x != nil {
+		return x.Current
+	}
+	return nil
+}
+
+func (x *DeadlockProbe) GetPath() []*Hash {
+	if x != nil {
+		return x.Path
+	}
+	return nil
+}
+
+func (x *DeadlockProbe) GetLayer() LockLayer {
+	if x != nil {
+		return x.Layer
+	}
+	return LockLayer_LOCK_LAYER_ONCHAIN
+}
+
+func (x *DeadlockProbe) GetWaitKey() *LockKey {
+	if x != nil {
+		return x.WaitKey
+	}
+	return nil
+}
+
+func (x *DeadlockProbe) GetEpoch() uint64 {
+	if x != nil {
+		return x.Epoch
+	}
+	return 0
+}
+
+func (x *DeadlockProbe) GetBlockNum() uint64 {
+	if x != nil {
+		return x.BlockNum
+	}
+	return 0
+}
+
+func (x *DeadlockProbe) GetNonce() uint64 {
+	if x != nil {
+		return x.Nonce
+	}
+	return 0
+}
+
+func (x *DeadlockProbe) GetShard() uint32 {
+	if x != nil {
+		return x.Shard
+	}
+	return 0
+}
+
+func (x *DeadlockProbe) GetBase() *BaseBLSSignedMessage {
+	if x != nil {
+		return x.Base
+	}
+	return nil
+}
+
+func (x *DeadlockProbe) GetProof() []*DeadlockProbe {
+	if x != nil {
+		return x.Proof
+	}
+	return nil
+}
+
+type DeadlockProbeAck struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Init          *Hash                  `protobuf:"bytes,1,opt,name=init,proto3" json:"init,omitempty"`
+	Current       *Hash                  `protobuf:"bytes,2,opt,name=current,proto3" json:"current,omitempty"`
+	Shard         uint32                 `protobuf:"varint,3,opt,name=shard,proto3" json:"shard,omitempty"`
+	Accepted      bool                   `protobuf:"varint,4,opt,name=accepted,proto3" json:"accepted,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *DeadlockProbeAck) Reset() {
+	*x = DeadlockProbeAck{}
+	mi := &file_ssc_proto_msgTypes[35]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *DeadlockProbeAck) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*DeadlockProbeAck) ProtoMessage() {}
+
+func (x *DeadlockProbeAck) ProtoReflect() protoreflect.Message {
+	mi := &file_ssc_proto_msgTypes[35]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use DeadlockProbeAck.ProtoReflect.Descriptor instead.
+func (*DeadlockProbeAck) Descriptor() ([]byte, []int) {
+	return file_ssc_proto_rawDescGZIP(), []int{35}
+}
+
+func (x *DeadlockProbeAck) GetInit() *Hash {
+	if x != nil {
+		return x.Init
+	}
+	return nil
+}
+
+func (x *DeadlockProbeAck) GetCurrent() *Hash {
+	if x != nil {
+		return x.Current
+	}
+	return nil
+}
+
+func (x *DeadlockProbeAck) GetShard() uint32 {
+	if x != nil {
+		return x.Shard
+	}
+	return 0
+}
+
+func (x *DeadlockProbeAck) GetAccepted() bool {
+	if x != nil {
+		return x.Accepted
+	}
+	return false
+}
+
+// VictimTx：CMH 判环后由最后一跳 shard leader 构造、打进本分片的控制交易。
+// 不碰状态、不抢锁；validator 执行它后各自投 rollback 票。
+type VictimTx struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	TxHash        *Hash                  `protobuf:"bytes,1,opt,name=tx_hash,json=txHash,proto3" json:"tx_hash,omitempty"`
+	Nonce         uint64                 `protobuf:"varint,2,opt,name=nonce,proto3" json:"nonce,omitempty"`
+	OriginShardId uint32                 `protobuf:"varint,3,opt,name=origin_shard_id,json=originShardId,proto3" json:"origin_shard_id,omitempty"`
+	RelatedShards []uint32               `protobuf:"varint,4,rep,packed,name=related_shards,json=relatedShards,proto3" json:"related_shards,omitempty"`
+	Epochs        []uint64               `protobuf:"varint,5,rep,packed,name=epochs,proto3" json:"epochs,omitempty"`
+	SimulationNum uint32                 `protobuf:"varint,6,opt,name=simulation_num,json=simulationNum,proto3" json:"simulation_num,omitempty"`
+	// proof：判环沿途各跳签名探测消息链（A 方案证明）。
+	Proof         []*DeadlockProbe `protobuf:"bytes,7,rep,name=proof,proto3" json:"proof,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *VictimTx) Reset() {
+	*x = VictimTx{}
+	mi := &file_ssc_proto_msgTypes[36]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *VictimTx) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*VictimTx) ProtoMessage() {}
+
+func (x *VictimTx) ProtoReflect() protoreflect.Message {
+	mi := &file_ssc_proto_msgTypes[36]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use VictimTx.ProtoReflect.Descriptor instead.
+func (*VictimTx) Descriptor() ([]byte, []int) {
+	return file_ssc_proto_rawDescGZIP(), []int{36}
+}
+
+func (x *VictimTx) GetTxHash() *Hash {
+	if x != nil {
+		return x.TxHash
+	}
+	return nil
+}
+
+func (x *VictimTx) GetNonce() uint64 {
+	if x != nil {
+		return x.Nonce
+	}
+	return 0
+}
+
+func (x *VictimTx) GetOriginShardId() uint32 {
+	if x != nil {
+		return x.OriginShardId
+	}
+	return 0
+}
+
+func (x *VictimTx) GetRelatedShards() []uint32 {
+	if x != nil {
+		return x.RelatedShards
+	}
+	return nil
+}
+
+func (x *VictimTx) GetEpochs() []uint64 {
+	if x != nil {
+		return x.Epochs
+	}
+	return nil
+}
+
+func (x *VictimTx) GetSimulationNum() uint32 {
+	if x != nil {
+		return x.SimulationNum
+	}
+	return 0
+}
+
+func (x *VictimTx) GetProof() []*DeadlockProbe {
+	if x != nil {
+		return x.Proof
+	}
+	return nil
+}
+
 type Priority struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	Nonce         uint64                 `protobuf:"varint,1,opt,name=nonce,proto3" json:"nonce,omitempty"`
@@ -2915,7 +3427,7 @@ type Priority struct {
 
 func (x *Priority) Reset() {
 	*x = Priority{}
-	mi := &file_ssc_proto_msgTypes[31]
+	mi := &file_ssc_proto_msgTypes[37]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2927,7 +3439,7 @@ func (x *Priority) String() string {
 func (*Priority) ProtoMessage() {}
 
 func (x *Priority) ProtoReflect() protoreflect.Message {
-	mi := &file_ssc_proto_msgTypes[31]
+	mi := &file_ssc_proto_msgTypes[37]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2940,7 +3452,7 @@ func (x *Priority) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use Priority.ProtoReflect.Descriptor instead.
 func (*Priority) Descriptor() ([]byte, []int) {
-	return file_ssc_proto_rawDescGZIP(), []int{31}
+	return file_ssc_proto_rawDescGZIP(), []int{37}
 }
 
 func (x *Priority) GetNonce() uint64 {
@@ -2976,7 +3488,7 @@ type ChainNode struct {
 
 func (x *ChainNode) Reset() {
 	*x = ChainNode{}
-	mi := &file_ssc_proto_msgTypes[32]
+	mi := &file_ssc_proto_msgTypes[38]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2988,7 +3500,7 @@ func (x *ChainNode) String() string {
 func (*ChainNode) ProtoMessage() {}
 
 func (x *ChainNode) ProtoReflect() protoreflect.Message {
-	mi := &file_ssc_proto_msgTypes[32]
+	mi := &file_ssc_proto_msgTypes[38]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3001,7 +3513,7 @@ func (x *ChainNode) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ChainNode.ProtoReflect.Descriptor instead.
 func (*ChainNode) Descriptor() ([]byte, []int) {
-	return file_ssc_proto_rawDescGZIP(), []int{32}
+	return file_ssc_proto_rawDescGZIP(), []int{38}
 }
 
 func (x *ChainNode) GetTxHash() *Hash {
@@ -3041,7 +3553,7 @@ type NewEpoch struct {
 
 func (x *NewEpoch) Reset() {
 	*x = NewEpoch{}
-	mi := &file_ssc_proto_msgTypes[33]
+	mi := &file_ssc_proto_msgTypes[39]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3053,7 +3565,7 @@ func (x *NewEpoch) String() string {
 func (*NewEpoch) ProtoMessage() {}
 
 func (x *NewEpoch) ProtoReflect() protoreflect.Message {
-	mi := &file_ssc_proto_msgTypes[33]
+	mi := &file_ssc_proto_msgTypes[39]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3066,7 +3578,7 @@ func (x *NewEpoch) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use NewEpoch.ProtoReflect.Descriptor instead.
 func (*NewEpoch) Descriptor() ([]byte, []int) {
-	return file_ssc_proto_rawDescGZIP(), []int{33}
+	return file_ssc_proto_rawDescGZIP(), []int{39}
 }
 
 func (x *NewEpoch) GetCommittee() []byte {
@@ -3086,7 +3598,7 @@ type HandleNewEpochRequest struct {
 
 func (x *HandleNewEpochRequest) Reset() {
 	*x = HandleNewEpochRequest{}
-	mi := &file_ssc_proto_msgTypes[34]
+	mi := &file_ssc_proto_msgTypes[40]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3098,7 +3610,7 @@ func (x *HandleNewEpochRequest) String() string {
 func (*HandleNewEpochRequest) ProtoMessage() {}
 
 func (x *HandleNewEpochRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_ssc_proto_msgTypes[34]
+	mi := &file_ssc_proto_msgTypes[40]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3111,7 +3623,7 @@ func (x *HandleNewEpochRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use HandleNewEpochRequest.ProtoReflect.Descriptor instead.
 func (*HandleNewEpochRequest) Descriptor() ([]byte, []int) {
-	return file_ssc_proto_rawDescGZIP(), []int{34}
+	return file_ssc_proto_rawDescGZIP(), []int{40}
 }
 
 func (x *HandleNewEpochRequest) GetNewEpoch() *NewEpoch {
@@ -3138,7 +3650,7 @@ type SLTestRequest struct {
 
 func (x *SLTestRequest) Reset() {
 	*x = SLTestRequest{}
-	mi := &file_ssc_proto_msgTypes[35]
+	mi := &file_ssc_proto_msgTypes[41]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3150,7 +3662,7 @@ func (x *SLTestRequest) String() string {
 func (*SLTestRequest) ProtoMessage() {}
 
 func (x *SLTestRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_ssc_proto_msgTypes[35]
+	mi := &file_ssc_proto_msgTypes[41]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3163,7 +3675,7 @@ func (x *SLTestRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use SLTestRequest.ProtoReflect.Descriptor instead.
 func (*SLTestRequest) Descriptor() ([]byte, []int) {
-	return file_ssc_proto_rawDescGZIP(), []int{35}
+	return file_ssc_proto_rawDescGZIP(), []int{41}
 }
 
 func (x *SLTestRequest) GetTestFile() []byte {
@@ -3190,7 +3702,7 @@ type SLTestResult struct {
 
 func (x *SLTestResult) Reset() {
 	*x = SLTestResult{}
-	mi := &file_ssc_proto_msgTypes[36]
+	mi := &file_ssc_proto_msgTypes[42]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3202,7 +3714,7 @@ func (x *SLTestResult) String() string {
 func (*SLTestResult) ProtoMessage() {}
 
 func (x *SLTestResult) ProtoReflect() protoreflect.Message {
-	mi := &file_ssc_proto_msgTypes[36]
+	mi := &file_ssc_proto_msgTypes[42]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3215,7 +3727,7 @@ func (x *SLTestResult) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use SLTestResult.ProtoReflect.Descriptor instead.
 func (*SLTestResult) Descriptor() ([]byte, []int) {
-	return file_ssc_proto_rawDescGZIP(), []int{36}
+	return file_ssc_proto_rawDescGZIP(), []int{42}
 }
 
 func (x *SLTestResult) GetResult() uint64 {
@@ -3247,7 +3759,7 @@ type SLOpinion struct {
 
 func (x *SLOpinion) Reset() {
 	*x = SLOpinion{}
-	mi := &file_ssc_proto_msgTypes[37]
+	mi := &file_ssc_proto_msgTypes[43]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3259,7 +3771,7 @@ func (x *SLOpinion) String() string {
 func (*SLOpinion) ProtoMessage() {}
 
 func (x *SLOpinion) ProtoReflect() protoreflect.Message {
-	mi := &file_ssc_proto_msgTypes[37]
+	mi := &file_ssc_proto_msgTypes[43]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3272,7 +3784,7 @@ func (x *SLOpinion) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use SLOpinion.ProtoReflect.Descriptor instead.
 func (*SLOpinion) Descriptor() ([]byte, []int) {
-	return file_ssc_proto_rawDescGZIP(), []int{37}
+	return file_ssc_proto_rawDescGZIP(), []int{43}
 }
 
 func (x *SLOpinion) GetFrom() *Address {
@@ -3334,7 +3846,7 @@ type SelfOpinions struct {
 
 func (x *SelfOpinions) Reset() {
 	*x = SelfOpinions{}
-	mi := &file_ssc_proto_msgTypes[38]
+	mi := &file_ssc_proto_msgTypes[44]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3346,7 +3858,7 @@ func (x *SelfOpinions) String() string {
 func (*SelfOpinions) ProtoMessage() {}
 
 func (x *SelfOpinions) ProtoReflect() protoreflect.Message {
-	mi := &file_ssc_proto_msgTypes[38]
+	mi := &file_ssc_proto_msgTypes[44]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3359,7 +3871,7 @@ func (x *SelfOpinions) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use SelfOpinions.ProtoReflect.Descriptor instead.
 func (*SelfOpinions) Descriptor() ([]byte, []int) {
-	return file_ssc_proto_rawDescGZIP(), []int{38}
+	return file_ssc_proto_rawDescGZIP(), []int{44}
 }
 
 func (x *SelfOpinions) GetFrom() *Address {
@@ -3386,7 +3898,7 @@ type Bytes struct {
 
 func (x *Bytes) Reset() {
 	*x = Bytes{}
-	mi := &file_ssc_proto_msgTypes[39]
+	mi := &file_ssc_proto_msgTypes[45]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3398,7 +3910,7 @@ func (x *Bytes) String() string {
 func (*Bytes) ProtoMessage() {}
 
 func (x *Bytes) ProtoReflect() protoreflect.Message {
-	mi := &file_ssc_proto_msgTypes[39]
+	mi := &file_ssc_proto_msgTypes[45]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3411,7 +3923,7 @@ func (x *Bytes) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use Bytes.ProtoReflect.Descriptor instead.
 func (*Bytes) Descriptor() ([]byte, []int) {
-	return file_ssc_proto_rawDescGZIP(), []int{39}
+	return file_ssc_proto_rawDescGZIP(), []int{45}
 }
 
 func (x *Bytes) GetVal() []byte {
@@ -3423,28 +3935,28 @@ func (x *Bytes) GetVal() []byte {
 
 // RetrySchedulerStatus 重试调度器各池/索引的条目数。
 type RetrySchedulerStatus struct {
-	state           protoimpl.MessageState `protogen:"open.v1"`
-	RetryPool       int64                  `protobuf:"varint,1,opt,name=retry_pool,json=retryPool,proto3" json:"retry_pool,omitempty"`
-	PassivePool     int64                  `protobuf:"varint,2,opt,name=passive_pool,json=passivePool,proto3" json:"passive_pool,omitempty"`
-	StaleTxs        int64                  `protobuf:"varint,3,opt,name=stale_txs,json=staleTxs,proto3" json:"stale_txs,omitempty"`
-	Signals         int64                  `protobuf:"varint,4,opt,name=signals,proto3" json:"signals,omitempty"`
-	Patches         int64                  `protobuf:"varint,5,opt,name=patches,proto3" json:"patches,omitempty"`
-	OnChainPatches  int64                  `protobuf:"varint,6,opt,name=on_chain_patches,json=onChainPatches,proto3" json:"on_chain_patches,omitempty"`
-	LocalPatches    int64                  `protobuf:"varint,7,opt,name=local_patches,json=localPatches,proto3" json:"local_patches,omitempty"`
-	KeyIndex        int64                  `protobuf:"varint,8,opt,name=key_index,json=keyIndex,proto3" json:"key_index,omitempty"`
-	Subscriber      int64                  `protobuf:"varint,9,opt,name=subscriber,proto3" json:"subscriber,omitempty"`
-	TxSubKeys       int64                  `protobuf:"varint,10,opt,name=tx_sub_keys,json=txSubKeys,proto3" json:"tx_sub_keys,omitempty"`
-	ConsumedPatches int64                  `protobuf:"varint,11,opt,name=consumed_patches,json=consumedPatches,proto3" json:"consumed_patches,omitempty"`
-	ReSimInFlight   int64                  `protobuf:"varint,12,opt,name=re_sim_in_flight,json=reSimInFlight,proto3" json:"re_sim_in_flight,omitempty"`
-	WoundedRetryTxs int64                  `protobuf:"varint,13,opt,name=wounded_retry_txs,json=woundedRetryTxs,proto3" json:"wounded_retry_txs,omitempty"`
-	LockWait        int64                  `protobuf:"varint,14,opt,name=lock_wait,json=lockWait,proto3" json:"lock_wait,omitempty"`
-	unknownFields   protoimpl.UnknownFields
-	sizeCache       protoimpl.SizeCache
+	state             protoimpl.MessageState `protogen:"open.v1"`
+	RetryPool         int64                  `protobuf:"varint,1,opt,name=retry_pool,json=retryPool,proto3" json:"retry_pool,omitempty"`
+	PassivePool       int64                  `protobuf:"varint,2,opt,name=passive_pool,json=passivePool,proto3" json:"passive_pool,omitempty"`
+	StaleTxs          int64                  `protobuf:"varint,3,opt,name=stale_txs,json=staleTxs,proto3" json:"stale_txs,omitempty"`
+	Signals           int64                  `protobuf:"varint,4,opt,name=signals,proto3" json:"signals,omitempty"`
+	Patches           int64                  `protobuf:"varint,5,opt,name=patches,proto3" json:"patches,omitempty"`
+	OnChainDagPatches int64                  `protobuf:"varint,6,opt,name=on_chain_dag_patches,json=onChainDagPatches,proto3" json:"on_chain_dag_patches,omitempty"`
+	LocalPatches      int64                  `protobuf:"varint,7,opt,name=local_patches,json=localPatches,proto3" json:"local_patches,omitempty"`
+	KeyIndex          int64                  `protobuf:"varint,8,opt,name=key_index,json=keyIndex,proto3" json:"key_index,omitempty"`
+	Subscriber        int64                  `protobuf:"varint,9,opt,name=subscriber,proto3" json:"subscriber,omitempty"`
+	TxSubKeys         int64                  `protobuf:"varint,10,opt,name=tx_sub_keys,json=txSubKeys,proto3" json:"tx_sub_keys,omitempty"`
+	ConsumedPatches   int64                  `protobuf:"varint,11,opt,name=consumed_patches,json=consumedPatches,proto3" json:"consumed_patches,omitempty"`
+	ReSimInFlight     int64                  `protobuf:"varint,12,opt,name=re_sim_in_flight,json=reSimInFlight,proto3" json:"re_sim_in_flight,omitempty"`
+	WoundedRetryTxs   int64                  `protobuf:"varint,13,opt,name=wounded_retry_txs,json=woundedRetryTxs,proto3" json:"wounded_retry_txs,omitempty"`
+	LockWait          int64                  `protobuf:"varint,14,opt,name=lock_wait,json=lockWait,proto3" json:"lock_wait,omitempty"`
+	unknownFields     protoimpl.UnknownFields
+	sizeCache         protoimpl.SizeCache
 }
 
 func (x *RetrySchedulerStatus) Reset() {
 	*x = RetrySchedulerStatus{}
-	mi := &file_ssc_proto_msgTypes[40]
+	mi := &file_ssc_proto_msgTypes[46]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3456,7 +3968,7 @@ func (x *RetrySchedulerStatus) String() string {
 func (*RetrySchedulerStatus) ProtoMessage() {}
 
 func (x *RetrySchedulerStatus) ProtoReflect() protoreflect.Message {
-	mi := &file_ssc_proto_msgTypes[40]
+	mi := &file_ssc_proto_msgTypes[46]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3469,7 +3981,7 @@ func (x *RetrySchedulerStatus) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use RetrySchedulerStatus.ProtoReflect.Descriptor instead.
 func (*RetrySchedulerStatus) Descriptor() ([]byte, []int) {
-	return file_ssc_proto_rawDescGZIP(), []int{40}
+	return file_ssc_proto_rawDescGZIP(), []int{46}
 }
 
 func (x *RetrySchedulerStatus) GetRetryPool() int64 {
@@ -3507,9 +4019,9 @@ func (x *RetrySchedulerStatus) GetPatches() int64 {
 	return 0
 }
 
-func (x *RetrySchedulerStatus) GetOnChainPatches() int64 {
+func (x *RetrySchedulerStatus) GetOnChainDagPatches() int64 {
 	if x != nil {
-		return x.OnChainPatches
+		return x.OnChainDagPatches
 	}
 	return 0
 }
@@ -3583,7 +4095,7 @@ type StateLockStatus struct {
 
 func (x *StateLockStatus) Reset() {
 	*x = StateLockStatus{}
-	mi := &file_ssc_proto_msgTypes[41]
+	mi := &file_ssc_proto_msgTypes[47]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3595,7 +4107,7 @@ func (x *StateLockStatus) String() string {
 func (*StateLockStatus) ProtoMessage() {}
 
 func (x *StateLockStatus) ProtoReflect() protoreflect.Message {
-	mi := &file_ssc_proto_msgTypes[41]
+	mi := &file_ssc_proto_msgTypes[47]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3608,7 +4120,7 @@ func (x *StateLockStatus) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use StateLockStatus.ProtoReflect.Descriptor instead.
 func (*StateLockStatus) Descriptor() ([]byte, []int) {
-	return file_ssc_proto_rawDescGZIP(), []int{41}
+	return file_ssc_proto_rawDescGZIP(), []int{47}
 }
 
 func (x *StateLockStatus) GetGlobalLocked() int64 {
@@ -3652,7 +4164,7 @@ type TempLockViewStatus struct {
 
 func (x *TempLockViewStatus) Reset() {
 	*x = TempLockViewStatus{}
-	mi := &file_ssc_proto_msgTypes[42]
+	mi := &file_ssc_proto_msgTypes[48]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3664,7 +4176,7 @@ func (x *TempLockViewStatus) String() string {
 func (*TempLockViewStatus) ProtoMessage() {}
 
 func (x *TempLockViewStatus) ProtoReflect() protoreflect.Message {
-	mi := &file_ssc_proto_msgTypes[42]
+	mi := &file_ssc_proto_msgTypes[48]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3677,7 +4189,7 @@ func (x *TempLockViewStatus) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use TempLockViewStatus.ProtoReflect.Descriptor instead.
 func (*TempLockViewStatus) Descriptor() ([]byte, []int) {
-	return file_ssc_proto_rawDescGZIP(), []int{42}
+	return file_ssc_proto_rawDescGZIP(), []int{48}
 }
 
 func (x *TempLockViewStatus) GetWriteLocks() int64 {
@@ -3722,7 +4234,7 @@ type SimulatorStatus struct {
 
 func (x *SimulatorStatus) Reset() {
 	*x = SimulatorStatus{}
-	mi := &file_ssc_proto_msgTypes[43]
+	mi := &file_ssc_proto_msgTypes[49]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3734,7 +4246,7 @@ func (x *SimulatorStatus) String() string {
 func (*SimulatorStatus) ProtoMessage() {}
 
 func (x *SimulatorStatus) ProtoReflect() protoreflect.Message {
-	mi := &file_ssc_proto_msgTypes[43]
+	mi := &file_ssc_proto_msgTypes[49]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3747,7 +4259,7 @@ func (x *SimulatorStatus) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use SimulatorStatus.ProtoReflect.Descriptor instead.
 func (*SimulatorStatus) Descriptor() ([]byte, []int) {
-	return file_ssc_proto_rawDescGZIP(), []int{43}
+	return file_ssc_proto_rawDescGZIP(), []int{49}
 }
 
 func (x *SimulatorStatus) GetSimStates() int64 {
@@ -3796,7 +4308,7 @@ type VerifierStatus struct {
 
 func (x *VerifierStatus) Reset() {
 	*x = VerifierStatus{}
-	mi := &file_ssc_proto_msgTypes[44]
+	mi := &file_ssc_proto_msgTypes[50]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3808,7 +4320,7 @@ func (x *VerifierStatus) String() string {
 func (*VerifierStatus) ProtoMessage() {}
 
 func (x *VerifierStatus) ProtoReflect() protoreflect.Message {
-	mi := &file_ssc_proto_msgTypes[44]
+	mi := &file_ssc_proto_msgTypes[50]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3821,7 +4333,7 @@ func (x *VerifierStatus) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use VerifierStatus.ProtoReflect.Descriptor instead.
 func (*VerifierStatus) Descriptor() ([]byte, []int) {
-	return file_ssc_proto_rawDescGZIP(), []int{44}
+	return file_ssc_proto_rawDescGZIP(), []int{50}
 }
 
 func (x *VerifierStatus) GetExecutionVerifyContexts() int64 {
@@ -3850,7 +4362,7 @@ type TimerStatus struct {
 
 func (x *TimerStatus) Reset() {
 	*x = TimerStatus{}
-	mi := &file_ssc_proto_msgTypes[45]
+	mi := &file_ssc_proto_msgTypes[51]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3862,7 +4374,7 @@ func (x *TimerStatus) String() string {
 func (*TimerStatus) ProtoMessage() {}
 
 func (x *TimerStatus) ProtoReflect() protoreflect.Message {
-	mi := &file_ssc_proto_msgTypes[45]
+	mi := &file_ssc_proto_msgTypes[51]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3875,7 +4387,7 @@ func (x *TimerStatus) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use TimerStatus.ProtoReflect.Descriptor instead.
 func (*TimerStatus) Descriptor() ([]byte, []int) {
-	return file_ssc_proto_rawDescGZIP(), []int{45}
+	return file_ssc_proto_rawDescGZIP(), []int{51}
 }
 
 func (x *TimerStatus) GetTxs() int64 {
@@ -3911,7 +4423,7 @@ type DAGStatus struct {
 
 func (x *DAGStatus) Reset() {
 	*x = DAGStatus{}
-	mi := &file_ssc_proto_msgTypes[46]
+	mi := &file_ssc_proto_msgTypes[52]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3923,7 +4435,7 @@ func (x *DAGStatus) String() string {
 func (*DAGStatus) ProtoMessage() {}
 
 func (x *DAGStatus) ProtoReflect() protoreflect.Message {
-	mi := &file_ssc_proto_msgTypes[46]
+	mi := &file_ssc_proto_msgTypes[52]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3936,7 +4448,7 @@ func (x *DAGStatus) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use DAGStatus.ProtoReflect.Descriptor instead.
 func (*DAGStatus) Descriptor() ([]byte, []int) {
-	return file_ssc_proto_rawDescGZIP(), []int{46}
+	return file_ssc_proto_rawDescGZIP(), []int{52}
 }
 
 func (x *DAGStatus) GetChainTxDetected() int64 {
@@ -3981,7 +4493,7 @@ type ModuleStatus struct {
 
 func (x *ModuleStatus) Reset() {
 	*x = ModuleStatus{}
-	mi := &file_ssc_proto_msgTypes[47]
+	mi := &file_ssc_proto_msgTypes[53]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3993,7 +4505,7 @@ func (x *ModuleStatus) String() string {
 func (*ModuleStatus) ProtoMessage() {}
 
 func (x *ModuleStatus) ProtoReflect() protoreflect.Message {
-	mi := &file_ssc_proto_msgTypes[47]
+	mi := &file_ssc_proto_msgTypes[53]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -4006,7 +4518,7 @@ func (x *ModuleStatus) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ModuleStatus.ProtoReflect.Descriptor instead.
 func (*ModuleStatus) Descriptor() ([]byte, []int) {
-	return file_ssc_proto_rawDescGZIP(), []int{47}
+	return file_ssc_proto_rawDescGZIP(), []int{53}
 }
 
 func (x *ModuleStatus) GetTxStates() int64 {
@@ -4136,7 +4648,7 @@ const file_ssc_proto_rawDesc = "" +
 	"signatures\x12\x1d\n" +
 	"\n" +
 	"bls_bitmap\x18\x03 \x01(\fR\tblsBitmap\x12\x16\n" +
-	"\x06epochs\x18\x04 \x03(\x04R\x06epochs\"\xbc\x02\n" +
+	"\x06epochs\x18\x04 \x03(\x04R\x06epochs\"\xf7\x02\n" +
 	"\x14CXTSimulationRequest\x12\x1b\n" +
 	"\tblock_num\x18\x01 \x01(\x04R\bblockNum\x12\x16\n" +
 	"\x06epochs\x18\x02 \x03(\x04R\x06epochs\x12$\n" +
@@ -4147,7 +4659,9 @@ const file_ssc_proto_rawDesc = "" +
 	"block_hash\x18\x06 \x01(\v2\v.sscpb.HashR\tblockHash\x12\x1f\n" +
 	"\x02tx\x18\a \x01(\v2\x0f.sscpb.RLPBytesR\x02tx\x12\"\n" +
 	"\x04from\x18\b \x01(\v2\x0e.sscpb.AddressR\x04from\x12\x19\n" +
-	"\bgas_pool\x18\t \x01(\x04R\agasPool\"\x89\x02\n" +
+	"\bgas_pool\x18\t \x01(\x04R\agasPool\x129\n" +
+	"\x10upstream_tx_list\x18\n" +
+	" \x03(\v2\x0f.sscpb.TxSimKeyR\x0eupstreamTxList\"\x89\x02\n" +
 	"\x13CXTSimulationResult\x12)\n" +
 	"\x04base\x18\x01 \x01(\v2\x15.sscpb.BaseSSCMessageR\x04base\x12%\n" +
 	"\x0erelated_shards\x18\x02 \x03(\rR\rrelatedShards\x12\x16\n" +
@@ -4163,7 +4677,7 @@ const file_ssc_proto_rawDesc = "" +
 	"\bused_gas\x18\x04 \x01(\x04R\ausedGas\x12\x10\n" +
 	"\x03err\x18\x05 \x01(\tR\x03err\x120\n" +
 	"\ttree_node\x18\x06 \x01(\v2\x13.sscpb.CallNodeDataR\btreeNode\x12/\n" +
-	"\x04base\x18\b \x01(\v2\x1b.sscpb.BaseBLSSignedMessageR\x04base\"\xd5\x03\n" +
+	"\x04base\x18\b \x01(\v2\x1b.sscpb.BaseBLSSignedMessageR\x04base\"\xa6\x03\n" +
 	"\rCXTSimulation\x12%\n" +
 	"\x0esimulation_num\x18\x01 \x01(\x05R\rsimulationNum\x12$\n" +
 	"\atx_hash\x18\x02 \x01(\v2\v.sscpb.HashR\x06txHash\x12\x14\n" +
@@ -4173,9 +4687,7 @@ const file_ssc_proto_rawDesc = "" +
 	"\x0forigin_shard_id\x18\x06 \x01(\rR\roriginShardId\x12%\n" +
 	"\x0erelated_shards\x18\a \x03(\rR\rrelatedShards\x124\n" +
 	"\vcall_states\x18\b \x03(\v2\x13.sscpb.CXTCallStateR\n" +
-	"callStates\x12-\n" +
-	"\vchain_patch\x18\t \x01(\v2\f.sscpb.RWSetR\n" +
-	"chainPatch\x129\n" +
+	"callStates\x129\n" +
 	"\x10upstream_tx_list\x18\n" +
 	" \x03(\v2\x0f.sscpb.TxSimKeyR\x0eupstreamTxList\x12/\n" +
 	"\x04base\x18\v \x01(\v2\x1b.sscpb.BaseBLSSignedMessageR\x04base\"\x8b\x03\n" +
@@ -4298,7 +4810,17 @@ const file_ssc_proto_rawDesc = "" +
 	"\frelease_only\x18\t \x01(\bR\vreleaseOnly\"W\n" +
 	"\bTxSimKey\x12$\n" +
 	"\atx_hash\x18\x01 \x01(\v2\v.sscpb.HashR\x06txHash\x12%\n" +
-	"\x0esimulation_num\x18\x02 \x01(\x05R\rsimulationNum\"\x8c\x02\n" +
+	"\x0esimulation_num\x18\x02 \x01(\x05R\rsimulationNum\"\x87\x01\n" +
+	"\fSimPatchNode\x12&\n" +
+	"\x06tx_sim\x18\x01 \x01(\v2\x0f.sscpb.TxSimKeyR\x05txSim\x12+\n" +
+	"\bupstream\x18\x02 \x03(\v2\x0f.sscpb.TxSimKeyR\bupstream\x12\"\n" +
+	"\x05patch\x18\x03 \x01(\v2\f.sscpb.RWSetR\x05patch\"\x8a\x01\n" +
+	"\x10SimPatchSubgraph\x12$\n" +
+	"\atx_hash\x18\x01 \x01(\v2\v.sscpb.HashR\x06txHash\x12%\n" +
+	"\x0esimulation_num\x18\x02 \x01(\x05R\rsimulationNum\x12)\n" +
+	"\x05nodes\x18\x03 \x03(\v2\x13.sscpb.SimPatchNodeR\x05nodes\"N\n" +
+	"\x17StoreSimDAGPatchRequest\x123\n" +
+	"\bsubgraph\x18\x01 \x01(\v2\x17.sscpb.SimPatchSubgraphR\bsubgraph\"\x98\x02\n" +
 	"\vRetrySignal\x12$\n" +
 	"\atx_hash\x18\x01 \x01(\v2\v.sscpb.HashR\x06txHash\x12\x1d\n" +
 	"\n" +
@@ -4306,9 +4828,8 @@ const file_ssc_proto_rawDesc = "" +
 	"\x05epoch\x18\x03 \x01(\x04R\x05epoch\x12%\n" +
 	"\x0esimulation_num\x18\x04 \x01(\x05R\rsimulationNum\x126\n" +
 	"\tcondition\x18\x05 \x01(\x0e2\x18.sscpb.ConflictConditionR\tcondition\x12\x14\n" +
-	"\x05ready\x18\x06 \x01(\bR\x05ready\x12-\n" +
-	"\vchain_patch\x18\a \x01(\v2\f.sscpb.RWSetR\n" +
-	"chainPatch\"\x94\x01\n" +
+	"\x05ready\x18\x06 \x01(\bR\x05ready\x129\n" +
+	"\x10upstream_tx_list\x18\b \x03(\v2\x0f.sscpb.TxSimKeyR\x0eupstreamTxList\"\x94\x01\n" +
 	"\fRetrySignals\x12!\n" +
 	"\forigin_shard\x18\x01 \x01(\rR\voriginShard\x12\x1d\n" +
 	"\n" +
@@ -4332,7 +4853,34 @@ const file_ssc_proto_rawDesc = "" +
 	"\x0fRetryCommitResp\x12$\n" +
 	"\atx_hash\x18\x01 \x01(\v2\v.sscpb.HashR\x06txHash\x12\x16\n" +
 	"\x06locked\x18\x02 \x01(\bR\x06locked\x123\n" +
-	"\x16on_chain_lock_conflict\x18\x03 \x01(\bR\x13onChainLockConflict\"n\n" +
+	"\x16on_chain_lock_conflict\x18\x03 \x01(\bR\x13onChainLockConflict\"\xac\x03\n" +
+	"\rDeadlockProbe\x12\x1f\n" +
+	"\x04init\x18\x01 \x01(\v2\v.sscpb.HashR\x04init\x12#\n" +
+	"\x06sender\x18\x02 \x01(\v2\v.sscpb.HashR\x06sender\x12%\n" +
+	"\acurrent\x18\x03 \x01(\v2\v.sscpb.HashR\acurrent\x12\x1f\n" +
+	"\x04path\x18\x04 \x03(\v2\v.sscpb.HashR\x04path\x12&\n" +
+	"\x05layer\x18\x05 \x01(\x0e2\x10.sscpb.LockLayerR\x05layer\x12)\n" +
+	"\bwait_key\x18\x06 \x01(\v2\x0e.sscpb.LockKeyR\awaitKey\x12\x14\n" +
+	"\x05epoch\x18\a \x01(\x04R\x05epoch\x12\x1b\n" +
+	"\tblock_num\x18\b \x01(\x04R\bblockNum\x12\x14\n" +
+	"\x05nonce\x18\t \x01(\x04R\x05nonce\x12\x14\n" +
+	"\x05shard\x18\n" +
+	" \x01(\rR\x05shard\x12/\n" +
+	"\x04base\x18\v \x01(\v2\x1b.sscpb.BaseBLSSignedMessageR\x04base\x12*\n" +
+	"\x05proof\x18\f \x03(\v2\x14.sscpb.DeadlockProbeR\x05proof\"\x8c\x01\n" +
+	"\x10DeadlockProbeAck\x12\x1f\n" +
+	"\x04init\x18\x01 \x01(\v2\v.sscpb.HashR\x04init\x12%\n" +
+	"\acurrent\x18\x02 \x01(\v2\v.sscpb.HashR\acurrent\x12\x14\n" +
+	"\x05shard\x18\x03 \x01(\rR\x05shard\x12\x1a\n" +
+	"\baccepted\x18\x04 \x01(\bR\baccepted\"\x80\x02\n" +
+	"\bVictimTx\x12$\n" +
+	"\atx_hash\x18\x01 \x01(\v2\v.sscpb.HashR\x06txHash\x12\x14\n" +
+	"\x05nonce\x18\x02 \x01(\x04R\x05nonce\x12&\n" +
+	"\x0forigin_shard_id\x18\x03 \x01(\rR\roriginShardId\x12%\n" +
+	"\x0erelated_shards\x18\x04 \x03(\rR\rrelatedShards\x12\x16\n" +
+	"\x06epochs\x18\x05 \x03(\x04R\x06epochs\x12%\n" +
+	"\x0esimulation_num\x18\x06 \x01(\rR\rsimulationNum\x12*\n" +
+	"\x05proof\x18\a \x03(\v2\x14.sscpb.DeadlockProbeR\x05proof\"n\n" +
 	"\bPriority\x12\x14\n" +
 	"\x05nonce\x18\x01 \x01(\x04R\x05nonce\x12&\n" +
 	"\x0forigin_shard_id\x18\x02 \x01(\rR\roriginShardId\x12$\n" +
@@ -4367,15 +4915,15 @@ const file_ssc_proto_rawDesc = "" +
 	"\x04from\x18\x01 \x01(\v2\x0e.sscpb.AddressR\x04from\x12,\n" +
 	"\bopinions\x18\x02 \x03(\v2\x10.sscpb.SLOpinionR\bopinions\"\x19\n" +
 	"\x05Bytes\x12\x10\n" +
-	"\x03val\x18\x01 \x01(\fR\x03val\"\xf2\x03\n" +
+	"\x03val\x18\x01 \x01(\fR\x03val\"\xf9\x03\n" +
 	"\x14RetrySchedulerStatus\x12\x1d\n" +
 	"\n" +
 	"retry_pool\x18\x01 \x01(\x03R\tretryPool\x12!\n" +
 	"\fpassive_pool\x18\x02 \x01(\x03R\vpassivePool\x12\x1b\n" +
 	"\tstale_txs\x18\x03 \x01(\x03R\bstaleTxs\x12\x18\n" +
 	"\asignals\x18\x04 \x01(\x03R\asignals\x12\x18\n" +
-	"\apatches\x18\x05 \x01(\x03R\apatches\x12(\n" +
-	"\x10on_chain_patches\x18\x06 \x01(\x03R\x0eonChainPatches\x12#\n" +
+	"\apatches\x18\x05 \x01(\x03R\apatches\x12/\n" +
+	"\x14on_chain_dag_patches\x18\x06 \x01(\x03R\x11onChainDagPatches\x12#\n" +
 	"\rlocal_patches\x18\a \x01(\x03R\flocalPatches\x12\x1b\n" +
 	"\tkey_index\x18\b \x01(\x03R\bkeyIndex\x12\x1e\n" +
 	"\n" +
@@ -4461,29 +5009,36 @@ const file_ssc_proto_rawDesc = "" +
 	"\fRETRY_ACTIVE\x10\x00\x12\x12\n" +
 	"\x0eRETRY_CONSUMED\x10\x01\x12\x11\n" +
 	"\rRETRY_PASSIVE\x10\x02\x12\x11\n" +
-	"\rRETRY_WOUNDED\x10\x032\x9c\x06\n" +
+	"\rRETRY_WOUNDED\x10\x03*7\n" +
+	"\tLockLayer\x12\x16\n" +
+	"\x12LOCK_LAYER_ONCHAIN\x10\x00\x12\x12\n" +
+	"\x0eLOCK_LAYER_TLV\x10\x012\xce\a\n" +
 	"\x0fSSCShardService\x12X\n" +
 	"\x1aStartSimulateCXTransaction\x12\x1b.sscpb.CXTSimulationRequest\x1a\x1d.sscpb.CXTSimulationSSCResult\x12P\n" +
 	"\x15HandleSimulateRequest\x12\x1b.sscpb.CXTSimulationRequest\x1a\x1a.sscpb.CXTSimulationResult\x12@\n" +
 	"\x0eRequestCallCXT\x12\x15.sscpb.CXTCallRequest\x1a\x17.sscpb.CXTCallSSCResult\x12?\n" +
 	"\rHandleCXTCall\x12\x18.sscpb.CXTCallSSCRequest\x1a\x14.sscpb.CXTCallResult\x12=\n" +
 	"\x14SignSimulationCommit\x12\x17.sscpb.SimulationCommit\x1a\f.sscpb.Bytes\x127\n" +
-	"\x11SignCXTSimulation\x12\x14.sscpb.CXTSimulation\x1a\f.sscpb.Bytes\x126\n" +
+	"\x11SignCXTSimulation\x12\x14.sscpb.CXTSimulation\x1a\f.sscpb.Bytes\x127\n" +
+	"\x11SignDeadlockProbe\x12\x14.sscpb.DeadlockProbe\x1a\f.sscpb.Bytes\x126\n" +
 	"\x10HandleCommitVote\x12\x14.sscpb.CXTCommitVote\x1a\f.sscpb.Empty\x123\n" +
 	"\x06SLTest\x12\x14.sscpb.SLTestRequest\x1a\x13.sscpb.SLTestResult\x12*\n" +
 	"\n" +
 	"AddRetryTx\x12\x0e.sscpb.RetryTx\x1a\f.sscpb.Empty\x12-\n" +
 	"\x10AddToPassivePool\x12\v.sscpb.Hash\x1a\f.sscpb.Empty\x122\n" +
-	"\vRetryCommit\x12\v.sscpb.Hash\x1a\x16.sscpb.RetryCommitResp\x12(\n" +
+	"\vRetryCommit\x12\v.sscpb.Hash\x1a\x16.sscpb.RetryCommitResp\x125\n" +
+	"\x0eRetryCommitDAG\x12\v.sscpb.Hash\x1a\x16.sscpb.RetryCommitResp\x12(\n" +
 	"\vRetryCancel\x12\v.sscpb.Hash\x1a\f.sscpb.Empty\x12<\n" +
-	"\x0eHandleNewEpoch\x12\x1c.sscpb.HandleNewEpochRequest\x1a\f.sscpb.Empty2\x81\x03\n" +
+	"\x0eHandleNewEpoch\x12\x1c.sscpb.HandleNewEpochRequest\x1a\f.sscpb.Empty\x12@\n" +
+	"\x10StoreSimDAGPatch\x12\x1e.sscpb.StoreSimDAGPatchRequest\x1a\f.sscpb.Empty2\xc7\x03\n" +
 	"\x0fSSCCrossService\x12E\n" +
 	"\x10HandleCXTSSCCall\x12\x18.sscpb.CXTCallSSCRequest\x1a\x17.sscpb.CXTCallSSCResult\x129\n" +
 	"\x10CommitSimulation\x12\x17.sscpb.SimulationCommit\x1a\f.sscpb.Empty\x12?\n" +
 	"\x16HandleCXTCommitSSCVote\x12\x17.sscpb.CXTCommitSSCVote\x1a\f.sscpb.Empty\x12;\n" +
 	"\x14HandleCXTCommitProof\x12\x15.sscpb.CXTCommitProof\x1a\f.sscpb.Empty\x127\n" +
 	"\x12SignalReSimulation\x12\x13.sscpb.RetrySignals\x1a\f.sscpb.Empty\x125\n" +
-	"\x11HandleRetrySignal\x12\x12.sscpb.RetrySignal\x1a\f.sscpb.Empty2I\n" +
+	"\x11HandleRetrySignal\x12\x12.sscpb.RetrySignal\x1a\f.sscpb.Empty\x12D\n" +
+	"\x13DetectDeadlockProbe\x12\x14.sscpb.DeadlockProbe\x1a\x17.sscpb.DeadlockProbeAck2I\n" +
 	"\x11SSCMonitorService\x124\n" +
 	"\x0fGetModuleStatus\x12\f.sscpb.Empty\x1a\x13.sscpb.ModuleStatusB\n" +
 	"Z\b./;sscpbb\x06proto3"
@@ -4500,205 +5055,238 @@ func file_ssc_proto_rawDescGZIP() []byte {
 	return file_ssc_proto_rawDescData
 }
 
-var file_ssc_proto_enumTypes = make([]protoimpl.EnumInfo, 6)
-var file_ssc_proto_msgTypes = make([]protoimpl.MessageInfo, 48)
+var file_ssc_proto_enumTypes = make([]protoimpl.EnumInfo, 7)
+var file_ssc_proto_msgTypes = make([]protoimpl.MessageInfo, 54)
 var file_ssc_proto_goTypes = []any{
-	(SimulationCommitStatus)(0),    // 0: sscpb.SimulationCommitStatus
-	(CXTCommitType)(0),             // 1: sscpb.CXTCommitType
-	(CXTCommitReason)(0),           // 2: sscpb.CXTCommitReason
-	(InvalidSimulationType)(0),     // 3: sscpb.InvalidSimulationType
-	(ConflictCondition)(0),         // 4: sscpb.ConflictCondition
-	(RetryStatus)(0),               // 5: sscpb.RetryStatus
-	(*Empty)(nil),                  // 6: sscpb.Empty
-	(*Hash)(nil),                   // 7: sscpb.Hash
-	(*Address)(nil),                // 8: sscpb.Address
-	(*BigInt)(nil),                 // 9: sscpb.BigInt
-	(*RLPBytes)(nil),               // 10: sscpb.RLPBytes
-	(*CallNodeData)(nil),           // 11: sscpb.CallNodeData
-	(*LockKey)(nil),                // 12: sscpb.LockKey
-	(*StateKVPair)(nil),            // 13: sscpb.StateKVPair
-	(*StateEntry)(nil),             // 14: sscpb.StateEntry
-	(*StateSet)(nil),               // 15: sscpb.StateSet
-	(*RWSet)(nil),                  // 16: sscpb.RWSet
-	(*BaseSSCMessage)(nil),         // 17: sscpb.BaseSSCMessage
-	(*BaseBLSSignedMessage)(nil),   // 18: sscpb.BaseBLSSignedMessage
-	(*CXTSimulationRequest)(nil),   // 19: sscpb.CXTSimulationRequest
-	(*CXTSimulationResult)(nil),    // 20: sscpb.CXTSimulationResult
-	(*CXTSimulationSSCResult)(nil), // 21: sscpb.CXTSimulationSSCResult
-	(*CXTSimulation)(nil),          // 22: sscpb.CXTSimulation
-	(*CXTCallState)(nil),           // 23: sscpb.CXTCallState
-	(*CXTCallRequest)(nil),         // 24: sscpb.CXTCallRequest
-	(*CXTCallSSCRequest)(nil),      // 25: sscpb.CXTCallSSCRequest
-	(*CXTCallResult)(nil),          // 26: sscpb.CXTCallResult
-	(*CXTCallSSCResult)(nil),       // 27: sscpb.CXTCallSSCResult
-	(*SimulationCommit)(nil),       // 28: sscpb.SimulationCommit
-	(*CXTCommitVote)(nil),          // 29: sscpb.CXTCommitVote
-	(*CXTCommitSSCVote)(nil),       // 30: sscpb.CXTCommitSSCVote
-	(*CXTCommitProof)(nil),         // 31: sscpb.CXTCommitProof
-	(*TxSimKey)(nil),               // 32: sscpb.TxSimKey
-	(*RetrySignal)(nil),            // 33: sscpb.RetrySignal
-	(*RetrySignals)(nil),           // 34: sscpb.RetrySignals
-	(*RetryTx)(nil),                // 35: sscpb.RetryTx
-	(*RetryCommitResp)(nil),        // 36: sscpb.RetryCommitResp
-	(*Priority)(nil),               // 37: sscpb.Priority
-	(*ChainNode)(nil),              // 38: sscpb.ChainNode
-	(*NewEpoch)(nil),               // 39: sscpb.NewEpoch
-	(*HandleNewEpochRequest)(nil),  // 40: sscpb.HandleNewEpochRequest
-	(*SLTestRequest)(nil),          // 41: sscpb.SLTestRequest
-	(*SLTestResult)(nil),           // 42: sscpb.SLTestResult
-	(*SLOpinion)(nil),              // 43: sscpb.SLOpinion
-	(*SelfOpinions)(nil),           // 44: sscpb.SelfOpinions
-	(*Bytes)(nil),                  // 45: sscpb.Bytes
-	(*RetrySchedulerStatus)(nil),   // 46: sscpb.RetrySchedulerStatus
-	(*StateLockStatus)(nil),        // 47: sscpb.StateLockStatus
-	(*TempLockViewStatus)(nil),     // 48: sscpb.TempLockViewStatus
-	(*SimulatorStatus)(nil),        // 49: sscpb.SimulatorStatus
-	(*VerifierStatus)(nil),         // 50: sscpb.VerifierStatus
-	(*TimerStatus)(nil),            // 51: sscpb.TimerStatus
-	(*DAGStatus)(nil),              // 52: sscpb.DAGStatus
-	(*ModuleStatus)(nil),           // 53: sscpb.ModuleStatus
+	(SimulationCommitStatus)(0),     // 0: sscpb.SimulationCommitStatus
+	(CXTCommitType)(0),              // 1: sscpb.CXTCommitType
+	(CXTCommitReason)(0),            // 2: sscpb.CXTCommitReason
+	(InvalidSimulationType)(0),      // 3: sscpb.InvalidSimulationType
+	(ConflictCondition)(0),          // 4: sscpb.ConflictCondition
+	(RetryStatus)(0),                // 5: sscpb.RetryStatus
+	(LockLayer)(0),                  // 6: sscpb.LockLayer
+	(*Empty)(nil),                   // 7: sscpb.Empty
+	(*Hash)(nil),                    // 8: sscpb.Hash
+	(*Address)(nil),                 // 9: sscpb.Address
+	(*BigInt)(nil),                  // 10: sscpb.BigInt
+	(*RLPBytes)(nil),                // 11: sscpb.RLPBytes
+	(*CallNodeData)(nil),            // 12: sscpb.CallNodeData
+	(*LockKey)(nil),                 // 13: sscpb.LockKey
+	(*StateKVPair)(nil),             // 14: sscpb.StateKVPair
+	(*StateEntry)(nil),              // 15: sscpb.StateEntry
+	(*StateSet)(nil),                // 16: sscpb.StateSet
+	(*RWSet)(nil),                   // 17: sscpb.RWSet
+	(*BaseSSCMessage)(nil),          // 18: sscpb.BaseSSCMessage
+	(*BaseBLSSignedMessage)(nil),    // 19: sscpb.BaseBLSSignedMessage
+	(*CXTSimulationRequest)(nil),    // 20: sscpb.CXTSimulationRequest
+	(*CXTSimulationResult)(nil),     // 21: sscpb.CXTSimulationResult
+	(*CXTSimulationSSCResult)(nil),  // 22: sscpb.CXTSimulationSSCResult
+	(*CXTSimulation)(nil),           // 23: sscpb.CXTSimulation
+	(*CXTCallState)(nil),            // 24: sscpb.CXTCallState
+	(*CXTCallRequest)(nil),          // 25: sscpb.CXTCallRequest
+	(*CXTCallSSCRequest)(nil),       // 26: sscpb.CXTCallSSCRequest
+	(*CXTCallResult)(nil),           // 27: sscpb.CXTCallResult
+	(*CXTCallSSCResult)(nil),        // 28: sscpb.CXTCallSSCResult
+	(*SimulationCommit)(nil),        // 29: sscpb.SimulationCommit
+	(*CXTCommitVote)(nil),           // 30: sscpb.CXTCommitVote
+	(*CXTCommitSSCVote)(nil),        // 31: sscpb.CXTCommitSSCVote
+	(*CXTCommitProof)(nil),          // 32: sscpb.CXTCommitProof
+	(*TxSimKey)(nil),                // 33: sscpb.TxSimKey
+	(*SimPatchNode)(nil),            // 34: sscpb.SimPatchNode
+	(*SimPatchSubgraph)(nil),        // 35: sscpb.SimPatchSubgraph
+	(*StoreSimDAGPatchRequest)(nil), // 36: sscpb.StoreSimDAGPatchRequest
+	(*RetrySignal)(nil),             // 37: sscpb.RetrySignal
+	(*RetrySignals)(nil),            // 38: sscpb.RetrySignals
+	(*RetryTx)(nil),                 // 39: sscpb.RetryTx
+	(*RetryCommitResp)(nil),         // 40: sscpb.RetryCommitResp
+	(*DeadlockProbe)(nil),           // 41: sscpb.DeadlockProbe
+	(*DeadlockProbeAck)(nil),        // 42: sscpb.DeadlockProbeAck
+	(*VictimTx)(nil),                // 43: sscpb.VictimTx
+	(*Priority)(nil),                // 44: sscpb.Priority
+	(*ChainNode)(nil),               // 45: sscpb.ChainNode
+	(*NewEpoch)(nil),                // 46: sscpb.NewEpoch
+	(*HandleNewEpochRequest)(nil),   // 47: sscpb.HandleNewEpochRequest
+	(*SLTestRequest)(nil),           // 48: sscpb.SLTestRequest
+	(*SLTestResult)(nil),            // 49: sscpb.SLTestResult
+	(*SLOpinion)(nil),               // 50: sscpb.SLOpinion
+	(*SelfOpinions)(nil),            // 51: sscpb.SelfOpinions
+	(*Bytes)(nil),                   // 52: sscpb.Bytes
+	(*RetrySchedulerStatus)(nil),    // 53: sscpb.RetrySchedulerStatus
+	(*StateLockStatus)(nil),         // 54: sscpb.StateLockStatus
+	(*TempLockViewStatus)(nil),      // 55: sscpb.TempLockViewStatus
+	(*SimulatorStatus)(nil),         // 56: sscpb.SimulatorStatus
+	(*VerifierStatus)(nil),          // 57: sscpb.VerifierStatus
+	(*TimerStatus)(nil),             // 58: sscpb.TimerStatus
+	(*DAGStatus)(nil),               // 59: sscpb.DAGStatus
+	(*ModuleStatus)(nil),            // 60: sscpb.ModuleStatus
 }
 var file_ssc_proto_depIdxs = []int32{
-	11,  // 0: sscpb.CallNodeData.children:type_name -> sscpb.CallNodeData
-	13,  // 1: sscpb.StateEntry.state:type_name -> sscpb.StateKVPair
-	14,  // 2: sscpb.StateSet.entries:type_name -> sscpb.StateEntry
-	15,  // 3: sscpb.RWSet.read_state:type_name -> sscpb.StateSet
-	15,  // 4: sscpb.RWSet.write_state:type_name -> sscpb.StateSet
-	15,  // 5: sscpb.RWSet.current_state:type_name -> sscpb.StateSet
-	8,   // 6: sscpb.BaseSSCMessage.sender_addr:type_name -> sscpb.Address
-	7,   // 7: sscpb.CXTSimulationRequest.tx_hash:type_name -> sscpb.Hash
-	7,   // 8: sscpb.CXTSimulationRequest.block_hash:type_name -> sscpb.Hash
-	10,  // 9: sscpb.CXTSimulationRequest.tx:type_name -> sscpb.RLPBytes
-	8,   // 10: sscpb.CXTSimulationRequest.from:type_name -> sscpb.Address
-	17,  // 11: sscpb.CXTSimulationResult.base:type_name -> sscpb.BaseSSCMessage
-	10,  // 12: sscpb.CXTSimulationResult.receipt:type_name -> sscpb.RLPBytes
-	11,  // 13: sscpb.CXTSimulationResult.tree_node:type_name -> sscpb.CallNodeData
-	10,  // 14: sscpb.CXTSimulationSSCResult.receipt:type_name -> sscpb.RLPBytes
-	11,  // 15: sscpb.CXTSimulationSSCResult.tree_node:type_name -> sscpb.CallNodeData
-	18,  // 16: sscpb.CXTSimulationSSCResult.base:type_name -> sscpb.BaseBLSSignedMessage
-	7,   // 17: sscpb.CXTSimulation.tx_hash:type_name -> sscpb.Hash
-	8,   // 18: sscpb.CXTSimulation.sender:type_name -> sscpb.Address
-	23,  // 19: sscpb.CXTSimulation.call_states:type_name -> sscpb.CXTCallState
-	16,  // 20: sscpb.CXTSimulation.chain_patch:type_name -> sscpb.RWSet
-	32,  // 21: sscpb.CXTSimulation.upstream_tx_list:type_name -> sscpb.TxSimKey
-	18,  // 22: sscpb.CXTSimulation.base:type_name -> sscpb.BaseBLSSignedMessage
-	19,  // 23: sscpb.CXTCallState.top_request:type_name -> sscpb.CXTSimulationRequest
-	25,  // 24: sscpb.CXTCallState.call_request:type_name -> sscpb.CXTCallSSCRequest
-	16,  // 25: sscpb.CXTCallState.rw_set:type_name -> sscpb.RWSet
-	27,  // 26: sscpb.CXTCallState.dependent_results:type_name -> sscpb.CXTCallSSCResult
-	27,  // 27: sscpb.CXTCallState.call_result:type_name -> sscpb.CXTCallSSCResult
-	21,  // 28: sscpb.CXTCallState.top_result:type_name -> sscpb.CXTSimulationSSCResult
-	17,  // 29: sscpb.CXTCallRequest.base:type_name -> sscpb.BaseSSCMessage
-	7,   // 30: sscpb.CXTCallRequest.tx_hash:type_name -> sscpb.Hash
-	8,   // 31: sscpb.CXTCallRequest.caller:type_name -> sscpb.Address
-	8,   // 32: sscpb.CXTCallRequest.addr:type_name -> sscpb.Address
-	9,   // 33: sscpb.CXTCallRequest.gas_price:type_name -> sscpb.BigInt
-	9,   // 34: sscpb.CXTCallRequest.value:type_name -> sscpb.BigInt
-	7,   // 35: sscpb.CXTCallSSCRequest.tx_hash:type_name -> sscpb.Hash
-	8,   // 36: sscpb.CXTCallSSCRequest.caller:type_name -> sscpb.Address
-	8,   // 37: sscpb.CXTCallSSCRequest.addr:type_name -> sscpb.Address
-	9,   // 38: sscpb.CXTCallSSCRequest.gas_price:type_name -> sscpb.BigInt
-	9,   // 39: sscpb.CXTCallSSCRequest.value:type_name -> sscpb.BigInt
-	18,  // 40: sscpb.CXTCallSSCRequest.base:type_name -> sscpb.BaseBLSSignedMessage
-	7,   // 41: sscpb.CXTCallSSCRequest.block_hash:type_name -> sscpb.Hash
-	7,   // 42: sscpb.CXTCallResult.tx_hash:type_name -> sscpb.Hash
-	7,   // 43: sscpb.CXTCallResult.block_hash:type_name -> sscpb.Hash
-	11,  // 44: sscpb.CXTCallResult.tree_node:type_name -> sscpb.CallNodeData
-	17,  // 45: sscpb.CXTCallResult.base:type_name -> sscpb.BaseSSCMessage
-	7,   // 46: sscpb.CXTCallSSCResult.tx_hash:type_name -> sscpb.Hash
-	7,   // 47: sscpb.CXTCallSSCResult.block_hash:type_name -> sscpb.Hash
-	11,  // 48: sscpb.CXTCallSSCResult.tree_node:type_name -> sscpb.CallNodeData
-	18,  // 49: sscpb.CXTCallSSCResult.base:type_name -> sscpb.BaseBLSSignedMessage
-	7,   // 50: sscpb.SimulationCommit.tx_hash:type_name -> sscpb.Hash
-	8,   // 51: sscpb.SimulationCommit.sender:type_name -> sscpb.Address
+	12,  // 0: sscpb.CallNodeData.children:type_name -> sscpb.CallNodeData
+	14,  // 1: sscpb.StateEntry.state:type_name -> sscpb.StateKVPair
+	15,  // 2: sscpb.StateSet.entries:type_name -> sscpb.StateEntry
+	16,  // 3: sscpb.RWSet.read_state:type_name -> sscpb.StateSet
+	16,  // 4: sscpb.RWSet.write_state:type_name -> sscpb.StateSet
+	16,  // 5: sscpb.RWSet.current_state:type_name -> sscpb.StateSet
+	9,   // 6: sscpb.BaseSSCMessage.sender_addr:type_name -> sscpb.Address
+	8,   // 7: sscpb.CXTSimulationRequest.tx_hash:type_name -> sscpb.Hash
+	8,   // 8: sscpb.CXTSimulationRequest.block_hash:type_name -> sscpb.Hash
+	11,  // 9: sscpb.CXTSimulationRequest.tx:type_name -> sscpb.RLPBytes
+	9,   // 10: sscpb.CXTSimulationRequest.from:type_name -> sscpb.Address
+	33,  // 11: sscpb.CXTSimulationRequest.upstream_tx_list:type_name -> sscpb.TxSimKey
+	18,  // 12: sscpb.CXTSimulationResult.base:type_name -> sscpb.BaseSSCMessage
+	11,  // 13: sscpb.CXTSimulationResult.receipt:type_name -> sscpb.RLPBytes
+	12,  // 14: sscpb.CXTSimulationResult.tree_node:type_name -> sscpb.CallNodeData
+	11,  // 15: sscpb.CXTSimulationSSCResult.receipt:type_name -> sscpb.RLPBytes
+	12,  // 16: sscpb.CXTSimulationSSCResult.tree_node:type_name -> sscpb.CallNodeData
+	19,  // 17: sscpb.CXTSimulationSSCResult.base:type_name -> sscpb.BaseBLSSignedMessage
+	8,   // 18: sscpb.CXTSimulation.tx_hash:type_name -> sscpb.Hash
+	9,   // 19: sscpb.CXTSimulation.sender:type_name -> sscpb.Address
+	24,  // 20: sscpb.CXTSimulation.call_states:type_name -> sscpb.CXTCallState
+	33,  // 21: sscpb.CXTSimulation.upstream_tx_list:type_name -> sscpb.TxSimKey
+	19,  // 22: sscpb.CXTSimulation.base:type_name -> sscpb.BaseBLSSignedMessage
+	20,  // 23: sscpb.CXTCallState.top_request:type_name -> sscpb.CXTSimulationRequest
+	26,  // 24: sscpb.CXTCallState.call_request:type_name -> sscpb.CXTCallSSCRequest
+	17,  // 25: sscpb.CXTCallState.rw_set:type_name -> sscpb.RWSet
+	28,  // 26: sscpb.CXTCallState.dependent_results:type_name -> sscpb.CXTCallSSCResult
+	28,  // 27: sscpb.CXTCallState.call_result:type_name -> sscpb.CXTCallSSCResult
+	22,  // 28: sscpb.CXTCallState.top_result:type_name -> sscpb.CXTSimulationSSCResult
+	18,  // 29: sscpb.CXTCallRequest.base:type_name -> sscpb.BaseSSCMessage
+	8,   // 30: sscpb.CXTCallRequest.tx_hash:type_name -> sscpb.Hash
+	9,   // 31: sscpb.CXTCallRequest.caller:type_name -> sscpb.Address
+	9,   // 32: sscpb.CXTCallRequest.addr:type_name -> sscpb.Address
+	10,  // 33: sscpb.CXTCallRequest.gas_price:type_name -> sscpb.BigInt
+	10,  // 34: sscpb.CXTCallRequest.value:type_name -> sscpb.BigInt
+	8,   // 35: sscpb.CXTCallSSCRequest.tx_hash:type_name -> sscpb.Hash
+	9,   // 36: sscpb.CXTCallSSCRequest.caller:type_name -> sscpb.Address
+	9,   // 37: sscpb.CXTCallSSCRequest.addr:type_name -> sscpb.Address
+	10,  // 38: sscpb.CXTCallSSCRequest.gas_price:type_name -> sscpb.BigInt
+	10,  // 39: sscpb.CXTCallSSCRequest.value:type_name -> sscpb.BigInt
+	19,  // 40: sscpb.CXTCallSSCRequest.base:type_name -> sscpb.BaseBLSSignedMessage
+	8,   // 41: sscpb.CXTCallSSCRequest.block_hash:type_name -> sscpb.Hash
+	8,   // 42: sscpb.CXTCallResult.tx_hash:type_name -> sscpb.Hash
+	8,   // 43: sscpb.CXTCallResult.block_hash:type_name -> sscpb.Hash
+	12,  // 44: sscpb.CXTCallResult.tree_node:type_name -> sscpb.CallNodeData
+	18,  // 45: sscpb.CXTCallResult.base:type_name -> sscpb.BaseSSCMessage
+	8,   // 46: sscpb.CXTCallSSCResult.tx_hash:type_name -> sscpb.Hash
+	8,   // 47: sscpb.CXTCallSSCResult.block_hash:type_name -> sscpb.Hash
+	12,  // 48: sscpb.CXTCallSSCResult.tree_node:type_name -> sscpb.CallNodeData
+	19,  // 49: sscpb.CXTCallSSCResult.base:type_name -> sscpb.BaseBLSSignedMessage
+	8,   // 50: sscpb.SimulationCommit.tx_hash:type_name -> sscpb.Hash
+	9,   // 51: sscpb.SimulationCommit.sender:type_name -> sscpb.Address
 	0,   // 52: sscpb.SimulationCommit.status:type_name -> sscpb.SimulationCommitStatus
-	18,  // 53: sscpb.SimulationCommit.base:type_name -> sscpb.BaseBLSSignedMessage
-	17,  // 54: sscpb.CXTCommitVote.base:type_name -> sscpb.BaseSSCMessage
-	7,   // 55: sscpb.CXTCommitVote.tx_hash:type_name -> sscpb.Hash
+	19,  // 53: sscpb.SimulationCommit.base:type_name -> sscpb.BaseBLSSignedMessage
+	18,  // 54: sscpb.CXTCommitVote.base:type_name -> sscpb.BaseSSCMessage
+	8,   // 55: sscpb.CXTCommitVote.tx_hash:type_name -> sscpb.Hash
 	1,   // 56: sscpb.CXTCommitVote.type:type_name -> sscpb.CXTCommitType
 	2,   // 57: sscpb.CXTCommitVote.reason:type_name -> sscpb.CXTCommitReason
-	7,   // 58: sscpb.CXTCommitSSCVote.tx_hash:type_name -> sscpb.Hash
+	8,   // 58: sscpb.CXTCommitSSCVote.tx_hash:type_name -> sscpb.Hash
 	1,   // 59: sscpb.CXTCommitSSCVote.type:type_name -> sscpb.CXTCommitType
 	2,   // 60: sscpb.CXTCommitSSCVote.reason:type_name -> sscpb.CXTCommitReason
-	18,  // 61: sscpb.CXTCommitSSCVote.base:type_name -> sscpb.BaseBLSSignedMessage
-	17,  // 62: sscpb.CXTCommitProof.base:type_name -> sscpb.BaseSSCMessage
-	7,   // 63: sscpb.CXTCommitProof.tx_hash:type_name -> sscpb.Hash
+	19,  // 61: sscpb.CXTCommitSSCVote.base:type_name -> sscpb.BaseBLSSignedMessage
+	18,  // 62: sscpb.CXTCommitProof.base:type_name -> sscpb.BaseSSCMessage
+	8,   // 63: sscpb.CXTCommitProof.tx_hash:type_name -> sscpb.Hash
 	1,   // 64: sscpb.CXTCommitProof.type:type_name -> sscpb.CXTCommitType
 	2,   // 65: sscpb.CXTCommitProof.reason:type_name -> sscpb.CXTCommitReason
-	30,  // 66: sscpb.CXTCommitProof.votes:type_name -> sscpb.CXTCommitSSCVote
-	7,   // 67: sscpb.TxSimKey.tx_hash:type_name -> sscpb.Hash
-	7,   // 68: sscpb.RetrySignal.tx_hash:type_name -> sscpb.Hash
-	4,   // 69: sscpb.RetrySignal.condition:type_name -> sscpb.ConflictCondition
-	16,  // 70: sscpb.RetrySignal.chain_patch:type_name -> sscpb.RWSet
-	33,  // 71: sscpb.RetrySignals.signals:type_name -> sscpb.RetrySignal
-	7,   // 72: sscpb.RetryTx.tx_hash:type_name -> sscpb.Hash
-	8,   // 73: sscpb.RetryTx.sender:type_name -> sscpb.Address
-	12,  // 74: sscpb.RetryTx.read_set:type_name -> sscpb.LockKey
-	12,  // 75: sscpb.RetryTx.write_set:type_name -> sscpb.LockKey
-	4,   // 76: sscpb.RetryTx.condition:type_name -> sscpb.ConflictCondition
-	5,   // 77: sscpb.RetryTx.status:type_name -> sscpb.RetryStatus
-	7,   // 78: sscpb.RetryCommitResp.tx_hash:type_name -> sscpb.Hash
-	7,   // 79: sscpb.Priority.tx_hash:type_name -> sscpb.Hash
-	7,   // 80: sscpb.ChainNode.tx_hash:type_name -> sscpb.Hash
-	16,  // 81: sscpb.ChainNode.patch:type_name -> sscpb.RWSet
-	32,  // 82: sscpb.ChainNode.upstream_tx_list:type_name -> sscpb.TxSimKey
-	39,  // 83: sscpb.HandleNewEpochRequest.new_epoch:type_name -> sscpb.NewEpoch
-	8,   // 84: sscpb.SLOpinion.from:type_name -> sscpb.Address
-	8,   // 85: sscpb.SLOpinion.to:type_name -> sscpb.Address
-	8,   // 86: sscpb.SelfOpinions.from:type_name -> sscpb.Address
-	43,  // 87: sscpb.SelfOpinions.opinions:type_name -> sscpb.SLOpinion
-	46,  // 88: sscpb.ModuleStatus.retry_scheduler:type_name -> sscpb.RetrySchedulerStatus
-	47,  // 89: sscpb.ModuleStatus.state_lock:type_name -> sscpb.StateLockStatus
-	48,  // 90: sscpb.ModuleStatus.temp_lock_view:type_name -> sscpb.TempLockViewStatus
-	49,  // 91: sscpb.ModuleStatus.simulator:type_name -> sscpb.SimulatorStatus
-	50,  // 92: sscpb.ModuleStatus.verifier:type_name -> sscpb.VerifierStatus
-	51,  // 93: sscpb.ModuleStatus.timer:type_name -> sscpb.TimerStatus
-	52,  // 94: sscpb.ModuleStatus.dag:type_name -> sscpb.DAGStatus
-	19,  // 95: sscpb.SSCShardService.StartSimulateCXTransaction:input_type -> sscpb.CXTSimulationRequest
-	19,  // 96: sscpb.SSCShardService.HandleSimulateRequest:input_type -> sscpb.CXTSimulationRequest
-	24,  // 97: sscpb.SSCShardService.RequestCallCXT:input_type -> sscpb.CXTCallRequest
-	25,  // 98: sscpb.SSCShardService.HandleCXTCall:input_type -> sscpb.CXTCallSSCRequest
-	28,  // 99: sscpb.SSCShardService.SignSimulationCommit:input_type -> sscpb.SimulationCommit
-	22,  // 100: sscpb.SSCShardService.SignCXTSimulation:input_type -> sscpb.CXTSimulation
-	29,  // 101: sscpb.SSCShardService.HandleCommitVote:input_type -> sscpb.CXTCommitVote
-	41,  // 102: sscpb.SSCShardService.SLTest:input_type -> sscpb.SLTestRequest
-	35,  // 103: sscpb.SSCShardService.AddRetryTx:input_type -> sscpb.RetryTx
-	7,   // 104: sscpb.SSCShardService.AddToPassivePool:input_type -> sscpb.Hash
-	7,   // 105: sscpb.SSCShardService.RetryCommit:input_type -> sscpb.Hash
-	7,   // 106: sscpb.SSCShardService.RetryCancel:input_type -> sscpb.Hash
-	40,  // 107: sscpb.SSCShardService.HandleNewEpoch:input_type -> sscpb.HandleNewEpochRequest
-	25,  // 108: sscpb.SSCCrossService.HandleCXTSSCCall:input_type -> sscpb.CXTCallSSCRequest
-	28,  // 109: sscpb.SSCCrossService.CommitSimulation:input_type -> sscpb.SimulationCommit
-	30,  // 110: sscpb.SSCCrossService.HandleCXTCommitSSCVote:input_type -> sscpb.CXTCommitSSCVote
-	31,  // 111: sscpb.SSCCrossService.HandleCXTCommitProof:input_type -> sscpb.CXTCommitProof
-	34,  // 112: sscpb.SSCCrossService.SignalReSimulation:input_type -> sscpb.RetrySignals
-	33,  // 113: sscpb.SSCCrossService.HandleRetrySignal:input_type -> sscpb.RetrySignal
-	6,   // 114: sscpb.SSCMonitorService.GetModuleStatus:input_type -> sscpb.Empty
-	21,  // 115: sscpb.SSCShardService.StartSimulateCXTransaction:output_type -> sscpb.CXTSimulationSSCResult
-	20,  // 116: sscpb.SSCShardService.HandleSimulateRequest:output_type -> sscpb.CXTSimulationResult
-	27,  // 117: sscpb.SSCShardService.RequestCallCXT:output_type -> sscpb.CXTCallSSCResult
-	26,  // 118: sscpb.SSCShardService.HandleCXTCall:output_type -> sscpb.CXTCallResult
-	45,  // 119: sscpb.SSCShardService.SignSimulationCommit:output_type -> sscpb.Bytes
-	45,  // 120: sscpb.SSCShardService.SignCXTSimulation:output_type -> sscpb.Bytes
-	6,   // 121: sscpb.SSCShardService.HandleCommitVote:output_type -> sscpb.Empty
-	42,  // 122: sscpb.SSCShardService.SLTest:output_type -> sscpb.SLTestResult
-	6,   // 123: sscpb.SSCShardService.AddRetryTx:output_type -> sscpb.Empty
-	6,   // 124: sscpb.SSCShardService.AddToPassivePool:output_type -> sscpb.Empty
-	36,  // 125: sscpb.SSCShardService.RetryCommit:output_type -> sscpb.RetryCommitResp
-	6,   // 126: sscpb.SSCShardService.RetryCancel:output_type -> sscpb.Empty
-	6,   // 127: sscpb.SSCShardService.HandleNewEpoch:output_type -> sscpb.Empty
-	27,  // 128: sscpb.SSCCrossService.HandleCXTSSCCall:output_type -> sscpb.CXTCallSSCResult
-	6,   // 129: sscpb.SSCCrossService.CommitSimulation:output_type -> sscpb.Empty
-	6,   // 130: sscpb.SSCCrossService.HandleCXTCommitSSCVote:output_type -> sscpb.Empty
-	6,   // 131: sscpb.SSCCrossService.HandleCXTCommitProof:output_type -> sscpb.Empty
-	6,   // 132: sscpb.SSCCrossService.SignalReSimulation:output_type -> sscpb.Empty
-	6,   // 133: sscpb.SSCCrossService.HandleRetrySignal:output_type -> sscpb.Empty
-	53,  // 134: sscpb.SSCMonitorService.GetModuleStatus:output_type -> sscpb.ModuleStatus
-	115, // [115:135] is the sub-list for method output_type
-	95,  // [95:115] is the sub-list for method input_type
-	95,  // [95:95] is the sub-list for extension type_name
-	95,  // [95:95] is the sub-list for extension extendee
-	0,   // [0:95] is the sub-list for field type_name
+	31,  // 66: sscpb.CXTCommitProof.votes:type_name -> sscpb.CXTCommitSSCVote
+	8,   // 67: sscpb.TxSimKey.tx_hash:type_name -> sscpb.Hash
+	33,  // 68: sscpb.SimPatchNode.tx_sim:type_name -> sscpb.TxSimKey
+	33,  // 69: sscpb.SimPatchNode.upstream:type_name -> sscpb.TxSimKey
+	17,  // 70: sscpb.SimPatchNode.patch:type_name -> sscpb.RWSet
+	8,   // 71: sscpb.SimPatchSubgraph.tx_hash:type_name -> sscpb.Hash
+	34,  // 72: sscpb.SimPatchSubgraph.nodes:type_name -> sscpb.SimPatchNode
+	35,  // 73: sscpb.StoreSimDAGPatchRequest.subgraph:type_name -> sscpb.SimPatchSubgraph
+	8,   // 74: sscpb.RetrySignal.tx_hash:type_name -> sscpb.Hash
+	4,   // 75: sscpb.RetrySignal.condition:type_name -> sscpb.ConflictCondition
+	33,  // 76: sscpb.RetrySignal.upstream_tx_list:type_name -> sscpb.TxSimKey
+	37,  // 77: sscpb.RetrySignals.signals:type_name -> sscpb.RetrySignal
+	8,   // 78: sscpb.RetryTx.tx_hash:type_name -> sscpb.Hash
+	9,   // 79: sscpb.RetryTx.sender:type_name -> sscpb.Address
+	13,  // 80: sscpb.RetryTx.read_set:type_name -> sscpb.LockKey
+	13,  // 81: sscpb.RetryTx.write_set:type_name -> sscpb.LockKey
+	4,   // 82: sscpb.RetryTx.condition:type_name -> sscpb.ConflictCondition
+	5,   // 83: sscpb.RetryTx.status:type_name -> sscpb.RetryStatus
+	8,   // 84: sscpb.RetryCommitResp.tx_hash:type_name -> sscpb.Hash
+	8,   // 85: sscpb.DeadlockProbe.init:type_name -> sscpb.Hash
+	8,   // 86: sscpb.DeadlockProbe.sender:type_name -> sscpb.Hash
+	8,   // 87: sscpb.DeadlockProbe.current:type_name -> sscpb.Hash
+	8,   // 88: sscpb.DeadlockProbe.path:type_name -> sscpb.Hash
+	6,   // 89: sscpb.DeadlockProbe.layer:type_name -> sscpb.LockLayer
+	13,  // 90: sscpb.DeadlockProbe.wait_key:type_name -> sscpb.LockKey
+	19,  // 91: sscpb.DeadlockProbe.base:type_name -> sscpb.BaseBLSSignedMessage
+	41,  // 92: sscpb.DeadlockProbe.proof:type_name -> sscpb.DeadlockProbe
+	8,   // 93: sscpb.DeadlockProbeAck.init:type_name -> sscpb.Hash
+	8,   // 94: sscpb.DeadlockProbeAck.current:type_name -> sscpb.Hash
+	8,   // 95: sscpb.VictimTx.tx_hash:type_name -> sscpb.Hash
+	41,  // 96: sscpb.VictimTx.proof:type_name -> sscpb.DeadlockProbe
+	8,   // 97: sscpb.Priority.tx_hash:type_name -> sscpb.Hash
+	8,   // 98: sscpb.ChainNode.tx_hash:type_name -> sscpb.Hash
+	17,  // 99: sscpb.ChainNode.patch:type_name -> sscpb.RWSet
+	33,  // 100: sscpb.ChainNode.upstream_tx_list:type_name -> sscpb.TxSimKey
+	46,  // 101: sscpb.HandleNewEpochRequest.new_epoch:type_name -> sscpb.NewEpoch
+	9,   // 102: sscpb.SLOpinion.from:type_name -> sscpb.Address
+	9,   // 103: sscpb.SLOpinion.to:type_name -> sscpb.Address
+	9,   // 104: sscpb.SelfOpinions.from:type_name -> sscpb.Address
+	50,  // 105: sscpb.SelfOpinions.opinions:type_name -> sscpb.SLOpinion
+	53,  // 106: sscpb.ModuleStatus.retry_scheduler:type_name -> sscpb.RetrySchedulerStatus
+	54,  // 107: sscpb.ModuleStatus.state_lock:type_name -> sscpb.StateLockStatus
+	55,  // 108: sscpb.ModuleStatus.temp_lock_view:type_name -> sscpb.TempLockViewStatus
+	56,  // 109: sscpb.ModuleStatus.simulator:type_name -> sscpb.SimulatorStatus
+	57,  // 110: sscpb.ModuleStatus.verifier:type_name -> sscpb.VerifierStatus
+	58,  // 111: sscpb.ModuleStatus.timer:type_name -> sscpb.TimerStatus
+	59,  // 112: sscpb.ModuleStatus.dag:type_name -> sscpb.DAGStatus
+	20,  // 113: sscpb.SSCShardService.StartSimulateCXTransaction:input_type -> sscpb.CXTSimulationRequest
+	20,  // 114: sscpb.SSCShardService.HandleSimulateRequest:input_type -> sscpb.CXTSimulationRequest
+	25,  // 115: sscpb.SSCShardService.RequestCallCXT:input_type -> sscpb.CXTCallRequest
+	26,  // 116: sscpb.SSCShardService.HandleCXTCall:input_type -> sscpb.CXTCallSSCRequest
+	29,  // 117: sscpb.SSCShardService.SignSimulationCommit:input_type -> sscpb.SimulationCommit
+	23,  // 118: sscpb.SSCShardService.SignCXTSimulation:input_type -> sscpb.CXTSimulation
+	41,  // 119: sscpb.SSCShardService.SignDeadlockProbe:input_type -> sscpb.DeadlockProbe
+	30,  // 120: sscpb.SSCShardService.HandleCommitVote:input_type -> sscpb.CXTCommitVote
+	48,  // 121: sscpb.SSCShardService.SLTest:input_type -> sscpb.SLTestRequest
+	39,  // 122: sscpb.SSCShardService.AddRetryTx:input_type -> sscpb.RetryTx
+	8,   // 123: sscpb.SSCShardService.AddToPassivePool:input_type -> sscpb.Hash
+	8,   // 124: sscpb.SSCShardService.RetryCommit:input_type -> sscpb.Hash
+	8,   // 125: sscpb.SSCShardService.RetryCommitDAG:input_type -> sscpb.Hash
+	8,   // 126: sscpb.SSCShardService.RetryCancel:input_type -> sscpb.Hash
+	47,  // 127: sscpb.SSCShardService.HandleNewEpoch:input_type -> sscpb.HandleNewEpochRequest
+	36,  // 128: sscpb.SSCShardService.StoreSimDAGPatch:input_type -> sscpb.StoreSimDAGPatchRequest
+	26,  // 129: sscpb.SSCCrossService.HandleCXTSSCCall:input_type -> sscpb.CXTCallSSCRequest
+	29,  // 130: sscpb.SSCCrossService.CommitSimulation:input_type -> sscpb.SimulationCommit
+	31,  // 131: sscpb.SSCCrossService.HandleCXTCommitSSCVote:input_type -> sscpb.CXTCommitSSCVote
+	32,  // 132: sscpb.SSCCrossService.HandleCXTCommitProof:input_type -> sscpb.CXTCommitProof
+	38,  // 133: sscpb.SSCCrossService.SignalReSimulation:input_type -> sscpb.RetrySignals
+	37,  // 134: sscpb.SSCCrossService.HandleRetrySignal:input_type -> sscpb.RetrySignal
+	41,  // 135: sscpb.SSCCrossService.DetectDeadlockProbe:input_type -> sscpb.DeadlockProbe
+	7,   // 136: sscpb.SSCMonitorService.GetModuleStatus:input_type -> sscpb.Empty
+	22,  // 137: sscpb.SSCShardService.StartSimulateCXTransaction:output_type -> sscpb.CXTSimulationSSCResult
+	21,  // 138: sscpb.SSCShardService.HandleSimulateRequest:output_type -> sscpb.CXTSimulationResult
+	28,  // 139: sscpb.SSCShardService.RequestCallCXT:output_type -> sscpb.CXTCallSSCResult
+	27,  // 140: sscpb.SSCShardService.HandleCXTCall:output_type -> sscpb.CXTCallResult
+	52,  // 141: sscpb.SSCShardService.SignSimulationCommit:output_type -> sscpb.Bytes
+	52,  // 142: sscpb.SSCShardService.SignCXTSimulation:output_type -> sscpb.Bytes
+	52,  // 143: sscpb.SSCShardService.SignDeadlockProbe:output_type -> sscpb.Bytes
+	7,   // 144: sscpb.SSCShardService.HandleCommitVote:output_type -> sscpb.Empty
+	49,  // 145: sscpb.SSCShardService.SLTest:output_type -> sscpb.SLTestResult
+	7,   // 146: sscpb.SSCShardService.AddRetryTx:output_type -> sscpb.Empty
+	7,   // 147: sscpb.SSCShardService.AddToPassivePool:output_type -> sscpb.Empty
+	40,  // 148: sscpb.SSCShardService.RetryCommit:output_type -> sscpb.RetryCommitResp
+	40,  // 149: sscpb.SSCShardService.RetryCommitDAG:output_type -> sscpb.RetryCommitResp
+	7,   // 150: sscpb.SSCShardService.RetryCancel:output_type -> sscpb.Empty
+	7,   // 151: sscpb.SSCShardService.HandleNewEpoch:output_type -> sscpb.Empty
+	7,   // 152: sscpb.SSCShardService.StoreSimDAGPatch:output_type -> sscpb.Empty
+	28,  // 153: sscpb.SSCCrossService.HandleCXTSSCCall:output_type -> sscpb.CXTCallSSCResult
+	7,   // 154: sscpb.SSCCrossService.CommitSimulation:output_type -> sscpb.Empty
+	7,   // 155: sscpb.SSCCrossService.HandleCXTCommitSSCVote:output_type -> sscpb.Empty
+	7,   // 156: sscpb.SSCCrossService.HandleCXTCommitProof:output_type -> sscpb.Empty
+	7,   // 157: sscpb.SSCCrossService.SignalReSimulation:output_type -> sscpb.Empty
+	7,   // 158: sscpb.SSCCrossService.HandleRetrySignal:output_type -> sscpb.Empty
+	42,  // 159: sscpb.SSCCrossService.DetectDeadlockProbe:output_type -> sscpb.DeadlockProbeAck
+	60,  // 160: sscpb.SSCMonitorService.GetModuleStatus:output_type -> sscpb.ModuleStatus
+	137, // [137:161] is the sub-list for method output_type
+	113, // [113:137] is the sub-list for method input_type
+	113, // [113:113] is the sub-list for extension type_name
+	113, // [113:113] is the sub-list for extension extendee
+	0,   // [0:113] is the sub-list for field type_name
 }
 
 func init() { file_ssc_proto_init() }
@@ -4711,8 +5299,8 @@ func file_ssc_proto_init() {
 		File: protoimpl.DescBuilder{
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_ssc_proto_rawDesc), len(file_ssc_proto_rawDesc)),
-			NumEnums:      6,
-			NumMessages:   48,
+			NumEnums:      7,
+			NumMessages:   54,
 			NumExtensions: 0,
 			NumServices:   3,
 		},

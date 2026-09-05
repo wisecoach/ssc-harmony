@@ -13,24 +13,36 @@ import (
 // SimTx / CRTx 等内部交易不再硬塞进普通 types.Transaction（特殊 precompile 地址 + JSON），
 // 而是作为独立结构统一承载。
 //
-// 注意：iota 顺序即执行顺序（由小到大遍历下标）——CRTx(0) 先 → SimTx(1) 后 →
-// NewEpoch/UploadOpinions/Empty(2/3/4) 最后，与 DSN-47 §4.3 的行序约定一致。
-// 新增类型时直接在末尾追加一个 iota 值即可，第一维自动多一个桶。
+// 注意：iota 顺序即执行顺序（由小到大遍历下标）——CRTx(0) 先 → VictimTx(1) →
+// SimTx(2) → NewEpoch/UploadOpinions/Empty(3/4/5) 最后，与 DSN-47 §4.3 的行序约定一致。
+//
+// 执行顺序说明：
+//   - CRTx 先：释放已提交/已回滚交易的链上锁；
+//   - VictimTx 其次：CMH 判出的环内 victim 解锁（不碰状态，只触发委员会回滚投票），
+//     必须排在 SimTx 之前，以便尽快解锁、避免被普通 SimTx 堵在块尾；
+//   - SimTx 再后：此时上游 CRTx/VictimTx 已释放的锁才可被重模拟的 SimTx 抢到。
+//
+// ⚠️ 变更提醒（论文实验可重来，故允许重编号）：
+//   - 插入 VictimTx 会让其后的 SimTx/NewEpoch/... 数值整体 +1，属于跨节点共识格式变更，
+//     重放此前的旧块会分叉；若需保留历史重放兼容，请不要重编号。
+//   - 新增类型时若要求“执行顺序在已有某类型之前”，必须插入而非末尾追加，并同步重编号。
 type InternalTxType uint8
 
 const (
 	InternalTxTypeCRTx InternalTxType = iota
+	InternalTxTypeVictimTx
 	InternalTxTypeSimTx
 	InternalTxTypeNewEpoch
 	InternalTxTypeUploadOpinions
 	InternalTxTypeEmpty
-	// 新类型在末尾追加，保持已有数值/执行顺序不变。
 )
 
 func (t InternalTxType) String() string {
 	switch t {
 	case InternalTxTypeCRTx:
 		return "CRTx"
+	case InternalTxTypeVictimTx:
+		return "VictimTx"
 	case InternalTxTypeSimTx:
 		return "SimTx"
 	case InternalTxTypeNewEpoch:
@@ -52,7 +64,7 @@ func InternalTxTypeCount() int {
 // SSCInternalTx 是 SSC 内部交易的统一实体（RLP 外壳 + 不透明 payload）。
 // 进入区块 / 交易池 / 网络统一使用。区块内以二维 [][]*SSCInternalTx 承载，
 // 第一维下标 = InternalTxType（类型桶），第二维 = 该类型行内交易（顺序 = 行内执行顺序）。
-// 执行时按下标（类型）从小到大遍历：CRTx(0) → SimTx(1) → NewEpoch/UploadOpinions/Empty(2/3/4)。
+// 执行时按下标（类型）从小到大遍历：CRTx(0) → VictimTx(1) → SimTx(2) → NewEpoch/UploadOpinions/Empty(3/4/5)。
 type SSCInternalTx struct {
 	Type    InternalTxType
 	Shard   uint32

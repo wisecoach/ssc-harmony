@@ -241,10 +241,12 @@ func (s *sscService) GetModuleStatus() *api.ModuleStatus {
 			status.Timer.PoolTimeoutBuckets = s.timerMgr.Stats()
 	}
 
-	// DAG / ChainPatch 使用情况（累计值）
+	// DAG 使用情况（累计值）
 	status.DAG.ChainTxDetected = int(chainRetryStats.MonitorChainTxDetected.Load())
 	status.DAG.RetryCommitPatchHit = int(chainRetryStats.MonitorRetryCommitPatchHit.Load())
 	status.DAG.RetryCommitPatchMiss = int(chainRetryStats.MonitorRetryCommitPatchMiss.Load())
+	status.DAG.ChainTxCRCommitted = int(chainRetryStats.MonitorChainTxCRCommitted.Load())
+	status.DAG.DagPerBlockMaxSameKey = int(chainRetryStats.MonitorDagPerBlockMaxSameKey.Load())
 
 	return status
 }
@@ -282,6 +284,9 @@ func newBaseService(ctx context.Context, config *api.Config, cm *CommitteeMechan
 		GetLeader: func(epoch api.Epoch, shardId uint32) *api.Member {
 			return service.CommitteeMechanism.GetLeader(epoch, shardId)
 		},
+		GetCommittee: func(epoch api.Epoch, shardId uint32) *api.ShardSimulateCommittee {
+			return service.CommitteeMechanism.GetCommittee(epoch, shardId)
+		},
 		GetBlockHash: func(txHash common.Hash) (common.Hash, bool) {
 			return service.Simulator.GetBlockHash(txHash)
 		},
@@ -292,9 +297,6 @@ func newBaseService(ctx context.Context, config *api.Config, cm *CommitteeMechan
 		RetryNotReadySignal: func() { service.stats.RetryNotReadySignal.Add(1) },
 		RetrySuccessCount:   func() { service.stats.RetrySuccessCount.Add(1) },
 		RetryFailCount:      func() { service.stats.RetryFailCount.Add(1) },
-		SetChainPatch: func(txHash common.Hash, patch *api.RWSet) {
-			service.Simulator.SetChainPatch(txHash, patch)
-		},
 		GetSimState: func(txHash common.Hash) (*api.SimulationState, bool) {
 			return service.Simulator.GetSimState(txHash)
 		},
@@ -304,13 +306,35 @@ func newBaseService(ctx context.Context, config *api.Config, cm *CommitteeMechan
 		IsOnChain: func(txHash common.Hash) bool {
 			return service.Verifier != nil && service.Verifier.HasOnChainSimTx(txHash)
 		},
+		// DSN-58 §4.3：某 related 分片是否已放好 simNum 的腿 = origin 已收到其 CommitSSCVote。
+		LegSscVoted: func(txHash common.Hash, shard uint32, simNum int) bool {
+			service.commitLock.RLock()
+			defer service.commitLock.RUnlock()
+			cs, ok := service.commitStates[txHash]
+			if !ok || cs.CommitSSCVotes == nil {
+				return false
+			}
+			m := cs.CommitSSCVotes[simNum]
+			if m == nil {
+				return false
+			}
+			return m[shard] != nil
+		},
 		CloseTransaction: func(txHash common.Hash, commitOrRollback bool, reason string) {
 			service.closeTransaction(txHash, commitOrRollback, reason)
 		},
 		LockStatesStats: func() (int, int, int, int) {
 			return service.lockStateMgr.Stats()
 		},
-	}, comm, service.SelfShard, service.tempLockView, sscConfig.Timeout)
+		RollbackVictim: func(txHash common.Hash) {
+			service.rollbackVictim(txHash)
+		},
+		SubmitVictimTx: func(victimTx *api.VictimTx) {
+			if service.txSubmitter != nil {
+				_ = service.txSubmitter.SubmitVictimTx(victimTx)
+			}
+		},
+	}, comm, service.SelfShard, service.tempLockView, sscConfig.Timeout, signerMgr)
 
 	// 创建 Simulator（自管理 SimulationState + callStatesInWaiting + worker pool）
 	simComm := NewSimulatorCommunicator(comm, signerMgr, service.CommitteeMechanism, config, ctx)
@@ -457,8 +481,20 @@ func newBaseService(ctx context.Context, config *api.Config, cm *CommitteeMechan
 			CloseTx: func(txHash common.Hash, success bool, reason string) {
 				service.closeTransaction(txHash, success, reason)
 			},
-			RemoveOnChainPatch: func(txHash common.Hash) {
-				service.retryScheduler.RemoveOnChainPatch(txHash)
+			RemoveOnChainDAGPatch: func(txHash common.Hash) {
+				service.retryScheduler.RemoveOnChainDAGPatch(txHash)
+			},
+			RecordChainTxCRCommit: func(txHash common.Hash) {
+				if service.retryScheduler == nil {
+					return
+				}
+				// 只有被标记为链式救起(isChainTx)的交易，其最终 CR commit 才计入
+				// “因 DAG 提前完成的交易数量”。
+				if service.retryScheduler.isChainTxMarked(txHash) {
+					chainRetryStats.SigChainTxCRCommitted.Add(1)
+					chainRetryStats.MonitorChainTxCRCommitted.Add(1)
+					service.retryScheduler.clearChainTxMark(txHash)
+				}
 			},
 		},
 	)
@@ -735,6 +771,20 @@ func (s *sscService) SignCXTSimulation(simulation *api.CXTSimulation) []byte {
 	return signature
 }
 
+// SignDeadlockProbe 供同分片 SSC 成员对探针做 BLS 签名（阈值聚合前）。
+func (s *sscService) SignDeadlockProbe(probe *api.DeadlockProbe) []byte {
+	if s == nil || s.BLSSignerMgr == nil || probe == nil {
+		return nil
+	}
+	sig, err := s.BLSSignerMgr.GetSSCSigner().Sign(probe)
+	if err != nil {
+		utils.SSCLogger().Error().Err(err).Str("init", probe.Init.Hex()).
+			Msg("failed to sign deadlock probe")
+		return nil
+	}
+	return sig
+}
+
 // HandleCommitVote
 //
 //	@Description: handle the vote from self or other shard's ssc member
@@ -897,6 +947,26 @@ func (s *sscService) aggregateSSCCommitVote(votes []*api.CXTCommitVote, sscOrVal
 	return sscResult
 }
 
+// simOwnWriteSet 从 SimTx 的 CallStates 汇总其自身的 WriteSet（DSN-56：
+// SimTx 不再携带扁平 ChainPatch，自身的写集只由 CallStates 推导）。
+func simOwnWriteSet(sim *api.CXTSimulation) *api.RWSet {
+	out := &api.RWSet{WriteState: api.NewStateSet()}
+	for _, cs := range sim.CallStates {
+		if cs == nil || cs.RWSet == nil || cs.RWSet.WriteState == nil {
+			continue
+		}
+		for addr, state := range cs.RWSet.WriteState.State {
+			if out.WriteState.State[addr] == nil {
+				out.WriteState.State[addr] = make(map[common.Hash]common.Hash)
+			}
+			for key, val := range state {
+				out.WriteState.State[addr][key] = val
+			}
+		}
+	}
+	return out
+}
+
 // CommitSimulation handles the simulation commit from leader, called when a SimTx is
 // received by each shard leader
 func (s *sscService) CommitSimulation(commit *api.SimulationCommit) {
@@ -928,12 +998,12 @@ func (s *sscService) CommitSimulation(commit *api.SimulationCommit) {
 	}
 
 	t0 := time.Now()
-	var tBuildCallStates, tBuildSignatures, tOnChainPatch, tSubmitTx time.Duration
+	var tBuildCallStates, tBuildSignatures, tOnChainDAGPatch, tSubmitTx time.Duration
 	defer func() {
 		utils.SSCLogger().Debug().Str("txHash", txHash.Hex()).
 			Str("buildCallStates", tBuildCallStates.String()).
 			Str("buildSignatures", tBuildSignatures.String()).
-			Str("onChainPatch", tOnChainPatch.String()).
+			Str("onChainDAGPatch", tOnChainDAGPatch.String()).
 			Str("submitTx", tSubmitTx.String()).
 			Str("total", time.Since(t0).String()).
 			Msg("CommitSimulation timing breakdown")
@@ -958,7 +1028,7 @@ func (s *sscService) CommitSimulation(commit *api.SimulationCommit) {
 		return
 	}
 
-	// 从 callStates 中提取 WriteSet，用于 chainNextSim 和 ChainPatch
+	// 从 callStates 中提取 WriteSet，作为本 SimTx 的 own WriteSet（入 offChainDAG / onChainDAGPatches）
 	writeSet := &api.RWSet{WriteState: api.NewStateSet()}
 	for _, cs := range callStates {
 		if cs.RWSet != nil && cs.RWSet.WriteState != nil {
@@ -973,9 +1043,12 @@ func (s *sscService) CommitSimulation(commit *api.SimulationCommit) {
 		}
 	}
 
-	// 检查当前 SimTx 是否有上游依赖（链式重试）
+	// 检查当前 SimTx 是否有上游依赖（链式重试）。
+	// DSN-57 分片收敛：每个分片只带“本分片 offChainDAG 确有节点”的上游(LocalUpstreamTxRef)，
+	// 避免把救援发起分片的异地上游带进本分片 SimTx（否则本分片 verify 见不到上游 → absent 误回滚）。
+	// 本分片无本地上游 → 返回 nil → 本 SimTx 按非链处理（规则 B）。
 	var upstreamTxList []api.TxSimKey
-	if ul := s.retryScheduler.GetUpstreamTxRef(txHash); len(ul) > 0 {
+	if ul := s.retryScheduler.LocalUpstreamTxRef(txHash); len(ul) > 0 {
 		upstreamTxList = ul
 		chainRetryStats.ChainLengthMu.Lock()
 		chainRetryStats.ChainCommitCnt[commit.SimulationNum]++
@@ -990,11 +1063,58 @@ func (s *sscService) CommitSimulation(commit *api.SimulationCommit) {
 		OriginShardId:  tx.OriginShardId,
 		RelatedShards:  commit.RelatedShards,
 		CallStates:     callStates,
-		ChainPatch:     writeSet,
 		UpstreamTxList: upstreamTxList,
 		BaseBLSSignedMessage: api.BaseBLSSignedMessage{
 			Epochs: commit.Epochs,
 		},
+	}
+
+	// DSN-52 方案1：首次/重模拟成功后、构建 SimTx 前，对该分片完整 RWSet 占 TLV 锁。
+	// 目的：让并行的首次模拟互相协调——只有能拿到 TLV 锁的交易才构建 SimTx，冲突方回重试池，
+	// 从而避免大量「注定在链上失败」的冲突 SimTx 被构建（链下先协调，而非上链 Wait-Die 判死）。
+	// 生命周期：成功后 TLV 锁保留，由 OnBlockCommitted 在 SimTx 上链时释放（当前不设超时解锁，
+	// 避免掩盖问题——用户决策 2b）。
+	tlv := s.retryScheduler.tempLockView
+	var readKeys, writeKeys []api.LockKey
+	for _, cs := range callStates {
+		if cs.RWSet == nil {
+			continue
+		}
+		if cs.RWSet.ReadState != nil {
+			for addr, state := range cs.RWSet.ReadState.State {
+				for key := range state {
+					readKeys = append(readKeys, api.FormKey(addr, key))
+				}
+			}
+		}
+		if cs.RWSet.WriteState != nil {
+			for addr, state := range cs.RWSet.WriteState.State {
+				for key := range state {
+					writeKeys = append(writeKeys, api.FormKey(addr, key))
+				}
+			}
+		}
+	}
+	if len(readKeys)+len(writeKeys) > 0 {
+		priority := api.Priority{Nonce: commit.Nonce, OriginShardID: tx.OriginShardId, TxHash: txHash}
+		locked, _ := tlv.TryLockWithPriority(txHash, priority, readKeys, writeKeys)
+		if !locked {
+			// 拿不到 TLV 锁（与并行模拟冲突、且无法 wound）→ 不构建 SimTx，回重试池。
+			utils.SSCLogger().Debug().Str("txHash", txHash.Hex()).
+				Int("readKeys", len(readKeys)).
+				Int("writeKeys", len(writeKeys)).
+				Msg("DSN-52 方案1: first-sim failed to acquire TLV lock, not building SimTx, back to retry")
+			s.retryScheduler.CallForRetry(&api.RetryTx{
+				TxHash:        txHash,
+				Epochs:        commit.Epochs,
+				RelatedShards: commit.RelatedShards,
+				SimulationNum: commit.SimulationNum + 1,
+				Condition:     api.Simulate,
+				OriginShardID: tx.OriginShardId,
+				Nonce:         commit.Nonce,
+			})
+			return
+		}
 	}
 
 	utils.SSCLogger().Debug().Str("txHash", txHash.Hex()).Msgf("build commit simulation completed")
@@ -1007,10 +1127,10 @@ func (s *sscService) CommitSimulation(commit *api.SimulationCommit) {
 	tBuildSignatures = time.Since(t0)
 
 	// 提交 SimTx 前，先入链下单一 DAG（offChainDAG.nodes，记录本节点 WriteSet + 上游依赖）
-	// 链上 onChainPatches 在 VerifySimulation 验证通过后存入
+	// 链上 onChainDAGPatches 在 VerifySimulation 验证通过后导入（见 verify.go）
 	// 注：AddNode 只建节点（状态 PatchFree），由后续 MarkReady 建立 keyIndex 并触发 subscriber 扫描
-	s.retryScheduler.offChainDAG.AddNode(txHash, commit.SimulationNum, simulation.ChainPatch, upstreamTxList)
-	tOnChainPatch = time.Since(t0)
+	s.retryScheduler.offChainDAG.AddNode(txHash, commit.SimulationNum, writeSet, upstreamTxList)
+	tOnChainDAGPatch = time.Since(t0)
 
 	err = s.txSubmitter.SubmitSimulationTx(simulation)
 	tSubmitTx = time.Since(t0)
@@ -1028,15 +1148,18 @@ func (s *sscService) CommitSimulation(commit *api.SimulationCommit) {
 
 	// SimTx 提交成功后，统计链式深度
 	if len(upstreamTxList) > 0 {
-		// 是链式交易，记录提交深度（simNum=链深度）
+		// 是链式交易。chainCommitDist 记录提交轮次(simulationNum)分布（重试轮次，非 DAG 深度）。
 		chainRetryStats.ChainLengthMu.Lock()
 		chainRetryStats.ChainCommitCnt[commit.SimulationNum]++
 		chainRetryStats.ChainLengthMu.Unlock()
 
-		// 记录链式依赖深度
-		chainRetryStats.ChainDepthMu.Lock()
-		chainRetryStats.ChainDepthCommitCnt[commit.SimulationNum]++
-		chainRetryStats.ChainDepthMu.Unlock()
+		// chainDepthCommitDist 按**真实 DAG 深度**(OffChainPatchNode.Depth) 分桶，
+		// 而非 simulationNum——避免把重试轮次误当成链深。
+		if d := s.retryScheduler.chainNodeDepth(txHash); d > 0 {
+			chainRetryStats.ChainDepthMu.Lock()
+			chainRetryStats.ChainDepthCommitCnt[d]++
+			chainRetryStats.ChainDepthMu.Unlock()
+		}
 	}
 
 	// SimTx 提交成功后，检查是否可以链式触发依赖它的 retry tx（DAG chaining）
@@ -1205,6 +1328,13 @@ func (s *sscService) HandleCXTCommitSSCVote(vote *api.CXTCommitSSCVote) {
 	utils.SSCLogger().Debug().Str("txHash", txHash.Hex()).Msgf("received %s ssc vote [%d/%d], %d in %v, simulationNum=%d",
 		vote.Type, len(sscVotes), len(relatedShards), vote.ShardId, relatedShards, vote.SimulationNum)
 
+	// DSN-58 §4.3：刚收到某分片的 Commit sscVote（该分片腿已放好，从 needing 移出），
+	// 其余 needing 若早已 ready，此刻 needing 全 ready 就应触发 tryToReSimulation（只扇出 needing）。
+	// 注意：commitLock 已在上面 func() 内释放，此处调用不会与 LegSscVoted 的 RLock 死锁。
+	if vote.Type == api.Commit && s.retryScheduler != nil {
+		s.retryScheduler.MaybeTriggerReSim(txHash)
+	}
+
 	if vote.Type == api.Rollback || len(sscVotes) == len(relatedShards) {
 		commitType := api.Commit
 		commitReason := api.ReasonSuccess
@@ -1271,6 +1401,68 @@ func (s *sscService) SignalReSimulation(signal *api.RetrySignals) {
 	s.retryScheduler.HandleReSimulationSignal(signal)
 }
 
+// DetectDeadlockProbe 处理来自其他分片的优先级感知反向 CMH 探针。
+func (s *sscService) DetectDeadlockProbe(probe *api.DeadlockProbe) *api.DeadlockProbeAck {
+	if s == nil || s.retryScheduler == nil || s.retryScheduler.deadlockDetector == nil {
+		return &api.DeadlockProbeAck{Accepted: false}
+	}
+	return s.retryScheduler.deadlockDetector.HandleProbe(probe)
+}
+
+// rollbackVictim 环内 victim 终局 Rollback：从 retryPool 取元数据并复用 Wait-Die 投票路径。
+func (s *sscService) rollbackVictim(txHash common.Hash) {
+	if s == nil || s.Verifier == nil || s.retryScheduler == nil {
+		return
+	}
+	// 优先从 retryPool 取（常规等待中）；若已上链/不在池，则从锁元数据取。
+	if val, ok := s.retryScheduler.retryPool.Load(txHash); ok {
+		if rt, ok := val.(*api.RetryTx); ok && rt != nil {
+			s.Verifier.RollbackVictim(txHash, rt.Epochs, rt.OriginShardID, rt.SimulationNum)
+			return
+		}
+	}
+	mgr := s.retryScheduler.tempLockView.stateLockManager
+	if mgr == nil {
+		return
+	}
+	tm, ok := mgr.GetTxMeta(txHash)
+	if !ok {
+		return
+	}
+	pri, ok := mgr.GetTxPriority(txHash)
+	if !ok {
+		return
+	}
+	s.Verifier.RollbackVictim(txHash, tm.Epochs, pri.OriginShardID, tm.SimulationNum)
+}
+
+// HandleVictimTx 处理块内 VictimTx（CMH 判环后打进本分片的控制交易）。
+// 每个 validator 执行到它时，都作为本分片 validator 向本分片 leader 投一张
+// rollback 票（复用 sendRollbackVoteForDie 的委员会投票路径），从而凑够门限、
+// 沿既有 rollback 链路终局回滚 victim。不碰状态、不抢锁。
+func (s *sscService) HandleVictimTx(victimTxBytes []byte) error {
+	if s == nil || s.Verifier == nil {
+		return nil
+	}
+	p := &sscpb.VictimTx{}
+	if err := proto.Unmarshal(victimTxBytes, p); err != nil {
+		utils.SSCLogger().Error().Err(err).Msg("[sscService] failed to unmarshal VictimTx")
+		return err
+	}
+	v := sscpb.VictimTxFromProto(p)
+	if v == nil || v.TxHash == (common.Hash{}) {
+		return errors.New("[sscService] invalid VictimTx: empty tx hash")
+	}
+	utils.SSCLogger().Info().
+		Str("victim", v.TxHash.Hex()).
+		Uint32("originShard", v.OriginShardId).
+		Int("simulationNum", v.SimulationNum).
+		Int("proofLen", len(v.Proof)).
+		Msg("[sscService] VictimTx: casting rollback vote")
+	s.Verifier.RollbackVictim(v.TxHash, v.Epochs, v.OriginShardId, v.SimulationNum)
+	return nil
+}
+
 func (s *sscService) HandleRetrySignal(signal *api.RetrySignal) {
 	s.retryScheduler.HandleRetrySignal(signal)
 }
@@ -1325,6 +1517,18 @@ func (s *sscService) closeTransaction(txHash common.Hash, commitOrRollback bool,
 				Interface("relatedShards", tx.RelatedShards).
 				Int("simulationNum", tx.SimulationNum).
 				Msgf("leader close transaction, commit: %v, status: %s, reason: %s", commitOrRollback, tx.Status, reason)
+
+			// 去向分布：DAG 救起(isChainTx)的交易终局记账（仅 leader，避免多 validator 重复）。
+			//  - commit: 已在 CR commit 处计 chainTxCRCommitted；
+			//  - 非 commit 终局: 打 [chainTxFate] 标记，供脚本统计“被救起却没提交”的去向(reason)。
+			if s.retryScheduler != nil && s.retryScheduler.isChainTxMarked(txHash) {
+				if !commitOrRollback {
+					utils.SSCLogger().Info().Str("txHash", txHash.Hex()).
+						Str("reason", reason).
+						Msg("[chainTxFate] DAG-rescued tx closed WITHOUT commit")
+				}
+				s.retryScheduler.clearChainTxMark(txHash)
+			}
 		}
 	}
 
@@ -1359,6 +1563,9 @@ func (s *sscService) closeTransaction(txHash common.Hash, commitOrRollback bool,
 	// Remove 原子删除 node + keyIndex + subscriber + txSubKeys，
 	// 替代原 removePatch(localPatches) + patches.Delete 两处（消除 patches 泄漏）。
 	s.retryScheduler.offChainDAG.Remove(txHash)
+
+	// DSN-54: 交易终结兜底清理 simDAGPatches（成员侧模拟期 patch 子图），与 offChainDAG.Remove 对齐。
+	s.retryScheduler.RemoveSimDAGPatches(txHash)
 
 	// 清理 stateLockManager 的 finished 标记，避免 globalFinishedTxs 无限增长。
 	// globalFinishedTxs 仅在提交时写入、仅用于统计计数，事务关闭后即可安全删除。
@@ -1490,6 +1697,21 @@ func (s *sscService) RetryCommit(txHash common.Hash) *api.RetryCommitResp {
 	return resp
 }
 
+func (s *sscService) RetryCommitDAG(txHash common.Hash) *api.RetryCommitResp {
+	resp := s.retryScheduler.RetryCommitDAG(txHash)
+	utils.SSCLogger().Debug().Str("txHash", txHash.Hex()).Msgf("retry commit(DAG), locked: %v", resp.Locked)
+	return resp
+}
+
 func (s *sscService) RetryCancel(txHash common.Hash) {
 	s.retryScheduler.RetryCancel(txHash)
+}
+
+// StoreSimDAGPatch — DSN-54：成员侧接收 leader 广播的模拟期链下 DAG patch 子图，
+// 写入本地 retryScheduler.simDAGPatches，供本轮 (tx,simNum) 模拟读被锁 key 时反查。
+func (s *sscService) StoreSimDAGPatch(req *api.StoreSimDAGPatchRequest) {
+	if s == nil || s.retryScheduler == nil || req == nil || req.Subgraph == nil {
+		return
+	}
+	s.retryScheduler.StoreSimDAGPatch(req.Subgraph)
 }

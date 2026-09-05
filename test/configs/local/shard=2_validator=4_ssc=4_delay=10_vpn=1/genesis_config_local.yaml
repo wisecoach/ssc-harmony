@@ -95,12 +95,14 @@ ssc_config:
     validatorthreshold: 3
     number: 4
   timeout:
-    sp1: 10
-    pool_timeout: 10
-    max_on_chain_retries: 2
-    max_retries_total: 5
+    sp1: 1000000000000
+    pool_timeout: 100000000000000000
+    max_on_chain_retries: 200000000000
+    max_retries_total: 500000000000
     force_simulation: true
     enable_lock_on_conflict: false
+    max_chain_depth: 0
+    enable_dag: true
   chain: null
   reputation:
     sl_file_size: 1000

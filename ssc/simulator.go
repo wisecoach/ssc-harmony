@@ -159,13 +159,6 @@ func (sim *Simulator) SetSimState(txHash common.Hash, state *api.SimulationState
 	sim.simStates.Store(txHash, state)
 }
 
-// SetChainPatch 为指定交易设置 ChainPatch（原子读 + 字段写，指针稳定）
-func (sim *Simulator) SetChainPatch(txHash common.Hash, patch *api.RWSet) {
-	if state, ok := sim.GetSimState(txHash); ok && state != nil {
-		state.ChainPatch = patch
-	}
-}
-
 // DeleteSimState 删除 SimulationState（sync.Map 原子删）
 func (sim *Simulator) DeleteSimState(txHash common.Hash) {
 	sim.simStates.Delete(txHash)
@@ -862,23 +855,36 @@ func (sim *Simulator) GetBalance(db api.StateDB, txHash common.Hash, address com
 	return bal
 }
 
-// readChainPatch 统一查询交易消费的 ChainPatch 是否覆盖指定 key。
-// 先查 SimState.ChainPatch（SetChainPatch 写入的合并值），再查 patches（链式依赖链）。
-func (sim *Simulator) readChainPatch(txHash common.Hash, address common.Address, key common.Hash) (common.Hash, bool) {
-	// 查 SimState.ChainPatch
-	simState, ok := sim.GetSimState(txHash)
-	if ok && simState != nil && simState.ChainPatch != nil {
-		if addrState, ok := simState.ChainPatch.WriteState.State[address]; ok {
-			if val, exists := addrState[key]; exists {
-				return val, true
-			}
+// currentSimNum 返回当前交易正在模拟的轮次 (simulationNum)。
+// 成员执行 HandleSimulateRequest 时会为该轮创建/更新 TxState.SimulationNum，
+// simDAGPatches 按 (tx,simNum) 定位本轮子图，故用此值反查。
+func (sim *Simulator) currentSimNum(txHash common.Hash) int {
+	if tx, err := sim.state.GetTxState(txHash); err == nil && tx != nil {
+		return tx.SimulationNum
+	}
+	return 0
+}
+
+// readUpstreamValue 统一查询一笔 DAG 救援 tx 的上游是否已写出指定 key 的值（DSN-56：
+// 上游写集只从 DAG 反查，不再有扁平 ChainPatch 直查路径）。
+// 反查顺序：① 本 tx 在 offChainDAG 的节点沿 UpstreamTxList 递归（leader）；② 本轮
+// simDAGPatches 子图（成员按 (tx,simNum) 反查）。两者同构，任一命中即视为被上游覆盖。
+func (sim *Simulator) readUpstreamValue(txHash common.Hash, address common.Address, key common.Hash) (common.Hash, bool) {
+	rs := sim.sscService.retryScheduler
+	if rs == nil {
+		return common.Hash{}, false
+	}
+	// ① leader：沿本 tx 的 DAG 节点 + UpstreamTxList 递归反查上游写集。
+	if nodeRef := rs.GetDAGNodeRef(txHash); nodeRef != nil {
+		if val, found := rs.readPatchChain(nodeRef.TxHash, nodeRef.SimulationNum, address, key); found {
+			return val, true
 		}
 	}
-	// 查 patches（链式依赖链）
-	rs := sim.sscService.retryScheduler
-	chainPatchRef := rs.GetChainPatchRef(txHash)
-	if chainPatchRef != nil {
-		return rs.readPatchChain(chainPatchRef.TxHash, chainPatchRef.SimulationNum, address, key)
+	// ② 成员/leader 兜底：查本轮 simDAGPatches —— 撞锁 key 若被本轮模拟子图里的上游写过，则用其值（不撞锁）。
+	// 成员通常没有 offChainDAG 节点（GetDAGNodeRef=nil），故这里作为覆盖上游写集的关键路径；
+	// leader 即使 DAG 链未覆盖，也回退到同构的 simDAGPatches，保证与成员结果一致。
+	if val, found := rs.ReadSimDAGPatch(txHash, sim.currentSimNum(txHash), address, key); found {
+		return val, true
 	}
 	return common.Hash{}, false
 }
@@ -956,7 +962,7 @@ func lowerPriorityLock(tlv *TempLockView, mgr *stateLockManager, db api.StateDB,
 	return false
 }
 
-// IsKeyAvailable 三层仲裁：TLV 检查 → SLM 检查 → ChainPatch 补救。
+// IsKeyAvailable 三层仲裁：TLV 检查 → SLM 检查 → DAG 上游补救（readUpstreamValue）。
 // 用于 GetState/SetState 中 stateDB 读取前的锁冲突预检。
 //
 // DSN-52 §17.7 最终分层：若冲突锁由**更低优先级**持有者持有，则当前（高优先级）交易可
@@ -967,8 +973,8 @@ func lowerPriorityLock(tlv *TempLockView, mgr *stateLockManager, db api.StateDB,
 // 返回：
 //
 //	available: key 是否可访问
-//	patchedVal: 非 nil 表示 ChainPatch 提供了值，调用方应使用此值
-//	err: 非 nil 表示锁冲突且无 Patch 覆盖、且持有者不是更低优先级
+//	patchedVal: 非 nil 表示上游 DAG 已写出此 key（readUpstreamValue 命中），调用方应使用此值
+//	err: 非 nil 表示锁冲突且无 DAG 上游覆盖、且持有者不是更低优先级
 func (sim *Simulator) IsKeyAvailable(txHash common.Hash, db api.StateDB, address common.Address, key common.Hash) (available bool, patchedVal *common.Hash, err error) {
 	lockKey := api.FormKey(address, key)
 	tlv := sim.sscService.retryScheduler.tempLockView
@@ -993,31 +999,39 @@ func (sim *Simulator) IsKeyAvailable(txHash common.Hash, db api.StateDB, address
 		return true, nil, nil
 	}
 
-	// Step 3: ChainPatch 补救 — 看该交易消费的 Patch 能否覆盖
-	val, found := sim.readChainPatch(txHash, address, key)
+	// Step 3: DAG 上游补救 — 看该交易的上游是否已写出此 key（DSN-56：只从 DAG 反查，
+	// 即 readUpstreamValue → offChainDAG 链 / DSN-54 simDAGPatches）。
+	val, found := sim.readUpstreamValue(txHash, address, key)
 	if found {
-		return true, &val, nil // Patch 覆盖 ✅
+		return true, &val, nil // DAG 上游已覆盖 ✅
 	}
 
-	// Patch 未覆盖 → 冲突
+	// 真未覆盖（genuinely-uncovered）：DAG/simDAGPatches 都反查不到 → 保留锁冲突。
+	// DSN-54 打点：此类是本方案预期残留的"真冲突"，区别于 covered-but-invisible（修复目标，应消失）。
+	if rs := sim.sscService.retryScheduler; rs != nil {
+		chainRetryStats.SigSimDAGPatchMiss.Add(1)
+		utils.SSCLogger().Debug().Str("txHash", txHash.Hex()).
+			Str("address", address.Hex()).
+			Str("key", key.Hex()).
+			Msg("IsKeyAvailable: genuinely-uncovered lock conflict (simDAGPatch miss)")
+	}
 	return false, nil, api.ErrLockConflict_OnChain
 }
 
 // GetState 读取模拟执行中的状态值。
-// Step 0: 查 RetryScheduler patches（链式依赖路径）
-// Step 1: 查 SimulationState ChainPatch（直接 patch 路径）
-// Step 2: 三层仲裁 IsKeyAvailable → 查 callState RWSet
+// Step 0: 查 DAG（RetryScheduler offChainDAG 链式依赖路径，leader）
+// Step 1: 三层仲裁 IsKeyAvailable（内部含 DSN-54 simDAGPatches 反查）→ 查 callState RWSet
 func (sim *Simulator) GetState(db api.StateDB, txHash common.Hash, address common.Address, key common.Hash) (common.Hash, error) {
-	// Step 0: 递归查 RetryScheduler patches（链式依赖路径）
+	// Step 0: 递归查 DAG（RetryScheduler offChainDAG 链式依赖路径，leader 侧）
 	rs := sim.sscService.retryScheduler
-	chainPatchRef := rs.GetChainPatchRef(txHash)
+	chainPatchRef := rs.GetDAGNodeRef(txHash)
 	if chainPatchRef != nil {
 		val, found := rs.readPatchChain(
 			chainPatchRef.TxHash,
 			chainPatchRef.SimulationNum,
 			address, key)
 		if found {
-			// Patch 命中：缓存到 callState 的 RWSet
+			// 上游写集命中：缓存到 callState 的 RWSet
 			if callState := sim.GetCallState(txHash); callState != nil {
 				callState.StateLock.Lock()
 				if callState.RWSet.ReadState.State[address] == nil {
@@ -1034,27 +1048,12 @@ func (sim *Simulator) GetState(db api.StateDB, txHash common.Hash, address commo
 				Str("address", address.Hex()).
 				Str("key", key.Hex()).
 				Str("value", val.Hex()).
-				Msg("GetState: ChainPatchRef hit, returning patched value")
+				Msg("GetState: DAG upstream hit, returning patched value")
 			return val, nil
 		}
 	}
 
-	// Step 1: 检查 SimulationState ChainPatch（直接 patch 路径，兼容旧逻辑）
-	simState, ok := sim.GetSimState(txHash)
-	if ok && simState != nil && simState.ChainPatch != nil {
-		if addrState, ok := simState.ChainPatch.WriteState.State[address]; ok {
-			if val, exists := addrState[key]; exists {
-				utils.SSCLogger().Debug().Str("txHash", txHash.Hex()).
-					Str("address", address.Hex()).
-					Str("key", key.Hex()).
-					Str("value", val.Hex()).
-					Msg("GetState: ChainPatch hit, returning patched value")
-				return val, nil
-			}
-		}
-	}
-
-	// Step 2: 查 callState RWSet
+	// Step 1: 查 callState RWSet
 	callState := sim.GetCallState(txHash)
 	if callState == nil {
 		utils.SSCLogger().Error().Str("txHash", txHash.Hex()).
@@ -1075,7 +1074,7 @@ func (sim *Simulator) GetState(db api.StateDB, txHash common.Hash, address commo
 		rwset.CurrentState.State[address] = make(map[common.Hash]common.Hash)
 	}
 	if value, exists := rwset.CurrentState.State[address][key]; !exists {
-		// Step 2a: 三层仲裁 — TLV → SLM → ChainPatch
+		// Step 1a: 三层仲裁 — TLV → SLM → DAG 上游（IsKeyAvailable 内含 readUpstreamValue）
 		_, patchVal, err := sim.IsKeyAvailable(txHash, db, address, key)
 		if err != nil {
 			// 锁冲突且无 Patch 覆盖
@@ -1135,9 +1134,9 @@ func (sim *Simulator) SetState(db api.StateDB, txHash common.Hash, address commo
 		rwset.ReadState.State[address] = make(map[common.Hash]common.Hash)
 	}
 	if _, exists := rwset.ReadState.State[address][key]; !exists {
-		// Step 0: 先查 Patch 路径，避免触发 stateDB 锁检查
+		// Step 0: 先查 DAG 上游（offChainDAG 链式依赖路径，leader），避免触发 stateDB 锁检查
 		rs := sim.sscService.retryScheduler
-		chainPatchRef := rs.GetChainPatchRef(txHash)
+		chainPatchRef := rs.GetDAGNodeRef(txHash)
 		var val common.Hash
 		var patchFound bool
 		if chainPatchRef != nil {
@@ -1146,25 +1145,7 @@ func (sim *Simulator) SetState(db api.StateDB, txHash common.Hash, address commo
 				chainPatchRef.SimulationNum,
 				address, key)
 		}
-		// Step 1: 没命中 Patch 则查 SimulationState ChainPatch
-		if !patchFound {
-			simState, simOk := sim.GetSimState(txHash)
-			if simOk && simState != nil && simState.ChainPatch != nil {
-				if addrState, addrOk := simState.ChainPatch.WriteState.State[address]; addrOk {
-					var exists bool
-					val, exists = addrState[key]
-					if exists {
-						patchFound = true
-						utils.SSCLogger().Debug().Str("txHash", txHash.Hex()).
-							Str("address", address.Hex()).
-							Str("key", key.Hex()).
-							Str("value", val.Hex()).
-							Msg("SetState: ChainPatch hit, reading patched value")
-					}
-				}
-			}
-		}
-		// Step 2: 三层仲裁 — TLV → SLM → ChainPatch
+		// Step 1: 三层仲裁 — TLV → SLM → DAG 上游（IsKeyAvailable 内含 readUpstreamValue/simDAGPatches）
 		if !patchFound {
 			_, patchVal, err := sim.IsKeyAvailable(txHash, db, address, key)
 			if err != nil {

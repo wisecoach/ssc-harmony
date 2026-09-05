@@ -393,19 +393,60 @@ func (v *Verifier) VerifySimulation(simulationBytes []byte, stateDB api.StateDB,
 	v.state.SetStatus(txHash, api.VERIFYING_SIMULATION)
 
 	// 检查是否为链式依赖交易（真正有上游依赖才跳过锁冲突检查）。
-	// 注意：不能用 `simulation.ChainPatch != nil` 判断——CommitSimulation 会给每笔
-	// SimTx 都填上非 nil 的 ChainPatch（本交易自己的 WriteSet），导致所有交易都被误判
-	// 为链式交易、跳过锁冲突检查（BUG：chain tx detected ~14.6万次、锁检测整体失效、
-	// 冲突交易陷入回滚-重模拟循环直到超时）。
-	// 只有当确实存在上游依赖（UpstreamTxList 非空，DSN-46 的 DAG 顺序保证）时才跳过。
+	// 只以 `UpstreamTxList`（DAG 上游索引，DSN-56）判定：只有当确实存在上游依赖时才是链式交易，
+	// 才跳过锁冲突检查。任何“SimTx 自身写集/其它 patch”都不能作为 chain 依据
+	// （历史 BUG：曾把“每笔 SimTx 都带自己 WriteSet”误判为链式，导致锁检测整体失效）。
 	isChainTx := len(simulation.UpstreamTxList) > 0
 	if isChainTx {
 		chainRetryStats.SigChainTxDetected.Add(1)
 		chainRetryStats.MonitorChainTxDetected.Add(1)
+		// 标记该 tx 为链式救起（isChainTx），供 CR 最终 commit 时统计“因 DAG 提前完成”。
+		if v.retrySchd != nil {
+			v.retrySchd.markChainTx(txHash)
+		}
 		utils.SSCLogger().Debug().Str("txHash", txHash.Hex()).
 			Int("simNum", simulation.SimulationNum).
 			Int("upstreamCount", len(simulation.UpstreamTxList)).
 			Msg("VerifySimulation: chain tx detected (from upstream dependency), skipping lock conflict check")
+
+		// DSN-57 就绪判定（确定性化）：verify 只依据**链上共识事实** onChainDAGPatches——
+		// 上游 SimTx 的 patch 是否已在本分片 onChainDAGPatches 注册（即已上链验证成功）。
+		// 若依赖的上游 patch 尚未上链，则本下游 SimTx 属时序违背，直接回滚。
+		//
+		// ⚠️ verify 由所有 validator 执行，必须对同一输入得出同一结论（否则各 validator
+		// verdict 分裂，委员会永远凑不齐 vote/SSC vote，导致已 commit 的兄弟分片锁成孤儿）。
+		// 因此这里**不得**依赖 leader 才拥有的内部状态（internal_pool 排队、offChainDAG
+		// 内存节点）来做 fail-open/fail-closed 区分。让下游 SimTx 排在上游 SimTx 之后、
+		// 保证“下游上链时其上游必已上链”，是 internal_pool 在放行/就绪门（上游已上链才放行）
+		// 应完成的任务，不是 verify 的职责。
+		if v.retrySchd != nil {
+			for _, up := range simulation.UpstreamTxList {
+				if v.retrySchd.upstreamOnChain(up.TxHash) {
+					continue // 上游 patch 已在本分片 on-chain 注册 → 就绪
+				}
+				// 上游 patch 不在链上(onChainDAGPatches) → 时序违背，判不满足并回滚。
+				chainRetryStats.SigUpstreamNotReady.Add(1)
+				utils.SSCLogger().Warn().Str("txHash", txHash.Hex()).
+					Str("upstreamTx", up.TxHash.Hex()).
+					Int("upstreamSimNum", up.SimulationNum).
+					Str("shard", fmt.Sprintf("%d", v.committee.SelfShard)).
+					Msg("VerifySimulation: upstream patch not on-chain yet -> rollback (DSN-57, deterministic)")
+				stateDB.RollbackTx(txHash)
+				payload := &api.CXTInvalidSimulationPayload{Type: api.InvalidExecution}
+				payloadBytes, _ := json.Marshal(payload)
+				vote := &api.CXTCommitVote{
+					TxHash:         txHash,
+					Type:           api.Rollback,
+					ShardId:        v.committee.SelfShard,
+					OriginShardId:  simulation.OriginShardId,
+					Reason:         api.ReasonInvalidSimulation,
+					Payload:        payloadBytes,
+					BaseSSCMessage: api.BaseSSCMessage{Epochs: simulation.Epochs},
+				}
+				go v.communicator.SendCommitVote(v.committee.SelfShard, vote)
+				return
+			}
+		}
 	}
 
 CallStates:
@@ -484,7 +525,7 @@ CallStates:
 			for address, stateMap := range callState.RWSet.ReadState.State {
 				for key := range stateMap {
 					for _, upstream := range simulation.UpstreamTxList {
-						expectedVal, found := v.retrySchd.ReadOnChainPatch(
+						expectedVal, found := v.retrySchd.ReadOnChainDAGPatch(
 							upstream.TxHash,
 							upstream.SimulationNum,
 							address, key)
@@ -653,18 +694,55 @@ CallStates:
 		}
 
 		stateDB.RollbackTx(txHash)
-		// DSN-52 Wait-Die（用户决策：不恢复软重试，die 侧彻底回滚）：
-		//  - 低优先级（或持有者优先级未知，保守）→ die：发终局 Rollback vote（彻底回滚、彻底解锁、不重试）。
-		//  - 高优先级 → wait：不释放自身锁，也**不 wound 持有者**，回重试池等低优先级释放后重试。
-		// 降冲突靠链下/交易池提取策略（见 internal_pool / OnBlockCommitted 调度），而非软重试。
-		if v.dsn52ShouldYield(simulation, conflictLockKeys, stateDB) {
-			v.sendRollbackVoteForDie(txHash, simulation)
-			return
-		}
-		// Wait-Die：高优先级等待，不 wound 持有者。
+		// v3（CMH 完全替换 Wait-Die）：链上锁冲突**不再按优先级主动 die**。
+		// Wait-Die 的 die 侧已弃用——低优先/高优先在链上冲突时都不杀，
+		// 一律：记 waitEdge(方向不限) → 由 CMH 检测环 → 只对环内最低优先 victim 终局 die。
+		// 只有 CMH 判出的环内 victim 才走 sendRollbackVoteForDie（复用投票路径，见 RollbackVictim）。
 		utils.SSCLogger().Debug().Str("txHash", txHash.Hex()).
 			Int("conflictKeys", len(conflictLockKeys)).
-			Msg("DSN-52: higher priority, waiting for lower-priority holder to die (Wait-Die, no wound)")
+			Msg("DSN-53: chain-lock conflict, recording waitEdge for CMH (Wait-Die die disabled)")
+
+		// DSN-53 兜底触发：链上锁冲突一律记 waitEdge(方向不限)，由 CMH 判环。
+		if !v.committee.IsLeader(simulation.Epochs[v.committee.SelfShard]) {
+			// 非 leader 不维护跨分片 waitEdges。
+		} else if v.retrySchd != nil && v.retrySchd.deadlockDetector != nil && v.retrySchd.tempLockView != nil {
+			tlv := v.retrySchd.tempLockView
+			mgr := tlv.stateLockManager
+			// 统一持有者查询：global 写 → global 读 → pending(同块) → TLV。
+			// 冲突(尤其日志误标 "[TempLockView] locked by tx")实际可能来自同块 pending 持有者，
+			// 只查 global 会记到无关持有者 → 记错边。这里按真实阻塞层找 holder。
+			var db *corestate.DB
+			if sdb, ok := stateDB.(*corestate.DB); ok {
+				db = sdb
+			}
+			cur := api.Priority{Nonce: simulation.Nonce, OriginShardID: simulation.OriginShardId, TxHash: simulation.TxHash}
+			for _, key := range conflictLockKeys {
+				holder, layer, holderPri := common.Hash{}, api.LockLayerOnChain, api.Priority{}
+				found := false
+				if mgr != nil {
+					if meta, ok := mgr.GetLockHolderMeta(key); ok && meta.TxHash != simulation.TxHash && meta.TxHash != (common.Hash{}) {
+						holder, layer, holderPri, found = meta.TxHash, api.LockLayerOnChain, meta.Priority, true
+					} else if h, ok := mgr.GetRLockHolder(key); ok && h != simulation.TxHash && h != (common.Hash{}) {
+						hp, _ := mgr.GetTxPriority(h)
+						holder, layer, holderPri, found = h, api.LockLayerOnChain, hp, true
+					}
+				}
+				if !found && db != nil {
+					if h, ok := db.FindPendingLockHolder(key); ok && h != simulation.TxHash && h != (common.Hash{}) {
+						if mgr != nil {
+							holderPri, _ = mgr.GetTxPriority(h)
+						}
+						holder, layer, found = h, api.LockLayerOnChain, true
+					}
+				}
+				// v2：waitEdge 只来自真实链上锁(global+pending)。TLV 预约不作 waitEdge 来源，
+				// 故不再回退 GetTempLockHolder。
+				if found {
+					_ = v.retrySchd.deadlockDetector.OnBlockedAt(simulation.TxHash, holder, v.committee.SelfShard, key,
+						layer, cur, holderPri, simulation.Epochs[v.committee.SelfShard], header.NumberU64())
+				}
+			}
+		}
 		if exceeded, lockedSimNum := v.checkRetryLimitExceeded(txHash, simulation); exceeded {
 			v.sendRollbackVoteForRetry(txHash, simulation.SimulationNum, simulation.Epochs, simulation.OriginShardId, lockedSimNum)
 		} else {
@@ -680,11 +758,12 @@ CallStates:
 			v.lockStateWithRWSet(txHash, callState, stateDB)
 		}
 
-		// 验证通过后将 ChainPatch 存入 onChainPatches，供下游链式交易查询
-		if simulation.ChainPatch != nil {
-			v.retrySchd.AddOnChainPatch(txHash, simulation.SimulationNum, simulation.ChainPatch,
-				simulation.UpstreamTxList)
-		}
+		// 验证通过后把本 SimTx 导入 onChainDAGPatches（自身 WriteSet 由 CallStates 推导，不依赖扁平 ChainPatch），
+		// 供下游链式交易按其 UpstreamTxList 反查。
+		// 注意：SimTx 的自身 WriteSet 在“正常成功验证的本 SimTx”上非空；若为空（异常/无写集）也照常导入节点，
+		// 仅带上游索引，供下游发现依赖关系。
+		v.retrySchd.AddOnChainDAGPatch(txHash, simulation.SimulationNum, simOwnWriteSet(simulation),
+			simulation.UpstreamTxList)
 		tVsLockState = time.Since(tVs0)
 		perf.RecordPkg("verify", "VerifySimulation", "lockState", tVsLockState)
 		if v.committee.SelfShard == simulation.OriginShardId && v.committee.IsLeader(simulation.Epochs[v.committee.SelfShard]) {
@@ -726,6 +805,9 @@ CallStates:
 }
 
 // dsn52ShouldYield 判断当前交易在链上锁冲突时是否应「让位」（低优先级）。
+//
+// ⚠️ 已弃用（不再调用）：Wait-Die 完全弃用，链上冲突不再按优先级主动 die；
+// 唯一 die 机制是 CMH 环 victim。本函数仅保留供对照/历史参考。
 //
 // DSN-52 §4.2：优先级 `Nonce > OriginShardID > TxHash` 是确定性全序，所有分片判定一致。
 //   - 若任一冲突 key 的持有者优先级比当前交易高 → 当前交易让位（释放锁 + 回重试池）。
@@ -928,6 +1010,17 @@ func (v *Verifier) sendRollbackVoteForDie(txHash common.Hash, simulation *api.CX
 		BaseSSCMessage: api.BaseSSCMessage{Epochs: simulation.Epochs},
 	}
 	go v.communicator.SendCommitVote(v.committee.SelfShard, vote)
+}
+
+// RollbackVictim 供死锁检测器触发环内最低优先交易的终局 Rollback（复用 sendRollbackVoteForDie）。
+func (v *Verifier) RollbackVictim(txHash common.Hash, epochs []api.Epoch, originShardId uint32, simulationNum int) {
+	v.sendRollbackVoteForDie(txHash, &api.CXTSimulation{
+		OriginShardId: originShardId,
+		SimulationNum: simulationNum,
+		BaseBLSSignedMessage: api.BaseBLSSignedMessage{
+			Epochs: epochs,
+		},
+	})
 }
 
 // callForRetry 通过 retryScheduler 调度下一轮链下重试

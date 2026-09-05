@@ -282,12 +282,13 @@ func buildConfig(config ShardConfig) {
 		localSSCMembers := make([]*api.Member, 0)
 		devSSCMembers := make([]*api.Member, 0)
 		timeout := &api.TimeoutConfig{
-			Sp1:                  10,
-			PoolTimeout:          10,
-			MaxOnChainRetries:    2,
-			MaxRetriesTotal:      5,
+			Sp1:                  1000000000000,
+			PoolTimeout:          100000000000000000,
+			MaxOnChainRetries:    200000000000,
+			MaxRetriesTotal:      500000000000,
 			ForceSimulation:      true,
 			EnableLockOnConflict: false,
+			EnableDAG:            true, // DAG-patch 默认开启
 		}
 		for j := 0; j < config.validator; j++ {
 			v := shard2validators[i][j]
@@ -311,7 +312,7 @@ func buildConfig(config ShardConfig) {
 				PubKey:      pubHex,
 				Endpoint:    fmt.Sprintf("http://%s:%d", devServers.IPs[nodeCnt/config.validatorPerNode], 9500+40*int(i)+j*2),
 				SSCEndpoint: fmt.Sprintf("%s:%d", devServers.IPs[nodeCnt/config.validatorPerNode], 8500+40*int(i)+j*2),
-				BLSPubKey: v.BLSPublicKey,
+				BLSPubKey:   v.BLSPublicKey,
 			})
 			nodeCnt++
 		}

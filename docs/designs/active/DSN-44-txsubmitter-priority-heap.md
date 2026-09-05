@@ -1,4 +1,4 @@
-# DSN-XX: TxSubmitter 排序 Buffer + Priority Heap
+# DSN-44: TxSubmitter 排序 Buffer + Priority Heap
 
 ## 问题
 

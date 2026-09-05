@@ -46,8 +46,8 @@ func (p *SSCInternalPool) Add(tx *types.SSCInternalTx) error {
 	return nil
 }
 
-// Extract 按类型顺序（CRTx(0) → SimTx(1) → NewEpoch/UploadOpinions/Empty(2/3/4)）取出一批，
-// 返回二维（第一维=类型桶，第二维=行内顺序）。maxTotal<=0 表示不限制。
+// Extract 按类型顺序（CRTx(0) → VictimTx(1) → SimTx(2) → NewEpoch/UploadOpinions/Empty(3/4/5)）
+// 取出一批，返回二维（第一维=类型桶，第二维=行内顺序）。maxTotal<=0 表示不限制。
 // 最简版：直接按桶序取，不做冲突分组（DSN-46 在此处接入进池仲裁）。
 func (p *SSCInternalPool) Extract(maxTotal int) [][]*types.SSCInternalTx {
 	p.mu.Lock()
@@ -59,6 +59,21 @@ func (p *SSCInternalPool) Extract(maxTotal int) [][]*types.SSCInternalTx {
 		row := p.txs[tt]
 		if len(row) == 0 {
 			continue
+		}
+		// VictimTx：按 victim 优先级（Nonce>OriginShardID>TxHash）确定性排序，
+		// 保证各分片/各块内处理顺序一致（DSN-53 VictimTx 方案）。
+		if tt == types.InternalTxTypeVictimTx {
+			sort.SliceStable(row, func(i, j int) bool {
+				pi, oki := p.victimPriority(row[i])
+				pj, okj := p.victimPriority(row[j])
+				if !oki {
+					return false
+				}
+				if !okj {
+					return true
+				}
+				return pi.Less(pj)
+			})
 		}
 		// DSN-52 §4.6：同分片内 SimTx 按确定性优先级（Nonce>OriginShardID>TxHash）排序，
 		// 让各分片处理顺序尽量一致，降低随机冲突频率（辅助，不替代冲突时的 Wound-Wait 判定）。
@@ -78,7 +93,11 @@ func (p *SSCInternalPool) Extract(maxTotal int) [][]*types.SSCInternalTx {
 			})
 			// DSN-52：DAG 依赖排序——被依赖的 SimTx 在依赖它的 SimTx 之前执行，
 			// 保证链式交易的 Upstream 先落块，避免下游 SimTx 在链上验证时上游还没就绪。
+			// 这是 internal_pool 保证“下游 SimTx 排在上游 SimTx 之后”的职责所在（同批内）。
 			row = p.orderSimTxsByDAG(row)
+			// 注：跨批/跨分片的上游就绪不在本池扣留（那会卡死跨分片下游）；verify 已改为
+			// **确定性**判定——只查链上 onChainDAGPatches 有无该上游 patch，无则直接回滚，
+			// 且不再依赖本池/offChainDAG 做 fail-open（见 verify.go DSN-57 说明）。
 		}
 		if remaining <= 0 {
 			// 不限或已取满上限：整桶取
@@ -204,6 +223,27 @@ func (p *SSCInternalPool) simPriority(tx *types.SSCInternalTx) (api.Priority, bo
 	}, true
 }
 
+// victimPriority 从 VictimTx payload 解出 victim 的确定性优先级（Nonce>OriginShardID>TxHash），
+// 用于同分片内 VictimTx 桶内排序。解不出（非 VictimTx / payload 损坏）返回 (zero,false)。
+func (p *SSCInternalPool) victimPriority(tx *types.SSCInternalTx) (api.Priority, bool) {
+	if tx == nil || tx.Type != types.InternalTxTypeVictimTx {
+		return api.Priority{}, false
+	}
+	vt := &sscpb.VictimTx{}
+	if err := proto.Unmarshal(tx.Payload, vt); err != nil {
+		return api.Priority{}, false
+	}
+	apiVt := sscpb.VictimTxFromProto(vt)
+	if apiVt == nil {
+		return api.Priority{}, false
+	}
+	return api.Priority{
+		Nonce:         apiVt.Nonce,
+		OriginShardID: apiVt.OriginShardId,
+		TxHash:        apiVt.TxHash,
+	}, true
+}
+
 // Remove 把一条内部交易从池中删除（按 hash 匹配）。
 // 用于执行失败的内部交易：不清理会每块被重复提取/重试，浪费出块预算（DSN-48 修复）。
 // 对不存在/已删除的条目幂等（no-op）。
@@ -279,4 +319,12 @@ func (p *SSCInternalPool) Len() int {
 		n += len(row)
 	}
 	return n
+}
+
+// Has 判断某条内部交易是否仍在池中（含 SimTx——用于 DSN-57 判别“上游是否在本分片池里排队”）。
+func (p *SSCInternalPool) Has(h common.Hash) bool {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	_, ok := p.byHash[h]
+	return ok
 }

@@ -2,7 +2,7 @@
 
 > **版本**：v1（2026-07-09）
 > **状态**：设计阶段
-> **关联文档**：`DSN-24-unified-lock-check.md`（统一锁检查）、`DSN-23-patchpool-dag-design.md`（DAG 多 Patch）
+> **关联文档**：`DSN-24-unified-lock-check.md`（统一锁检查）、`../archived/DSN-23-patchpool-dag-design.md`（DAG 多 Patch）
 
 ---
 

@@ -64,6 +64,7 @@ func (c *Comm) Multicast(ctx context.Context, members []*api.Member, method stri
 	select {
 	case <-ctx.Done():
 		return nil
+
 	default:
 	}
 
@@ -167,6 +168,17 @@ func (c *Comm) callOnConn(ctx context.Context, ret interface{}, conn *grpc.Clien
 		}
 		return nil
 
+	case "signDeadlockProbe":
+		a := args[0].(*api.DeadlockProbe)
+		p := sscpb.DeadlockProbeToProto(a)
+		resp, err := sscpb.NewSSCShardServiceClient(conn).SignDeadlockProbe(ctx, p)
+		if err != nil {
+			return err
+		}
+		if ret != nil {
+			*(ret.(*[]byte)) = resp.GetVal()
+		}
+		return nil
 	case "handleCommitVote":
 		a := args[0].(*api.CXTCommitVote)
 		p := sscpb.CXTCommitVoteToProto(a)
@@ -196,9 +208,26 @@ func (c *Comm) callOnConn(ctx context.Context, ret interface{}, conn *grpc.Clien
 		_, err := sscpb.NewSSCShardServiceClient(conn).AddToPassivePool(ctx, &sscpb.Hash{Val: txHash.Bytes()})
 		return err
 
+	case "storeSimDAGPatch":
+		a := args[0].(*api.StoreSimDAGPatchRequest)
+		p := sscpb.StoreSimDAGPatchRequestToProto(a)
+		_, err := sscpb.NewSSCShardServiceClient(conn).StoreSimDAGPatch(ctx, p)
+		return err
+
 	case "retryCommit":
 		txHash := args[0].(common.Hash)
 		resp, err := sscpb.NewSSCShardServiceClient(conn).RetryCommit(ctx, &sscpb.Hash{Val: txHash.Bytes()})
+		if err != nil {
+			return err
+		}
+		if ret != nil {
+			*(ret.(*api.RetryCommitResp)) = *sscpb.RetryCommitRespFromProto(resp)
+		}
+		return nil
+
+	case "retryCommitDAG":
+		txHash := args[0].(common.Hash)
+		resp, err := sscpb.NewSSCShardServiceClient(conn).RetryCommitDAG(ctx, &sscpb.Hash{Val: txHash.Bytes()})
 		if err != nil {
 			return err
 		}
@@ -265,6 +294,17 @@ func (c *Comm) callOnConn(ctx context.Context, ret interface{}, conn *grpc.Clien
 		_, err := sscpb.NewSSCCrossServiceClient(conn).HandleRetrySignal(ctx, p)
 		return err
 
+	case "detectDeadlockProbe":
+		a := args[0].(*api.DeadlockProbe)
+		p := sscpb.DeadlockProbeToProto(a)
+		resp, err := sscpb.NewSSCCrossServiceClient(conn).DetectDeadlockProbe(ctx, p)
+		if err != nil {
+			return err
+		}
+		if ret != nil {
+			*(ret.(*api.DeadlockProbeAck)) = *sscpb.DeadlockProbeAckFromProto(resp)
+		}
+		return nil
 	default:
 		return fmt.Errorf("comm: unknown method %q", method)
 	}

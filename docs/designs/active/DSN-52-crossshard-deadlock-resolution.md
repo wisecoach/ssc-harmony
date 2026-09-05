@@ -11,6 +11,13 @@ scope: [ssc/verify.go, ssc/state_lock_impl.go, ssc/state_locker.go, ssc/committe
 refs: [DSN-47, DSN-48, DSN-46, DSN-51, BUG-12, BRF-09]
 ---
 
+> **⚠️ Wait-Die 弃用声明（2026-09-02 定稿）**：本文所述"链上低优先 Wait-Die die"已**完全弃用**。
+> 现在唯一的 die 机制是 DSN-53 的 CMH——检测到环后只对环内最低优先 victim 终局回滚；
+> 链上锁冲突不再按优先级主动 die。与本文冲突处，以 DSN-53（v2/v3）为准。
+
+> **关联提示**：本 DSN-52 是"链上 Wait-Die + 链下 TLV wound"的分层收敛基底（resolution）。
+> 检测层语义（"被卡住"= global∪pending 链上锁、TLV 非持久锁、记边/探测解耦、探针沿完整 WFG 回环）
+> 见 `DSN-53 v2`。DSN-52 中的"链上 wound / 触发记边"描述以 DSN-53 v2 为准。
 > **状态**：已实现（分层方案已落地，`go build ./ssc/... ./core/... ./cmd/... ./node/...` 通过；**待最终一轮实验验证**，见 §6 验证清单，部署复跑见交接文档 HANDOFF-20260901-crossshard-layered-waitdie-wound §5.1）
 > **背景**：rate=200 压测下跨分片交易在 block 66 后**彻底死锁**（30 分钟零活动），剩余 ~6900 笔卡死。根因是「链上锁先 Commit、等全部分片确认才发 CRTx 释放，但失败无回滚路径」导致孤儿锁级联泄漏（LOCK_STALE 万级）。本 DSN 给出根治方案：链上锁冲突接入确定性优先级 **Wait-Die**（终局回滚，链上不 wound）+ 链下 TLV wound + 严格门 + DAG 排序，把「永久死锁」转为「有界可恢复收敛」。
 
@@ -158,3 +165,29 @@ rate=200 复跑重点观测：
 - **未知持有者优先级 → 保守 die**：`dsn52ShouldYield` 对未知优先级一律让位。若大量旧锁/未注册优先级，会推高 rollback，需观测 die 中 unknown 占比。
 - **die 是永久判死**：这是已确认的决策（保证收敛），但会牺牲失败率；若 rollback 仍偏高且非 TOCTOU/unknown 主导，再考虑「有界重试」兜底（需与用户确认）。
 - **高优先级撞低优先级 on-chain 持有者会 off-chain 干等**：严格门不构建，依赖低优先级 die/commit 释放，时延 P90/P99 需实测。
+
+---
+
+## 16. 方案1：首次模拟也占 TLV 锁（链下并行协调，2026-09-02）
+
+### 16.1 动机
+链下首次模拟是**乐观**的：`IsKeyAvailable` 只「检查」TLV（`HasConflict`），从不「获取」TLV 锁
+（`TryLockWithPriority` 只在 RetryCommit 调用）。所以并行的首次模拟互相看不见 → 都构建 SimTx →
+上链同块 pending 冲突 → Wait-Die 终局回滚 → rollback 高、冲突 SimTx 多。
+
+### 16.2 实现（`ssc/impl.go` CommitSimulation）
+首次/重模拟成功后、构建 SimTx 前，对该分片完整 RWSet（read+write）调 `TryLockWithPriority` 占 TLV 锁：
+```
+成功 → 继续提交 SimTx（TLV 锁保留，OnBlockCommitted 在 SimTx 上链时释放）
+失败（与并行模拟冲突且无法 wound）→ 不构建 SimTx，CallForRetry 回重试池
+```
+这样并行的首次模拟只有一个能拿到 TLV 锁构建 SimTx，冲突方回重试池 → 阻止冲突 SimTx 被构建。
+
+### 16.3 决策（与用户确认）
+- 占锁时机：模拟成功后（能拿完整 RWSet），非模拟开始时增量占锁。
+- 锁滞留：**不设超时解锁**（2b）——TLV 锁靠 OnBlockCommitted 在 SimTx 上链时释放，避免掩盖问题。
+
+### 16.4 待验证
+- rollback 是否明显下降（链下不再构建冲突 SimTx）；
+- `DSN-52 方案1: first-sim failed to acquire TLV lock` 计数；
+- commit 回升、unfinished ~0、时延可控。

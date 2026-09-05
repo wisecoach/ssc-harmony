@@ -69,6 +69,11 @@ enum RetryStatus {
   RETRY_WOUNDED = 3;
 }
 
+enum LockLayer {
+  LOCK_LAYER_ONCHAIN = 0;
+  LOCK_LAYER_TLV = 1;
+}
+
 // ============================================================================
 // CallIndex — repeated int32, no wrapper message needed
 // ============================================================================
@@ -141,6 +146,8 @@ message CXTSimulationRequest {
   RLPBytes tx = 7;           // RLP-encoded *types.Transaction
   Address from = 8;
   uint64 gas_pool = 9;
+  // DSN-54: leader 已分配的上游引用，成员据此从 simDAGPatches 反查上游写集。
+  repeated TxSimKey upstream_tx_list = 10;
 }
 
 message CXTSimulationResult {
@@ -172,7 +179,6 @@ message CXTSimulation {
   uint32 origin_shard_id = 6;
   repeated uint32 related_shards = 7;
   repeated CXTCallState call_states = 8;
-  RWSet chain_patch = 9;
   repeated TxSimKey upstream_tx_list = 10;
   BaseBLSSignedMessage base = 11;
 }
@@ -315,6 +321,21 @@ message TxSimKey {
   int32 simulation_num = 2;
 }
 
+// DSN-54: 模拟期链下 DAG patch 子图（leader 从 offChainDAG 构建，广播给成员）。
+message SimPatchNode {
+  TxSimKey tx_sim = 1;
+  repeated TxSimKey upstream = 2;   // 上游边
+  RWSet patch = 3;                  // 本节点写集
+}
+message SimPatchSubgraph {
+  Hash tx_hash = 1;
+  int32 simulation_num = 2;
+  repeated SimPatchNode nodes = 3;
+}
+message StoreSimDAGPatchRequest {
+  SimPatchSubgraph subgraph = 1;
+}
+
 message RetrySignal {
   Hash tx_hash = 1;
   uint32 from_shard = 2;
@@ -322,7 +343,10 @@ message RetrySignal {
   int32 simulation_num = 4;
   ConflictCondition condition = 5;
   bool ready = 6;
-  RWSet chain_patch = 7;
+  // DAG 上游边（唯一事实来源）：随链式 retry signal 传播到 origin shard，
+  // 使 origin 侧 offChainDAG 记录本 tx 的上游节点 → CommitSimulation 的
+  // UpstreamTxList 非空 → Verify 判 chain。（DSN-56：不再携带扁平 ChainPatch。）
+  repeated TxSimKey upstream_tx_list = 8;
 }
 
 message RetrySignals {
@@ -351,6 +375,43 @@ message RetryCommitResp {
   Hash tx_hash = 1;
   bool locked = 2;
   bool on_chain_lock_conflict = 3;
+}
+
+message DeadlockProbe {
+  Hash init = 1;
+  Hash sender = 2;
+  Hash current = 3;
+  repeated Hash path = 4;
+  LockLayer layer = 5;
+  LockKey wait_key = 6;
+  uint64 epoch = 7;
+  uint64 block_num = 8;
+  uint64 nonce = 9;
+  uint32 shard = 10;
+  BaseBLSSignedMessage base = 11;
+  // proof：A 方案累积的沿途各跳已签名探针链（扁平化，不带各自 proof），
+  // 用于判环后作为 VictimTx 的证明。非签名范围。
+  repeated DeadlockProbe proof = 12;
+}
+
+message DeadlockProbeAck {
+  Hash init = 1;
+  Hash current = 2;
+  uint32 shard = 3;
+  bool accepted = 4;
+}
+
+// VictimTx：CMH 判环后由最后一跳 shard leader 构造、打进本分片的控制交易。
+// 不碰状态、不抢锁；validator 执行它后各自投 rollback 票。
+message VictimTx {
+  Hash tx_hash = 1;
+  uint64 nonce = 2;
+  uint32 origin_shard_id = 3;
+  repeated uint32 related_shards = 4;
+  repeated uint64 epochs = 5;
+  uint32 simulation_num = 6;
+  // proof：判环沿途各跳签名探测消息链（A 方案证明）。
+  repeated DeadlockProbe proof = 7;
 }
 
 // ============================================================================
@@ -424,6 +485,8 @@ service SSCShardService {
   // Leader → Members, request BLS signing of a simulation commit
   rpc SignSimulationCommit(SimulationCommit) returns (Bytes);
   rpc SignCXTSimulation(CXTSimulation) returns (Bytes);
+  // Leader → Members, request BLS signing of a deadlock probe
+  rpc SignDeadlockProbe(DeadlockProbe) returns (Bytes);
 
   // Member → Leader, submit commit vote
   rpc HandleCommitVote(CXTCommitVote) returns (Empty);
@@ -435,10 +498,15 @@ service SSCShardService {
   rpc AddRetryTx(RetryTx) returns (Empty);
   rpc AddToPassivePool(Hash) returns (Empty);
   rpc RetryCommit(Hash) returns (RetryCommitResp);
+  // DSN-55 rev2: DAG 救援 attempt 的 RetryCommit —— 得锁(TLV)后提权保锁(不被 wound)
+  rpc RetryCommitDAG(Hash) returns (RetryCommitResp);
   rpc RetryCancel(Hash) returns (Empty);
 
   // Epoch transition
   rpc HandleNewEpoch(HandleNewEpochRequest) returns (Empty);
+
+  // DSN-54: leader → member, 广播该交易本轮模拟所需的链下 DAG patch 子图
+  rpc StoreSimDAGPatch(StoreSimDAGPatchRequest) returns (Empty);
 }
 
 service SSCCrossService {
@@ -459,6 +527,9 @@ service SSCCrossService {
 
   // Cross-shard: handle retry signal (with ChainPatch)
   rpc HandleRetrySignal(RetrySignal) returns (Empty);
+
+  // Cross-shard: priority-aware reverse CMH deadlock probe
+  rpc DetectDeadlockProbe(DeadlockProbe) returns (DeadlockProbeAck);
 }
 
 // Helper message for methods that return raw bytes (SignSimulationCommit, SignCXTSimulation).
@@ -477,7 +548,7 @@ message RetrySchedulerStatus {
   int64 stale_txs = 3;
   int64 signals = 4;
   int64 patches = 5;
-  int64 on_chain_patches = 6;
+  int64 on_chain_dag_patches = 6;
   int64 local_patches = 7;
   int64 key_index = 8;
   int64 subscriber = 9;

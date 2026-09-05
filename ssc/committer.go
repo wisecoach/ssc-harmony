@@ -17,7 +17,9 @@ type CommitterStateAccessor struct {
 	IsTxFinished       func(txHash common.Hash) bool
 	SetStatus          func(txHash common.Hash, status api.CXTStatus)
 	CloseTx            func(txHash common.Hash, success bool, reason string)
-	RemoveOnChainPatch func(txHash common.Hash) // v6: CR 完成后清理 onChainPatches
+	RemoveOnChainDAGPatch func(txHash common.Hash) // v6: CR 完成后清理 onChainDAGPatches
+	// RecordChainTxCRCommit — 统计“链式(isChainTx)交易最终 CR commit”的次数（仅 origin leader 回调）。
+	RecordChainTxCRCommit func(txHash common.Hash)
 }
 
 // Committer 负责 Commit/Rollback 交易的链上执行。
@@ -141,6 +143,11 @@ func (c *Committer) CommitOrRollbackWithProof(commitProofBytes []byte, stateDB a
 
 	if c.committee.SelfShard == commitProof.OriginShard && c.committee.IsLeader(commitProof.Epochs[c.committee.SelfShard]) {
 		c.stats.setCxtStage(txHash, 6)
+		// 统计“链式(isChainTx)交易最终 CR commit”次数（仅 origin leader，避免多节点重复计数）。
+		// 只在真正 Commit（非 Rollback/ReleaseOnly）时计入。
+		if commitProof.Type == api.Commit && c.state.RecordChainTxCRCommit != nil {
+			c.state.RecordChainTxCRCommit(txHash)
+		}
 	}
 
 	// 补全 tx block trace：StageCommitOrRollback（CR 上链执行）阶段
@@ -150,9 +157,9 @@ func (c *Committer) CommitOrRollbackWithProof(commitProofBytes []byte, stateDB a
 		c.traceSvc.recordTraceBlock(txHash, StageCommitOrRollback, blockNum)
 	}
 
-	// v6: CR 完成后所有节点清理 onChainPatches
-	if c.state.RemoveOnChainPatch != nil {
-		c.state.RemoveOnChainPatch(txHash)
+	// v6: CR 完成后所有节点清理 onChainDAGPatches
+	if c.state.RemoveOnChainDAGPatch != nil {
+		c.state.RemoveOnChainDAGPatch(txHash)
 	}
 
 	total := time.Since(t0)

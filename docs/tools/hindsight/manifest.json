@@ -1,0 +1,798 @@
+[
+  {
+    "id": "DSN-01",
+    "section": "active",
+    "status": "baseline",
+    "path": "docs/designs/active/DSN-01-sscc-refactor-plan.md",
+    "title": "SSCC 模块化重构总览 [A01]",
+    "summary": "SSCC 架构系列第一篇：模块化重构（Simulator/Verifier/Committer/RetryScheduler）与文件分布、设计原则总览。",
+    "relations": [
+      "主线 A01-A06 系列的阅读起点",
+      "被 AGENTS.md 列为改码前必读基线"
+    ],
+    "tags": [
+      "doc"
+    ]
+  },
+  {
+    "id": "DSN-02",
+    "section": "active",
+    "status": "baseline",
+    "path": "docs/designs/active/DSN-02-lock-retry-mechanism.md",
+    "title": "锁与重试机制 [A02]",
+    "summary": "三层锁架构（stateLockManager 全局锁 / stateLocker 模拟锁 / TempLockView 链下临时锁）与锁生命周期、重试总览。",
+    "relations": [
+      "作为 03/04/05/06/08 的机制总览"
+    ],
+    "tags": [
+      "doc"
+    ]
+  },
+  {
+    "id": "DSN-03",
+    "section": "active",
+    "status": "implemented",
+    "path": "docs/designs/active/DSN-03-cr-priority-optimization.md",
+    "title": "CR 提交优先级优化 [A03]",
+    "summary": "CR 交易优先级：双签名器双 nonce、pending 分类、三段式提交上限、retry 上限重构；已部署远程。",
+    "relations": [
+      "依赖 DSN-02 锁机制",
+      "与 DSN-08 重试上限相关"
+    ],
+    "tags": [
+      "doc"
+    ]
+  },
+  {
+    "id": "DSN-04",
+    "section": "active",
+    "status": "design",
+    "path": "docs/designs/active/DSN-04-onchain-retry-limit.md",
+    "title": "链上重试次数限制 [A04]",
+    "summary": "链上 VerifySimulation 无限重试的边界设计思路（范围/计数/检查点/超限行为）。",
+    "relations": [
+      "设计思路被 DSN-08（实现）取代",
+      "DSN-09-retry-timeout 引用其思路"
+    ],
+    "tags": [
+      "doc"
+    ]
+  },
+  {
+    "id": "DSN-05",
+    "section": "active",
+    "status": "implemented",
+    "path": "docs/designs/active/DSN-05-hotkey-retry-design.md",
+    "title": "HotKey 链式重试（数据层）[A05]",
+    "summary": "热点 key 链式重试 v1-v4 演进与 PatchPool 数据层原始设计（线性链→PatchPool 分片本地池）。",
+    "relations": [
+      "原始 PatchPool 设计基线",
+      "被 DSN-06/22/23 等引用",
+      "DAG 化后被 DSN-49/51 取代其链式实现"
+    ],
+    "tags": [
+      "doc"
+    ]
+  },
+  {
+    "id": "DSN-06",
+    "section": "active",
+    "status": "implemented",
+    "path": "docs/designs/active/DSN-06-lock-priority-coordination.md",
+    "title": "锁优先级协调（协调层）[A06]",
+    "summary": "协调层：Wound-Wait 跨分片锁协调 v5，解决循环冲突/死锁；与 DSN-52 分层收敛相关。",
+    "relations": [
+      "前置依赖 PatchPool v4 (DSN-05)",
+      "死锁根治由 DSN-52(Wait-Die+TLV wound) 落地"
+    ],
+    "tags": [
+      "doc"
+    ]
+  },
+  {
+    "id": "DSN-08",
+    "section": "active",
+    "status": "implemented",
+    "path": "docs/designs/active/DSN-08-retry-limit.md",
+    "title": "重试次数限制（Retry Limit Control）[A08]",
+    "summary": "链上 + 总重试次数上限（MaxOnChainRetries/MaxRetriesTotal）与超限处理；实现 DSN-04 的设计。",
+    "relations": [
+      "实现并取代 DSN-04 思路",
+      "与 DSN-09(链下超时上限) 构成两条保护线"
+    ],
+    "tags": [
+      "doc"
+    ]
+  },
+  {
+    "id": "DSN-09",
+    "section": "active",
+    "status": "design",
+    "path": "docs/designs/active/DSN-09-retry-timeout-and-limit.md",
+    "title": "RetryScheduler 链下超时与重试超限",
+    "summary": "链下 retryScheduler 缺超时/次数上限的修复设计（两条保护线、全链路重试流程）。",
+    "relations": [
+      "关联 DSN-08/DSN-04/DSN-02",
+      "注意与已归档的旧“DSN-09 被动池”(A09) 撞号"
+    ],
+    "tags": [
+      "doc"
+    ]
+  },
+  {
+    "id": "DSN-10",
+    "section": "active",
+    "status": "guide",
+    "path": "docs/designs/active/DSN-10-log-query-guide.md",
+    "title": "日志查询与分级指南（原 B01）",
+    "summary": "SSC 双日志器（utils.Logger/SSCLogger）布局、等级分类与查询指南（运维参考文档，非设计）。",
+    "relations": [
+      "与 DSN-11 同属 B 系列运维指南",
+      "对应归档日志等级规范演进"
+    ],
+    "tags": [
+      "doc"
+    ]
+  },
+  {
+    "id": "DSN-11",
+    "section": "active",
+    "status": "guide",
+    "path": "docs/designs/active/DSN-11-log-lifecycle.md",
+    "title": "交易生命周期日志大全（原 B02）",
+    "summary": "按交易从提交到终结路径排序的日志大全（Phase 1 入池→模拟→Commit/Rollback）。",
+    "relations": [
+      "与 DSN-10 同属 B 系列运维指南"
+    ],
+    "tags": [
+      "doc"
+    ]
+  },
+  {
+    "id": "DSN-17",
+    "section": "active",
+    "status": "analysis",
+    "path": "docs/designs/active/DSN-17-stateLock-optimization-plan.md",
+    "title": "stateLock 锁范围优化分析",
+    "summary": "stateLockManager 保护数据、锁内含无关操作位置清单与优化判断（closeTransaction 960ms 瓶颈定位）。",
+    "relations": [
+      "前置 EXP-01",
+      "是 DSN-18/19 锁优化系列起点"
+    ],
+    "tags": [
+      "doc"
+    ]
+  },
+  {
+    "id": "DSN-18",
+    "section": "active",
+    "status": "planned",
+    "path": "docs/designs/active/DSN-18-sync-map-txstates.md",
+    "title": "sync.Map + per-entry lock 改造方案",
+    "summary": "用 sync.Map+per-tx Mutex 替换全局 stateLock+map+finishedTxs，消除 stateLock 排队竞争。",
+    "relations": [
+      "基于 DSN-17",
+      "被 DSN-19 落地吸收"
+    ],
+    "tags": [
+      "doc"
+    ]
+  },
+  {
+    "id": "DSN-19",
+    "section": "active",
+    "status": "implemented",
+    "path": "docs/designs/active/DSN-19-simuLock-per-tx.md",
+    "title": "Simulator 全局锁→sync.Map+per-entry",
+    "summary": "Simulator 全局锁改 sync.Map+per-entry，消除 closeTransaction/sim 锁尖峰。",
+    "relations": [
+      "依赖 DSN-18/EXP-01",
+      "延续锁优化系列"
+    ],
+    "tags": [
+      "doc"
+    ]
+  },
+  {
+    "id": "DSN-20",
+    "section": "active",
+    "status": "proposed",
+    "path": "docs/designs/active/DSN-20-simulation-timing-instrumentation.md",
+    "title": "模拟/重试管线全链路计时埋点",
+    "summary": "为定位 latency 引入模拟+重试管线分段计时埋点。",
+    "relations": [
+      "关联 DSN-19/17/09",
+      "被 RSH-02/03 全链路性能埋点推进"
+    ],
+    "tags": [
+      "doc"
+    ]
+  },
+  {
+    "id": "DSN-21",
+    "section": "active",
+    "status": "proposed",
+    "path": "docs/designs/active/DSN-21-retryScheduler-per-tx-lock.md",
+    "title": "retryScheduler 全局锁→sync.Map+per-entry",
+    "summary": "rs.mu 全局锁改 per-entry，解决 AddToRetry.poolInsert 锁竞争。",
+    "relations": [
+      "依赖 DSN-19/18/20"
+    ],
+    "tags": [
+      "doc"
+    ]
+  },
+  {
+    "id": "DSN-22",
+    "section": "active",
+    "status": "design",
+    "path": "docs/designs/active/DSN-22-retrycommit-lock-order-fix.md",
+    "title": "RetryCommit 锁检查顺序修正",
+    "summary": "三阶段 RetryCommit（TLV→stateDB→DAG）；PatchPool 仅覆盖 stateDB 冲突，防无条件跳锁死循环。",
+    "relations": [
+      "v1 已验证、v2 设计",
+      "参考旧被动池(归档 A09)",
+      "DAG 部分被 DSN-23/49 演进"
+    ],
+    "tags": [
+      "doc"
+    ]
+  },
+  {
+    "id": "DSN-24",
+    "section": "active",
+    "status": "design",
+    "path": "docs/designs/active/DSN-24-unified-lock-check.md",
+    "title": "统一锁检查（TLV+SLM+ChainPatch）",
+    "summary": "把 TLV 与 SLM 两套锁 + Patch 合并成统一三层仲裁，消除碎片化锁检查。",
+    "relations": [
+      "关联 DSN-23(归档)/DSN-22",
+      "AGENTS 列为读码前必读"
+    ],
+    "tags": [
+      "doc"
+    ]
+  },
+  {
+    "id": "DSN-25",
+    "section": "active",
+    "status": "design",
+    "path": "docs/designs/active/DSN-25-retrycommit-state-cache.md",
+    "title": "OnBlockCommitted StateDB 缓存",
+    "summary": "消除 RetryCommit↔ReSimulation 锁检查 race（96.4% ReSimulation 失败问题）。",
+    "relations": [
+      "关联 DSN-24/DSN-23(归档)"
+    ],
+    "tags": [
+      "doc"
+    ]
+  },
+  {
+    "id": "DSN-27",
+    "section": "active",
+    "status": "implemented",
+    "path": "docs/designs/active/DSN-27-tlv-mutex-contention.md",
+    "title": "TempLockView 全局 Mutex→sync.Map",
+    "summary": "TLV 全局 v.mu 全部 sync.Map 化，消除 TryLock 等待尖峰。",
+    "relations": [
+      "关联 DSN-24/DSN-26(归档)",
+      "AGENTS 标注 DONE committed"
+    ],
+    "tags": [
+      "doc"
+    ]
+  },
+  {
+    "id": "DSN-28",
+    "section": "active",
+    "status": "draft",
+    "path": "docs/designs/active/DSN-28-stateLockManager-lock-free.md",
+    "title": "stateLockManager 无锁重构（MVCC）",
+    "summary": "stateLockManager 版本化 MVCC + per-tx 锁设计稿（设计稿，未定稿）。",
+    "relations": [
+      "关联 DSN-27/DSN-25",
+      "潜在未来重构方向"
+    ],
+    "tags": [
+      "doc"
+    ]
+  },
+  {
+    "id": "DSN-31",
+    "section": "active",
+    "status": "design",
+    "path": "docs/designs/active/DSN-31-skip-crossshardtx-pool.md",
+    "title": "CrossShardTx 不入池，直启模拟",
+    "summary": "跨分片交易跳过普通交易池直接异步模拟（DSN-48 内部池方向的前身思路）。",
+    "relations": [
+      "被 DSN-46/48 内部池方案演进"
+    ],
+    "tags": [
+      "doc"
+    ]
+  },
+  {
+    "id": "DSN-32",
+    "section": "active",
+    "status": "design",
+    "path": "docs/designs/active/DSN-32-commit-txs-time-budget.md",
+    "title": "CommitTxs 时间预算",
+    "summary": "CommitTransactions 引入时间预算，避免 Shard 3 活跃块 commitTxs 2.87s 的级联延迟。",
+    "relations": [
+      "后续并入 DSN-48 的 1s 出块预算"
+    ],
+    "tags": [
+      "doc"
+    ]
+  },
+  {
+    "id": "DSN-33",
+    "section": "active",
+    "status": "design",
+    "path": "docs/designs/active/DSN-33-verifycontext-cleanup.md",
+    "title": "VerifyContext 清理 + GetResult 子上下文化",
+    "summary": "清理并行验证僵尸字段、GetResult 子上下文化并消除数据竞争。",
+    "relations": [
+      "基于 DSN-32 并行验证改造"
+    ],
+    "tags": [
+      "doc"
+    ]
+  },
+  {
+    "id": "DSN-34",
+    "section": "active",
+    "status": "design",
+    "path": "docs/designs/active/DSN-34-parallel-exec-verify.md",
+    "title": "SimTx 并行验证设计方案",
+    "summary": "把 VerifySimulation 内部 execVerify 并行化，压缩 commitTxs 到 1s 预算内。",
+    "relations": [
+      "对应 HANDOFF-20260718",
+      "是 DSN-35/45 的前置草案"
+    ],
+    "tags": [
+      "doc"
+    ]
+  },
+  {
+    "id": "DSN-35",
+    "section": "active",
+    "status": "draft",
+    "path": "docs/designs/active/DSN-35-batch-parallel-verify.md",
+    "title": "跨 SimTx 批量并行验证",
+    "summary": "跨 SimTx 批量并行验证草案（草案）。",
+    "relations": [
+      "草案；被 DSN-45(leader 先行) 收敛"
+    ],
+    "tags": [
+      "doc"
+    ]
+  },
+  {
+    "id": "DSN-36",
+    "section": "active",
+    "status": "planned",
+    "path": "docs/designs/active/DSN-36-verifycontext-simnum-isolation.md",
+    "title": "VerifyContext 分 SimulationNum 隔离",
+    "summary": "executionVerifyContexts key 增加 SimulationNum 维度，防同 txHash 不同 simNum 覆盖/data race。",
+    "relations": [
+      "修正 DSN-32/34 并行验证引入的上下文 key 问题"
+    ],
+    "tags": [
+      "doc"
+    ]
+  },
+  {
+    "id": "DSN-37",
+    "section": "active",
+    "status": "design",
+    "path": "docs/designs/active/DSN-37-StateProcessor-BatchVerify.md",
+    "title": "StateProcessor 支持 BatchVerify",
+    "summary": "让 Validator 的 StateProcessor 走与 Worker 相同的分类分批+BatchVerify，解决 1 票永远达不到 threshold。",
+    "relations": [
+      "修复 BUG-09",
+      "与 DSN-35/40/41 相关"
+    ],
+    "tags": [
+      "doc"
+    ]
+  },
+  {
+    "id": "DSN-42",
+    "section": "active",
+    "status": "design",
+    "path": "docs/designs/active/DSN-42-worker-throttle.md",
+    "title": "模拟 Worker 动态调速",
+    "summary": "Simulator 可插拔调速策略层，按每块提交量动态调 worker 间隔（与 PRD-01 同主题）。",
+    "relations": [
+      "对应 PRD-01-worker-throttle"
+    ],
+    "tags": [
+      "doc"
+    ]
+  },
+  {
+    "id": "DSN-43",
+    "section": "active",
+    "status": "draft",
+    "path": "docs/designs/active/DSN-43-gRPC-migration.md",
+    "title": "JSON-RPC→gRPC+Protobuf 迁移",
+    "summary": "JSON 序列化占 ~10% CPU → 迁移 gRPC+Protobuf（Draft）。",
+    "relations": [
+      "与归档的 DSN-30-gRPC 同稿",
+      "proto 迁移实际已随 DSN-47/48 落地"
+    ],
+    "tags": [
+      "doc"
+    ]
+  },
+  {
+    "id": "DSN-44",
+    "section": "active",
+    "status": "design",
+    "path": "docs/designs/active/DSN-44-txsubmitter-priority-heap.md",
+    "title": "TxSubmitter 排序 Buffer + Priority Heap",
+    "summary": "tx_submitter 插入 MinHeap+Flight 限速，控制 TxPool 存量与 nonce 顺序（标题原为 DSN-XX）。",
+    "relations": [
+      "被 DSN-48(内部池) 方向演进"
+    ],
+    "tags": [
+      "doc"
+    ]
+  },
+  {
+    "id": "DSN-45",
+    "section": "active",
+    "status": "planned",
+    "path": "docs/designs/active/DSN-45-batch-simtx-parallel-verify.md",
+    "title": "SimTx 批量并行验证（leader 先行）",
+    "summary": "leader 侧冲突分组+跨 SimTx 并行 execVerify+串行写；只改 leader，validator 第一版不动，根治 BUG-09。",
+    "relations": [
+      "收敛 DSN-34/35/37",
+      "关联 BUG-09/10/11/13",
+      "是 DSN-46/47 内部池基础"
+    ],
+    "tags": [
+      "doc"
+    ]
+  },
+  {
+    "id": "DSN-46",
+    "section": "active",
+    "status": "planned",
+    "path": "docs/designs/active/DSN-46-ssc-internal-pool-dag.md",
+    "title": "专用跨分片内部交易池（去 Nonce+DAG）",
+    "summary": "专用内部交易池：去 nonce 串行、进池仲裁分组、ChainPatch/DAG 接入（完整版）。",
+    "relations": [
+      "关联 DSN-45/47/48",
+      "引用 DSN-23/26(归档)",
+      "DSN-48 为其最小可用第一步"
+    ],
+    "tags": [
+      "doc"
+    ]
+  },
+  {
+    "id": "DSN-47",
+    "section": "active",
+    "status": "implemented",
+    "path": "docs/designs/active/DSN-47-internal-tx-structure.md",
+    "title": "专用内部交易结构 SSCInternalTx",
+    "summary": "独立内部交易结构（RLP 外壳+protobuf 载荷）+ 区块承载 + SSCVM 原生处理；已实现落地。",
+    "relations": [
+      "DSN-46/48 的承载基础",
+      "proto 迁移在此落地"
+    ],
+    "tags": [
+      "doc"
+    ]
+  },
+  {
+    "id": "DSN-48",
+    "section": "active",
+    "status": "implemented",
+    "path": "docs/designs/active/DSN-48-simple-ssc-internal-pool.md",
+    "title": "简单 SSC 内部交易池",
+    "summary": "最简内部池：存储/提取/区块提交后清理 + tx_submitter 接入（含 1s 出块预算回归修复）。",
+    "relations": [
+      "DSN-46 的 MVP",
+      "依赖 DSN-47",
+      "修复跨分片 SimTx 泄漏"
+    ],
+    "tags": [
+      "doc"
+    ]
+  },
+  {
+    "id": "DSN-49",
+    "section": "active",
+    "status": "implemented",
+    "path": "docs/designs/active/DSN-49-unify-offchain-patch-pool.md",
+    "title": "链下 Patch 池统一（offChainDAG）",
+    "summary": "合并 localPatches+patches 为单一链下 offChainDAG，消除冗余/泄漏/成环。已实施。",
+    "relations": [
+      "取代 DSN-23/26/29/30(归档)",
+      "被 DSN-51 重写 DAG 取代(方案)",
+      "是 DSN-50 前置"
+    ],
+    "tags": [
+      "doc"
+    ]
+  },
+  {
+    "id": "DSN-50",
+    "section": "active",
+    "status": "implemented",
+    "path": "docs/designs/active/DSN-50-ssc-dag-rescue-coverage-and-depth-cap.md",
+    "title": "DAG 救援收敛",
+    "summary": "救援前覆盖完整性校验 + 链深上限，收敛无限 churn。已实施。",
+    "relations": [
+      "依赖 DSN-49",
+      "方案被 DSN-51(重写) 取代"
+    ],
+    "tags": [
+      "doc"
+    ]
+  },
+  {
+    "id": "DSN-51",
+    "section": "active",
+    "status": "planned",
+    "path": "docs/designs/active/DSN-51-dag-deterministic-chainbuild.md",
+    "title": "DAG-patch 重写（确定性主动建图）",
+    "summary": "BRF-09 决定重写整个 DAG patch：以“同块多写”为目标的确定性建图（链下建图/链上验证）。",
+    "relations": [
+      "取代 DSN-49/50 方案",
+      "关联 DSN-46/23/26",
+      "被 DSN-52 引用为 DAG 排序层"
+    ],
+    "tags": [
+      "doc"
+    ]
+  },
+  {
+    "id": "DSN-52",
+    "section": "active",
+    "status": "implemented",
+    "path": "docs/designs/active/DSN-52-crossshard-deadlock-resolution.md",
+    "title": "跨分片死锁根治（分层收敛）",
+    "summary": "链上 Wait-Die + 链下 TLV wound + 严格门 + DAG 排序的分层收敛；已实现，待最终实验验证。",
+    "relations": [
+      "基于 DSN-47/48/46/51",
+      "引用 DSN-51",
+      "是 DSN-53 检测层的基础"
+    ],
+    "tags": [
+      "doc"
+    ]
+  },
+  {
+    "id": "DSN-53",
+    "section": "active",
+    "status": "active",
+    "path": "docs/designs/active/DSN-53-crossshard-deadlock-detection.md",
+    "title": "跨分片死锁检测（反向 CMH v2）",
+    "summary": "优先级感知反向 CMH 探针：高优先被卡时发起探测，处理 DSN-52 Wait-Die 的死区。",
+    "relations": [
+      "依赖 DSN-52",
+      "关联 RSH-03",
+      "supersedes DSN-53 v1"
+    ],
+    "tags": [
+      "doc"
+    ]
+  },
+  {
+    "id": "DSN-40",
+    "section": "planned",
+    "status": "planned",
+    "path": "docs/designs/planned/DSN-40-batch-verify-fix.md",
+    "title": "StateProcessor batch verify 修复+退化根治",
+    "summary": "修复 batch verify + 区块生产退化根治（planned）。",
+    "relations": [
+      "关联 BUG-09/DSN-35/37",
+      "与 DSN-41 配套"
+    ],
+    "tags": [
+      "doc"
+    ]
+  },
+  {
+    "id": "DSN-41",
+    "section": "planned",
+    "status": "active",
+    "path": "docs/designs/planned/DSN-41-batch-worker-pool.md",
+    "title": "Batch Worker Pool（灵活并行验证）",
+    "summary": "Batch Worker Pool 灵活并行验证架构（active/planned）。",
+    "relations": [
+      "关联 BUG-09/10、DSN-35/40"
+    ],
+    "tags": [
+      "doc"
+    ]
+  },
+  {
+    "id": "DSN-07",
+    "section": "archived",
+    "status": "shelved",
+    "path": "docs/designs/archived/DSN-07-force-simulation.md",
+    "title": "ForceSimulation 冲突容忍模拟 [A07]",
+    "summary": "冲突容忍模拟，代码已实现但 ForceSimulation=true 结果与链上不一致 → 默认关、暂关待 v6。",
+    "relations": [
+      "搁置（暂关），非当前方案"
+    ],
+    "tags": [
+      "doc"
+    ]
+  },
+  {
+    "id": "DSN-09(旧)",
+    "section": "archived",
+    "status": "deprecated",
+    "path": "docs/designs/archived/DSN-09-active-passive-retry-pool.md",
+    "title": "被动 Retry Pool（旧 A09）",
+    "summary": "跨分片锁冲突 Event-driven 被动池 v2（v1 方向有误）；现被动池已 deprecated。",
+    "relations": [
+      "已废弃（AGENTS 标注 deprecated）",
+      "与现役 DSN-09(retry-timeout) 撞号，故归档"
+    ],
+    "tags": [
+      "doc"
+    ]
+  },
+  {
+    "id": "DSN-12",
+    "section": "archived",
+    "status": "done",
+    "path": "docs/designs/archived/DSN-12-rollback-v1-passive-pool.md",
+    "title": "回退 v1 被动池（修复清单）",
+    "summary": "一次性修复清单：把叠加的 v1 被动池代码回退对齐 v2 设计。",
+    "relations": [
+      "一次性完成项，已归档"
+    ],
+    "tags": [
+      "doc"
+    ]
+  },
+  {
+    "id": "DSN-13",
+    "section": "archived",
+    "status": "deprecated",
+    "path": "docs/designs/archived/DSN-13-cr-hotkey-chaining-design.md",
+    "title": "CR HotKey Chaining (DEPRECATED)",
+    "summary": "旧方案：CR 触发 + HotKey 分类链式重试（原 Z01）。",
+    "relations": [
+      "被 DSN-05 v3+ / DAG 取代"
+    ],
+    "tags": [
+      "doc"
+    ]
+  },
+  {
+    "id": "DSN-14",
+    "section": "archived",
+    "status": "deprecated",
+    "path": "docs/designs/archived/DSN-14-sim-dag-chaining-design.md",
+    "title": "Sim DAG Chaining Design",
+    "summary": "旧方案：DAG 树形链式重试（原 Z02）。",
+    "relations": [
+      "被 DSN-05/23 DAG 演进取代"
+    ],
+    "tags": [
+      "doc"
+    ]
+  },
+  {
+    "id": "DSN-15",
+    "section": "archived",
+    "status": "deprecated",
+    "path": "docs/designs/archived/DSN-15-sim-dag-chaining-progress.md",
+    "title": "Sim DAG Chaining Progress",
+    "summary": "Sim DAG Chaining 进度记录（原 Z03）。",
+    "relations": [
+      "与 DSN-14 同代"
+    ],
+    "tags": [
+      "doc"
+    ]
+  },
+  {
+    "id": "DSN-16",
+    "section": "archived",
+    "status": "deprecated",
+    "path": "docs/designs/archived/DSN-16-lock.md",
+    "title": "Lock Design（旧锁设计）",
+    "summary": "旧锁设计（原 Z04-lock）。",
+    "relations": [
+      "被 DSN-02 锁架构取代"
+    ],
+    "tags": [
+      "doc"
+    ]
+  },
+  {
+    "id": "DSN-23",
+    "section": "archived",
+    "status": "superseded",
+    "path": "docs/designs/archived/DSN-23-patchpool-dag-design.md",
+    "title": "PatchPool DAG（多 Patch 联合覆盖）",
+    "summary": "PatchPool DAG：多 Patch 联合覆盖冲突 key，提升命中率（DSN-22 之上）。",
+    "relations": [
+      "被 DSN-49/50 实现后、DSN-51 决定重写",
+      "旧 DAG 设计，归档"
+    ],
+    "tags": [
+      "doc"
+    ]
+  },
+  {
+    "id": "DSN-26",
+    "section": "archived",
+    "status": "superseded",
+    "path": "docs/designs/archived/DSN-26-patchpool-dag-tlv-extension.md",
+    "title": "PatchPool DAG 扩展至 TLV Phase 1",
+    "summary": "用 Patch 覆盖 TLV 锁冲突（DAG→Phase 1b）。",
+    "relations": [
+      "同 DSN-23，被 DAG 重写取代"
+    ],
+    "tags": [
+      "doc"
+    ]
+  },
+  {
+    "id": "DSN-29",
+    "section": "archived",
+    "status": "superseded",
+    "path": "docs/designs/archived/DSN-29-patchpool-refactor-subscriber-index.md",
+    "title": "PatchPool 重构+Subscriber 索引",
+    "summary": "PatchPool 独立化、Subscriber 反向索引、增量扫描、去全局锁。",
+    "relations": [
+      "被 DSN-30 合并/DSN-49 offChainDAG 取代"
+    ],
+    "tags": [
+      "doc"
+    ]
+  },
+  {
+    "id": "DSN-30",
+    "section": "archived",
+    "status": "superseded",
+    "path": "docs/designs/archived/DSN-30-patchpool-merge-into-retryscheduler.md",
+    "title": "PatchPool 合并入 RetryScheduler",
+    "summary": "把 PatchPool 合并回 retryScheduler 以消除回调耦合（方向未采纳）。",
+    "relations": [
+      "未采纳；实际走 patchpool.go offChainDAG(DSN-49)"
+    ],
+    "tags": [
+      "doc"
+    ]
+  },
+  {
+    "id": "DSN-30(gRPC)",
+    "section": "archived",
+    "status": "duplicate",
+    "path": "docs/designs/archived/DSN-30-gRPC-migration.md",
+    "title": "JSON-RPC→gRPC（旧 Draft）",
+    "summary": "gRPC+Protobuf 迁移 Draft；与 DSN-43 逐字重复。",
+    "relations": [
+      "与 DSN-43 重复，保留 DSN-43 为正式文档"
+    ],
+    "tags": [
+      "doc"
+    ]
+  },
+  {
+    "id": "DEC-01",
+    "section": "decisions",
+    "status": "done",
+    "path": "docs/decisions/DEC-01-priority-first-sim-block.md",
+    "title": "Priority-First Sim Block",
+    "summary": "决策：Sim 优先出块的仲裁/顺序决策记录（固定 done）。",
+    "relations": [
+      "决策层固定不可变"
+    ],
+    "tags": [
+      "doc"
+    ]
+  }
+]

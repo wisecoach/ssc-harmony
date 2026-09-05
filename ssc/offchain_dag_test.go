@@ -2,6 +2,7 @@ package ssc
 
 import (
 	"math/big"
+	"sync"
 	"testing"
 
 	"github.com/ethereum/go-ethereum/common"
@@ -25,8 +26,17 @@ func testHash(i byte) common.Hash {
 	return common.BigToHash(new(big.Int).SetInt64(int64(i)))
 }
 
+// newTestDAG 构造一个**已启用**的 offChainDAG。
+// patchpool.go 重构后 offChainDAG 默认关闭（enabled=false），所有方法被 isOn() 短路成 no-op；
+// 单测必须显式开启，否则 AddNode/MarkReady/findCoveringSet 等全部空转导致测试全挂。
+func newTestDAG() *offChainDAG {
+	d := &offChainDAG{}
+	d.SetEnabled(true)
+	return d
+}
+
 func TestOffChainDAGFindCoveringSet(t *testing.T) {
-	dag := &offChainDAG{}
+	dag := newTestDAG()
 	addr := common.HexToAddress("0x1111")
 	k1 := testHash(1)
 	k2 := testHash(2)
@@ -89,7 +99,7 @@ func TestOffChainDAGFindCoveringSet(t *testing.T) {
 	}
 }
 func TestOffChainDAGRemoveCleansAll(t *testing.T) {
-	dag := &offChainDAG{}
+	dag := newTestDAG()
 	addr := common.HexToAddress("0x2222")
 	k1 := testHash(1)
 	k2 := testHash(2)
@@ -132,7 +142,7 @@ func TestOffChainDAGRemoveCleansAll(t *testing.T) {
 }
 
 func TestOffChainDAGMultiUpstreamConsume(t *testing.T) {
-	dag := &offChainDAG{}
+	dag := newTestDAG()
 	addr := common.HexToAddress("0x3333")
 	k1 := testHash(1)
 	k2 := testHash(2)
@@ -181,7 +191,7 @@ func TestOffChainDAGMultiUpstreamConsume(t *testing.T) {
 }
 
 func TestOffChainDAGMarkReadyTriggersScan(t *testing.T) {
-	dag := &offChainDAG{}
+	dag := newTestDAG()
 	addr := common.HexToAddress("0x4444")
 	k1 := testHash(1)
 	tx := testHash(0x55)
@@ -236,7 +246,7 @@ func (dag *offChainDAG) isConsumed(txHash common.Hash) bool {
 // ─── DSN-50: 覆盖完整性 + 链深上限 ─────────────────────────────────
 
 func TestOffChainDAGDepthComputation(t *testing.T) {
-	dag := &offChainDAG{}
+	dag := newTestDAG()
 	addr := common.HexToAddress("0x5555")
 	k1 := testHash(1)
 	a := testHash(0xa1)
@@ -259,7 +269,7 @@ func TestOffChainDAGDepthComputation(t *testing.T) {
 }
 
 func TestOffChainDAGIsFullyCovered(t *testing.T) {
-	dag := &offChainDAG{}
+	dag := newTestDAG()
 	addr := common.HexToAddress("0x6666")
 	k1 := testHash(1)
 	k2 := testHash(2)
@@ -313,4 +323,99 @@ func nodeDepth(dag *offChainDAG, txHash common.Hash) int {
 		return -1
 	}
 	return nv.(*OffChainPatchNode).Depth
+}
+
+// TestOffChainDAGBuildSimPatchSubgraph — DSN-54：验证从 offChainDAG 构建
+// “被消费上游 + 传递闭包” 子图，且成员侧 ReadSimDAGPatch 能反查到任意上游写集。
+func TestOffChainDAGBuildSimPatchSubgraph(t *testing.T) {
+	dag := newTestDAG()
+	addr := common.HexToAddress("0xab01")
+	k1, k2, k3 := testHash(11), testHash(12), testHash(13)
+	a, b, c := testHash(0xa), testHash(0xb), testHash(0xc)
+
+	// A 写 k1（根）；B 写 k2，上游 A；C 写 k3，上游 B。
+	dag.AddNode(a, 1, makeTestRWSet(addr, k1), nil)
+	dag.AddNode(b, 1, makeTestRWSet(addr, k2), []api.TxSimKey{{TxHash: a, SimulationNum: 1}})
+	dag.AddNode(c, 1, makeTestRWSet(addr, k3), []api.TxSimKey{{TxHash: b, SimulationNum: 1}})
+
+	// target=C 直接消费上游 B → 子图应含 C、B、A（传递闭包）
+	target := testHash(0xcc)
+	roots := []api.TxSimKey{{TxHash: c, SimulationNum: 1}}
+	sub := dag.buildSimPatchSubgraph(target, 2, roots)
+	if sub == nil {
+		t.Fatalf("expected subgraph, got nil")
+	}
+	if sub.TxHash != target || sub.SimulationNum != 2 {
+		t.Fatalf("subgraph identity wrong: %+v", sub)
+	}
+	got := map[api.TxSimKey]bool{}
+	for _, n := range sub.Nodes {
+		got[n.TxSim] = true
+	}
+	if !got[api.TxSimKey{TxHash: c, SimulationNum: 1}] ||
+		!got[api.TxSimKey{TxHash: b, SimulationNum: 1}] ||
+		!got[api.TxSimKey{TxHash: a, SimulationNum: 1}] {
+		t.Fatalf("expected transitive closure C,B,A, got %v", got)
+	}
+	if len(sub.Nodes) != 3 {
+		t.Fatalf("expected exactly 3 nodes (closure), got %d", len(sub.Nodes))
+	}
+
+	// 成员侧反查：能查到传递上游 A 写的 k1（成员 rs 与 leader dag 解耦，只存子图）
+	rs := &retryScheduler{offChainDAG: offChainDAG{}, simDAGPatches: sync.Map{}}
+	rs.offChainDAG.SetEnabled(true)
+	rs.StoreSimDAGPatch(sub)
+	if val, found := rs.ReadSimDAGPatch(target, 2, addr, k1); !found || val != k1 {
+		t.Fatalf("expected k1 from transitive upstream A, found=%v val=%s", found, val.Hex())
+	}
+	if val, found := rs.ReadSimDAGPatch(target, 2, addr, k3); !found || val != k3 {
+		t.Fatalf("expected k3 from direct consumed C, found=%v", found)
+	}
+	if _, found := rs.ReadSimDAGPatch(target, 2, addr, testHash(99)); found {
+		t.Fatalf("expected miss for unwritten key")
+	}
+	// 错误的 (tx,simNum) 不应命中
+	if _, found := rs.ReadSimDAGPatch(target, 3, addr, k1); found {
+		t.Fatalf("expected miss for different simulationNum")
+	}
+}
+
+// TestSimDAGPatchOverwriteRoundtrip — DSN-54：StoreSimDAGPatch 按 (tx,simNum) 幂等覆盖，
+// RemoveSimDAGPatches 整组清。
+func TestSimDAGPatchOverwriteRoundtrip(t *testing.T) {
+	rs := &retryScheduler{offChainDAG: offChainDAG{}, simDAGPatches: sync.Map{}}
+	rs.offChainDAG.SetEnabled(true)
+	addr := common.HexToAddress("0xbeef")
+	k1 := testHash(21)
+	tx := testHash(0x55)
+
+	sub1 := &api.SimPatchSubgraph{TxHash: tx, SimulationNum: 1,
+		Nodes: []*api.SimPatchNode{{TxSim: api.TxSimKey{TxHash: testHash(0x1), SimulationNum: 1},
+			Writes: makeTestRWSet(addr, k1)}}}
+	rs.StoreSimDAGPatch(sub1)
+	if val, found := rs.ReadSimDAGPatch(tx, 1, addr, k1); !found || val != k1 {
+		t.Fatalf("expected round 1 value, found=%v", found)
+	}
+
+	// 更高 simNum：新增条目，不影响旧轮读取（无跨轮脏读）
+	k2 := testHash(22)
+	sub2 := &api.SimPatchSubgraph{TxHash: tx, SimulationNum: 2,
+		Nodes: []*api.SimPatchNode{{TxSim: api.TxSimKey{TxHash: testHash(0x2), SimulationNum: 1},
+			Writes: makeTestRWSet(addr, k2)}}}
+	rs.StoreSimDAGPatch(sub2)
+	if _, found := rs.ReadSimDAGPatch(tx, 1, addr, k2); found {
+		t.Fatalf("round 1 must not see round 2 writes")
+	}
+	if _, found := rs.ReadSimDAGPatch(tx, 2, addr, k1); found {
+		t.Fatalf("round 2 must not see round 1 writes")
+	}
+
+	// RemoveSimDAGPatches 整组清
+	rs.RemoveSimDAGPatches(tx)
+	if _, found := rs.ReadSimDAGPatch(tx, 1, addr, k1); found {
+		t.Fatalf("expected round 1 cleared")
+	}
+	if _, found := rs.ReadSimDAGPatch(tx, 2, addr, k2); found {
+		t.Fatalf("expected round 2 cleared")
+	}
 }

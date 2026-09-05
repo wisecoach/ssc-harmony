@@ -2,7 +2,7 @@
 
 > **版本**：v3（2026-07-11）
 > **状态**：设计完成
-> **关联文档**：`DSN-24-unified-lock-check.md`（TLV 三层仲裁）、`DSN-26-patchpool-dag-tlv-extension.md`（DAG→Phase 1b）
+> **关联文档**：`DSN-24-unified-lock-check.md`（TLV 三层仲裁）、`../archived/DSN-26-patchpool-dag-tlv-extension.md`（DAG→Phase 1b）
 
 ---
 

@@ -34,13 +34,13 @@ type readHolderMap struct {
 // TempLockView — 临时锁视图（委员会 leader 维护）
 //
 // 全部使用 sync.Map 替代传统 map + Mutex，不同 tx / 不同 key 之间完全并行。
-// - tempWriteLocks: LoadOrStore 实现单 key 原子获取，失败回滚已拿 key
-// - tempReadLocks:  两层 sync.Map，O(1) 查找持有者
-// - txReadWriteSets: per-tx 数据，不同 tx 互不冲突
-// - onChainKeys:     SimTx 上链后该交易在链上持有的 key（txHash → *RWKeySet）。
-//                    SimTx 提交时从 txReadWriteSets 迁移过来，供后续 CRTx 提交时
-//                    产生 releasedKeys 唤醒等待这些 key 的重试交易。
-// - woundedTxs:      per-tx 标记，不同 tx 互不冲突
+//   - tempWriteLocks: LoadOrStore 实现单 key 原子获取，失败回滚已拿 key
+//   - tempReadLocks:  两层 sync.Map，O(1) 查找持有者
+//   - txReadWriteSets: per-tx 数据，不同 tx 互不冲突
+//   - onChainKeys:     SimTx 上链后该交易在链上持有的 key（txHash → *RWKeySet）。
+//     SimTx 提交时从 txReadWriteSets 迁移过来，供后续 CRTx 提交时
+//     产生 releasedKeys 唤醒等待这些 key 的重试交易。
+//   - woundedTxs:      per-tx 标记，不同 tx 互不冲突
 type TempLockView struct {
 	tempWriteLocks   sync.Map // key: api.LockKey, value: tempLockEntry
 	tempReadLocks    sync.Map // key: api.LockKey, value: *readHolderMap
@@ -197,6 +197,45 @@ func (v *TempLockView) canWound(entry tempLockEntry, requesterPri api.Priority, 
 	}
 	// 如果持有者优先级更低（数值更大），可以踢
 	return requesterPri.Less(entry.Priority)
+}
+
+// protectHeldLocks — DSN-55 rev2：DAG 救援交易得锁后，把其已持有的每把 TLV 写锁的
+// 优先级提到最高（Nonce=0, Origin=0, TxHash=0）。这样后续任何 requester 的
+// requesterPri.Less(holderPri) 恒为 false → canWound 不放行 → 该锁不被后来者 wound 抢走，
+// 直到它走上链(变真链上锁)或失败被 RetryCancel/GC 释放（锁删除后优先级随之作废）。
+// 注意：只在“得锁成功后”调用；抢锁阶段(TryLockWithPriority 内)仍按普通全局 Priority，公平竞争。
+func (v *TempLockView) protectHeldLocks(txHash common.Hash) {
+	if v == nil {
+		return
+	}
+	// 最高优先哨兵：任何真实交易都无法 Less 于它 → 不可被 wound
+	maxPri := api.Priority{Nonce: 0, OriginShardID: 0, TxHash: common.Hash{}}
+	v.tempWriteLocks.Range(func(k, val interface{}) bool {
+		e := val.(tempLockEntry)
+		if bytes.Equal(e.Holder.Bytes(), txHash.Bytes()) {
+			e.Priority = maxPri
+			v.tempWriteLocks.Store(k, e)
+		}
+		return true
+	})
+}
+
+// IsHeldProtected 判断某 tx 是否已通过 protectHeldLocks 提升（任一把其持有的写锁达到最高优先）。
+// 供打点/诊断。
+func (v *TempLockView) IsHeldProtected(txHash common.Hash) bool {
+	if v == nil {
+		return false
+	}
+	protected := false
+	v.tempWriteLocks.Range(func(_, val interface{}) bool {
+		e := val.(tempLockEntry)
+		if bytes.Equal(e.Holder.Bytes(), txHash.Bytes()) && e.Priority.Nonce == 0 {
+			protected = true
+			return false
+		}
+		return true
+	})
+	return protected
 }
 
 // IsWounded 检查当前交易是否已被 Wound（被更高优先级的交易踢掉）。

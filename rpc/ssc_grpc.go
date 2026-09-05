@@ -98,6 +98,14 @@ func (s *sscGrpcShardService) SignCXTSimulation(
 	return &sscpb.Bytes{Val: ret}, nil
 }
 
+func (s *sscGrpcShardService) SignDeadlockProbe(
+	ctx context.Context, req *sscpb.DeadlockProbe,
+) (*sscpb.Bytes, error) {
+	internalReq := sscpb.DeadlockProbeFromProto(req)
+	ret := s.internalService.SignDeadlockProbe(internalReq)
+	return &sscpb.Bytes{Val: ret}, nil
+}
+
 func (s *sscGrpcShardService) HandleCommitVote(
 	ctx context.Context, req *sscpb.CXTCommitVote,
 ) (*sscpb.Empty, error) {
@@ -138,6 +146,14 @@ func (s *sscGrpcShardService) RetryCommit(
 	return sscpb.RetryCommitRespToProto(ret), nil
 }
 
+func (s *sscGrpcShardService) RetryCommitDAG(
+	ctx context.Context, req *sscpb.Hash,
+) (*sscpb.RetryCommitResp, error) {
+	txHash := sscpb.HashFromProto(req)
+	ret := s.internalService.RetryCommitDAG(txHash)
+	return sscpb.RetryCommitRespToProto(ret), nil
+}
+
 func (s *sscGrpcShardService) RetryCancel(
 	ctx context.Context, req *sscpb.Hash,
 ) (*sscpb.Empty, error) {
@@ -152,6 +168,14 @@ func (s *sscGrpcShardService) HandleNewEpoch(
 	newEpoch := sscpb.NewEpochFromProto(req.GetNewEpoch())
 	err := s.internalService.HandleNewEpoch(newEpoch, req.GetBlockNum())
 	return &sscpb.Empty{}, err
+}
+
+func (s *sscGrpcShardService) StoreSimDAGPatch(
+	ctx context.Context, req *sscpb.StoreSimDAGPatchRequest,
+) (*sscpb.Empty, error) {
+	internalReq := sscpb.StoreSimDAGPatchRequestFromProto(req)
+	s.internalService.StoreSimDAGPatch(internalReq)
+	return &sscpb.Empty{}, nil
 }
 
 // ============================================================================
@@ -209,4 +233,12 @@ func (s *sscGrpcCrossService) HandleRetrySignal(
 	internalReq := sscpb.RetrySignalFromProto(req)
 	s.internalService.HandleRetrySignal(internalReq)
 	return &sscpb.Empty{}, nil
+}
+
+func (s *sscGrpcCrossService) DetectDeadlockProbe(
+	ctx context.Context, req *sscpb.DeadlockProbe,
+) (*sscpb.DeadlockProbeAck, error) {
+	internalReq := sscpb.DeadlockProbeFromProto(req)
+	ret := s.internalService.DetectDeadlockProbe(internalReq)
+	return sscpb.DeadlockProbeAckToProto(ret), nil
 }

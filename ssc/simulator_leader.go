@@ -737,6 +737,8 @@ func (sim *Simulator) StartReSimulation(txHash common.Hash, simulationNum int) {
 		Tx:            lastReq.Tx,
 		From:          lastReq.From,
 		GasPool:       0,
+		// DSN-54 (D3)：携带 leader 已选上游引用，成员据此在本地 simDAGPatches 定位本轮 patch 子图。
+		UpstreamTxList: sim.sscService.retryScheduler.GetUpstreamTxRef(txHash),
 	}
 	tGetState = time.Since(t0)
 

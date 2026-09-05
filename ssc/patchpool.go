@@ -74,12 +74,28 @@ type offChainDAG struct {
 	subscriber sync.Map // key: api.LockKey, val: *sync.Map
 	// txSubKeys — 反向索引，retryTxHash → []LockKey
 	txSubKeys sync.Map // key: common.Hash, val: []api.LockKey
+	// enabled — 整个 off-chain DAG / PatchPool 子系统开关。
+	// 零值 false = 默认禁用（消融/调试）。禁用时所有方法空转、isPatchFinalized 恒 true。
+	enabled bool
+}
+
+// isOn 返回 DAG 子系统是否启用。
+func (dag *offChainDAG) isOn() bool { return dag != nil && dag.enabled }
+
+// SetEnabled 允许外部（配置/实验）打开或关闭 DAG 子系统。
+func (dag *offChainDAG) SetEnabled(on bool) {
+	if dag != nil {
+		dag.enabled = on
+	}
 }
 
 // AddNode 在链下 DAG 中创建（或更新）一个节点。
 // 状态 = PatchFree；仅记录本节点 WriteSet + 上游依赖，尚未建立 keyIndex（不可被调度匹配）。
 // 之后需调用 MarkReady 建立 keyIndex 反查并触发 subscriber 扫描。
 func (dag *offChainDAG) AddNode(txHash common.Hash, simNum int, patch *api.RWSet, upstreamTxList []api.TxSimKey) {
+	if !dag.isOn() {
+		return
+	}
 	now := time.Now()
 	nodeVal, _ := dag.nodes.LoadOrStore(txHash, &OffChainPatchNode{
 		TxHash:         txHash,
@@ -95,6 +111,8 @@ func (dag *offChainDAG) AddNode(txHash common.Hash, simNum int, patch *api.RWSet
 	node.UpstreamTxList = upstreamTxList
 	node.Depth = chainDepthOfUpstreams(dag, upstreamTxList)
 	node.SetStatus(PatchFree)
+	// chainDepthDist：按节点真实 DAG 深度(node.Depth) 累计（不是 simulationNum）。
+	recordDagNodeDepth(node.Depth)
 	if l := utils.SSCLogger(); l != nil {
 		l.Debug().Str("txHash", txHash.Hex()).
 			Int("simNum", simNum).
@@ -108,6 +126,9 @@ func (dag *offChainDAG) AddNode(txHash common.Hash, simNum int, patch *api.RWSet
 // 建立 keyIndex 反查，并通过 onReady 回调触发 scanPatchSubscribers 增量扫描
 // （替代原 addPatch + OnPatchPoolUpdated 两步；scan 逻辑依赖 retryScheduler 状态，故以回调注入）。
 func (dag *offChainDAG) MarkReady(txHash common.Hash, onReady func(*api.RWSet)) {
+	if !dag.isOn() {
+		return
+	}
 	nodeVal, ok := dag.nodes.Load(txHash)
 	if !ok {
 		return
@@ -138,6 +159,9 @@ func (dag *offChainDAG) MarkReady(txHash common.Hash, onReady func(*api.RWSet)) 
 // Remove 从链下 DAG 原子删除一个节点及其关联索引（keyIndex + subscriber + txSubKeys）。
 // 这是 closeTransaction 中唯一的链下清理入口（替代 removePatch + patches.Delete 两处）。
 func (dag *offChainDAG) Remove(txHash common.Hash) {
+	if !dag.isOn() {
+		return
+	}
 	t0 := time.Now()
 	nodeVal, ok := dag.nodes.Load(txHash)
 	if ok {
@@ -179,6 +203,9 @@ func (dag *offChainDAG) Remove(txHash common.Hash) {
 
 // patchStats returns snapshot of patch pool size metrics.
 func (dag *offChainDAG) patchStats() (patchCount, keyCount int) {
+	if !dag.isOn() {
+		return 0, 0
+	}
 	dag.nodes.Range(func(_, _ interface{}) bool {
 		patchCount++
 		return true
@@ -194,6 +221,9 @@ func (dag *offChainDAG) patchStats() (patchCount, keyCount int) {
 
 // tryConsumePatch attempts to take the Patch for the given txHash.
 func (dag *offChainDAG) tryConsumePatch(txHash common.Hash, consumer common.Hash, priority api.Priority) *api.RWSet {
+	if !dag.isOn() {
+		return nil
+	}
 	nodeVal, ok := dag.nodes.Load(txHash)
 	if !ok {
 		return nil
@@ -209,6 +239,9 @@ func (dag *offChainDAG) tryConsumePatch(txHash common.Hash, consumer common.Hash
 
 // releasePatch releases a consumed Patch (on retry failure), allowing other retryTxs to take it.
 func (dag *offChainDAG) releasePatch(txHash common.Hash) {
+	if !dag.isOn() {
+		return
+	}
 	nodeVal, ok := dag.nodes.Load(txHash)
 	if !ok {
 		return
@@ -224,6 +257,9 @@ func (dag *offChainDAG) releasePatch(txHash common.Hash) {
 
 // finalizePatch marks a Patch as Finalized — cannot be Wounded anymore.
 func (dag *offChainDAG) finalizePatch(txHash common.Hash) {
+	if !dag.isOn() {
+		return
+	}
 	nodeVal, ok := dag.nodes.Load(txHash)
 	if !ok {
 		return
@@ -237,6 +273,11 @@ func (dag *offChainDAG) finalizePatch(txHash common.Hash) {
 
 // isPatchFinalized returns true if the given txHash's Patch is Finalized.
 func (dag *offChainDAG) isPatchFinalized(txHash common.Hash) bool {
+	// DAG 禁用时并不代表"恒 finalized"。isPatchFinalized 是 wound 闸门：
+	// DAG 关闭(无 patch 节点)时应返回 false → 恢复 TLV 正常 wound 语义，不禁 wound。
+	if !dag.isOn() {
+		return false
+	}
 	nodeVal, ok := dag.nodes.Load(txHash)
 	if !ok {
 		return false
@@ -248,6 +289,9 @@ func (dag *offChainDAG) isPatchFinalized(txHash common.Hash) bool {
 
 // subscribeRetryTx registers a retryTx's key interests (both ReadSet and WriteSet).
 func (dag *offChainDAG) subscribeRetryTx(txHash common.Hash, reads, writes []api.LockKey) {
+	if !dag.isOn() {
+		return
+	}
 	allKeys := make([]api.LockKey, 0, len(reads)+len(writes))
 	allKeys = append(allKeys, reads...)
 	allKeys = append(allKeys, writes...)
@@ -262,6 +306,9 @@ func (dag *offChainDAG) subscribeRetryTx(txHash common.Hash, reads, writes []api
 
 // unsubscribeRetryTx removes a retryTx from the subscriber index.
 func (dag *offChainDAG) unsubscribeRetryTx(txHash common.Hash) {
+	if !dag.isOn() {
+		return
+	}
 	keysVal, ok := dag.txSubKeys.Load(txHash)
 	if !ok {
 		return
@@ -286,12 +333,18 @@ func (dag *offChainDAG) unsubscribeRetryTx(txHash common.Hash) {
 
 // resubscribeRetryTx removes and re-registers a retryTx's key interests.
 func (dag *offChainDAG) resubscribeRetryTx(txHash common.Hash, reads, writes []api.LockKey) {
+	if !dag.isOn() {
+		return
+	}
 	dag.unsubscribeRetryTx(txHash)
 	dag.subscribeRetryTx(txHash, reads, writes)
 }
 
 // querySubscribers returns all retryTx hashes subscribed to any of the given keys (deduplicated).
 func (dag *offChainDAG) querySubscribers(keys []api.LockKey) []common.Hash {
+	if !dag.isOn() {
+		return nil
+	}
 	seen := make(map[common.Hash]struct{})
 	for _, key := range keys {
 		if innerVal, ok := dag.subscriber.Load(key); ok {
@@ -313,6 +366,9 @@ func (dag *offChainDAG) querySubscribers(keys []api.LockKey) []common.Hash {
 
 // patchesHaveConflict checks if a retryTx depends on any SimTx in the off-chain DAG.
 func (dag *offChainDAG) patchesHaveConflict(retryTx *api.RetryTx) (bool, *OffChainPatchNode) {
+	if !dag.isOn() {
+		return false, nil
+	}
 	candidates := make(map[common.Hash]int)
 
 	for _, key := range retryTx.ReadSet {
@@ -357,6 +413,9 @@ func (dag *offChainDAG) patchesHaveConflict(retryTx *api.RetryTx) (bool, *OffCha
 
 // findCoveringPatch checks if a single Patch covers all given conflictKeys.
 func (dag *offChainDAG) findCoveringPatch(conflictKeys []api.LockKey, exclude common.Hash) (bool, *OffChainPatchNode) {
+	if !dag.isOn() {
+		return false, nil
+	}
 	candidates := make(map[common.Hash]int)
 	for _, key := range conflictKeys {
 		innerVal, ok := dag.keyIndex.Load(key)
@@ -402,6 +461,9 @@ func (dag *offChainDAG) findCoveringPatch(conflictKeys []api.LockKey, exclude co
 // exclude：排除自己（防自环）；maxSimNum：仅选严格更早（SimulationNum < maxSimNum）的节点，
 // 保证依赖图按轮次严格递增、链深有界（防止同轮无限 chaining）。
 func (dag *offChainDAG) findCoveringSet(conflictKeys []api.LockKey, exclude common.Hash, maxSimNum int) []*OffChainPatchNode {
+	if !dag.isOn() {
+		return nil
+	}
 	type patchEntry struct {
 		node *OffChainPatchNode
 		keys map[int]struct{}
@@ -478,9 +540,52 @@ func (dag *offChainDAG) findCoveringSet(conflictKeys []api.LockKey, exclude comm
 	return result
 }
 
+// collectBlockedKeys 返回 retryTx 读写集中**当前被其它交易占用**的 key 集合
+// （= 真正需要被 patch 覆盖的 key）：
+//   - SLM/链上锁（含 pending）：stateDB.CheckLock 失败（非自己持有）；
+//   - TLV/链下锁：tempLockView.HasConflict（已排除自己）。
+//
+// 未被任何锁占用的 key 在重跑模拟时可直接读写 stateDB，**不需要**上游 patch 覆盖，
+// 不应纳入覆盖需求（此前用完整 Read∪Write 集做覆盖判定是历史 bug：只被抢 1-2 个
+// 热 key 的交易永远凑不齐“覆盖全部 key”的 patch 组而饥饿）。
+// stateDB 传 nil 时只统计 TLV 层（用于 Phase1b 等尚未取 stateDB 的链下场景）。
+func (rs *retryScheduler) collectBlockedKeys(retryTx *api.RetryTx, stateDB api.StateDB) []api.LockKey {
+	if retryTx == nil {
+		return nil
+	}
+	seen := make(map[api.LockKey]struct{})
+	var blocked []api.LockKey
+	add := func(keys []api.LockKey) {
+		for _, k := range keys {
+			if _, ok := seen[k]; ok {
+				continue
+			}
+			isBlocked := false
+			if stateDB != nil {
+				if err := stateDB.CheckLock(k, retryTx.TxHash); err != nil {
+					isBlocked = true
+				}
+			}
+			if !isBlocked && rs.tempLockView != nil && rs.tempLockView.HasConflict(retryTx.TxHash, k) {
+				isBlocked = true
+			}
+			if isBlocked {
+				seen[k] = struct{}{}
+				blocked = append(blocked, k)
+			}
+		}
+	}
+	add(retryTx.WriteSet)
+	add(retryTx.ReadSet)
+	return blocked
+}
+
 // scanPatchSubscribers 在新增 Patch 后增量扫描 subscriber 中 key 重叠的 retryTx。
 // 按优先级 reservation 避免多 tx 争锁。
 func (rs *retryScheduler) scanPatchSubscribers(writeSet *api.RWSet) {
+	if rs == nil || !rs.offChainDAG.isOn() {
+		return
+	}
 	keys := extractWriteKeys(writeSet)
 	if len(keys) == 0 {
 		return
@@ -493,12 +598,13 @@ func (rs *retryScheduler) scanPatchSubscribers(writeSet *api.RWSet) {
 
 	// 收集有效候 tx（排除非 active）
 	type prioTx struct {
-		txHash  common.Hash
-		tx      *api.RetryTx
-		allKeys []api.LockKey
-		patches []*OffChainPatchNode
+		txHash   common.Hash
+		tx       *api.RetryTx
+		needKeys []api.LockKey
+		patches  []*OffChainPatchNode
 	}
 	var sorted []prioTx
+	stateDB, _ := rs.getCachedStateDB()
 	for _, txHash := range candidates {
 		retryTxVal, exists := rs.retryPool.Load(txHash)
 		if !exists {
@@ -508,21 +614,26 @@ func (rs *retryScheduler) scanPatchSubscribers(writeSet *api.RWSet) {
 		if retryTx.Status == api.RetryPassive || retryTx.Status == api.RetryWounded || retryTx.Status == api.RetryConsumed {
 			continue
 		}
-		allKeys := append([]api.LockKey{}, retryTx.ReadSet...)
-		allKeys = append(allKeys, retryTx.WriteSet...)
-		patches := rs.offChainDAG.findCoveringSet(allKeys, txHash, retryTx.SimulationNum)
+		// 覆盖需求只取“当前被其它交易占用”的 key：未被上锁的 key 重跑可直接读写 stateDB，
+		// 纳入覆盖需求反而让热 key 交易永远凑不齐“全 key 覆盖集”而饥饿（历史 bug 修复）。
+		needKeys := rs.collectBlockedKeys(retryTx, stateDB)
+		if len(needKeys) == 0 {
+			// 无被占用的 key → 不需要链式 patch 救援（走正常 OnBlockCommitted promote）。
+			continue
+		}
+		patches := rs.offChainDAG.findCoveringSet(needKeys, txHash, retryTx.SimulationNum)
 		if len(patches) == 0 {
 			continue
 		}
 		// DSN-50 闸门：覆盖完整性 + 链深上限。不满足则不链式救援，退回等锁。
-		if !rs.offChainDAG.isFullyCovered(allKeys, patches) {
+		if !rs.offChainDAG.isFullyCovered(needKeys, patches) {
 			continue
 		}
 		if chainDepthOf(patches) > rs.maxChainDepth {
 			chainRetryStats.SigChainDepthCapped.Add(1)
 			continue
 		}
-		sorted = append(sorted, prioTx{txHash: txHash, tx: retryTx, allKeys: allKeys, patches: patches})
+		sorted = append(sorted, prioTx{txHash: txHash, tx: retryTx, needKeys: needKeys, patches: patches})
 	}
 	if len(sorted) == 0 {
 		return
@@ -573,17 +684,15 @@ func (rs *retryScheduler) scanPatchSubscribers(writeSet *api.RWSet) {
 		}
 
 		var consumedUpstreams []common.Hash
-		var merged *api.RWSet
 		var upstreamTxList []api.TxSimKey
 		allOk := true
 		for _, pn := range pt.patches {
-			patch := rs.offChainDAG.tryConsumePatch(pn.TxHash, pt.txHash, priority)
-			if patch == nil {
+			// DSN-56：消费上游不再把上游写集 merged 成扁平 patch；只建立“消费”关系与 DAG 上游边。
+			if patch := rs.offChainDAG.tryConsumePatch(pn.TxHash, pt.txHash, priority); patch == nil {
 				allOk = false
 				break
 			}
 			consumedUpstreams = append(consumedUpstreams, pn.TxHash)
-			merged = mergeRWSet(patch, merged)
 			upstreamTxList = append(upstreamTxList, api.TxSimKey{
 				TxHash:        pn.TxHash,
 				SimulationNum: pn.SimulationNum,
@@ -594,7 +703,7 @@ func (rs *retryScheduler) scanPatchSubscribers(writeSet *api.RWSet) {
 			pt.tx.Status = api.RetryConsumed
 			rs.offChainDAG.unsubscribeRetryTx(pt.txHash)
 			rs.consumedPatches.Store(pt.txHash, consumedUpstreams)
-			rs.sendChainSignal(pt.txHash, pt.tx, merged, upstreamTxList)
+			rs.sendChainSignal(pt.txHash, pt.tx, upstreamTxList)
 		} else {
 			for _, txh := range consumedUpstreams {
 				rs.offChainDAG.releasePatch(txh)
@@ -666,6 +775,9 @@ func chainDepthOf(patches []*OffChainPatchNode) int {
 // isFullyCovered 检查一组 Patch 是否联合覆盖 needKeys 的全部 key（DSN-50 覆盖完整性校验）。
 // 只有每个 key 都被至少一个选中 Patch 写过，才算完整覆盖。
 func (dag *offChainDAG) isFullyCovered(needKeys []api.LockKey, patches []*OffChainPatchNode) bool {
+	if !dag.isOn() {
+		return false
+	}
 	covered := make(map[api.LockKey]bool)
 	for _, p := range patches {
 		if p == nil || p.Patch == nil {
@@ -713,4 +825,55 @@ func mergeRWSet(new, old *api.RWSet) *api.RWSet {
 		}
 	}
 	return merged
+}
+
+// buildSimPatchSubgraph — DSN-54：从 offChainDAG 为 (targetTx, targetSimNum) 的某轮模拟
+// 构建 "被消费上游 + 传递闭包" 的模拟期 patch 子图。
+// rootKeys 是 targetTx 本轮直接消费的上游节点（TxSimKey，含 simNum）；
+// 递归收集每个 root 及其全部传递上游（沿 UpstreamTxList 边），visited 防环。
+// 节点收集顺序确定（BFS 由 root 列表顺序 + 各自 UpstreamTxList 顺序决定，成员侧同构可复现），
+// 保证同一 leader 广播给所有成员后各成员反查结果一致（门限签名一致性敏感）。
+func (dag *offChainDAG) buildSimPatchSubgraph(targetTx common.Hash, targetSimNum int, rootKeys []api.TxSimKey) *api.SimPatchSubgraph {
+	if !dag.isOn() {
+		return nil
+	}
+	sub := &api.SimPatchSubgraph{
+		TxHash:        targetTx,
+		SimulationNum: targetSimNum,
+	}
+	seen := make(map[api.TxSimKey]struct{})
+	var collect func(k api.TxSimKey)
+	collect = func(k api.TxSimKey) {
+		if _, ok := seen[k]; ok {
+			return // DAG 环 / 已收集
+		}
+		seen[k] = struct{}{}
+
+		nodeVal, ok := dag.nodes.Load(k.TxHash)
+		if !ok {
+			return
+		}
+		node := nodeVal.(*OffChainPatchNode)
+		if node.SimulationNum != k.SimulationNum {
+			return
+		}
+
+		sub.Nodes = append(sub.Nodes, &api.SimPatchNode{
+			TxSim:    k,
+			Upstream: node.UpstreamTxList,
+			Writes:   node.Patch,
+		})
+
+		// 递归收集传递上游
+		for _, up := range node.UpstreamTxList {
+			collect(up)
+		}
+	}
+	for _, r := range rootKeys {
+		collect(r)
+	}
+	if len(sub.Nodes) == 0 {
+		return nil
+	}
+	return sub
 }

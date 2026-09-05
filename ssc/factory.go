@@ -28,6 +28,11 @@ func NewService(ctx context.Context, config *api.Config, cm *CommitteeMechanism,
 	// DSN-48：注入与 txSubmitter 共享的内部池（main.go 创建）
 	if internalPool != nil {
 		baseService.internalPool = internalPool
+		// DSN-57 探针：给 retryScheduler 接上“某上游是否在本分片 internalPool 排队(未上链)”的判别，
+		// 供 verify fail-closed 区分“本分片上游没上链(queued)”与“上游在别的分片(absent→fail-open)”。
+		if baseService.retryScheduler != nil {
+			baseService.retryScheduler.SetQueuedSimCheck(internalPool.Has)
+		}
 	}
 
 	// 如果启用作恶模式，返回代理；否则直接返回原服务（零开销）
