@@ -548,6 +548,24 @@ CallStates:
 			}
 		}
 	}
+
+	// Task A (DSN-60)：链式 SimTx 依赖分类（判据观测）。
+	// 统计下游是“只读上游写出的 key(read-dependency)”还是“Read 读上游产出、且 Write 也续接
+	// 上游写过的 key(read-write 续写)”。仅在 execErr==nil（上游一致性校验通过、将继续执行）时计数，
+	// 且上游已由上面的 fail-closed 确保 on-chain → ReadOnChainDAGPatch 结果对全体 validator 确定性一致。
+	if isChainTx && len(simulation.UpstreamTxList) > 0 && execErr == nil {
+		readDep, writeCont := v.classifyChainReadWriteDeps(simulation)
+		if writeCont {
+			// 下游既读上游写值、又续写同一 key → read-write 续写链（同 key 可连续落多笔的依据）
+			chainRetryStats.SigChainMatchedReadWrite.Add(1)
+			utils.SSCLogger().Debug().Str("txHash", txHash.Hex()).
+				Int("simNum", simulation.SimulationNum).
+				Msg("VerifySimulation: chain read-write continuation matched (Task A/DSN-60)")
+		} else if readDep {
+			chainRetryStats.SigChainMatchedReadOnly.Add(1)
+		}
+	}
+
 	tVsLockCheck = time.Since(tVs0)
 	perf.RecordPkg("verify", "VerifySimulation", "lockCheck", tVsLockCheck)
 
@@ -1413,4 +1431,65 @@ func (v *Verifier) SetSimuState(txHash common.Hash, callIndex api.CallIndex, add
 	}
 
 	return api.ErrInvalidExecution
+}
+
+// classifyChainReadWriteDeps — Task A (DSN-60)：判定链式 SimTx 的依赖类型（判据观测）。
+// readDep：下游 ReadState 命中“某上游(含传递上游，经 onChainDAGPatches 递归反查)产出”的 key；
+// writeCont：下游 WriteState 命中“某上游产出”的 key（即下游 Write 续接上游写过的 key）。
+// 正确性由 DAG 全序 + 块内顺序保证；本方法只做观测/书签，不对下游 Write 做额外值一致性判定。
+func (v *Verifier) classifyChainReadWriteDeps(sim *api.CXTSimulation) (readDep, writeCont bool) {
+	if sim == nil || v == nil || v.retrySchd == nil {
+		return false, false
+	}
+	return classifyChainReadWrite(sim, func(addr common.Address, key common.Hash) bool {
+		for _, up := range sim.UpstreamTxList {
+			if _, found := v.retrySchd.ReadOnChainDAGPatch(up.TxHash, up.SimulationNum, addr, key); found {
+				return true
+			}
+		}
+		return false
+	})
+}
+
+// classifyChainReadWrite — 与具体 retryScheduler 解耦的纯逻辑，便于单测。
+// producedByUpstream 返回 (addr,key) 是否由某上游(链)产出。
+func classifyChainReadWrite(sim *api.CXTSimulation, producedByUpstream func(common.Address, common.Hash) bool) (readDep, writeCont bool) {
+	if sim == nil || producedByUpstream == nil {
+		return false, false
+	}
+	for _, cs := range sim.CallStates {
+		if cs == nil || cs.RWSet == nil {
+			continue
+		}
+		if !readDep && cs.RWSet.ReadState != nil {
+			for addr, st := range cs.RWSet.ReadState.State {
+				for key := range st {
+					if producedByUpstream(addr, key) {
+						readDep = true
+						break
+					}
+				}
+				if readDep {
+					break
+				}
+			}
+		}
+		if !writeCont && cs.RWSet.WriteState != nil {
+			for addr, st := range cs.RWSet.WriteState.State {
+				for key := range st {
+					if producedByUpstream(addr, key) {
+						writeCont = true
+						break
+					}
+				}
+				if writeCont {
+					break
+				}
+			}
+		}
+		if readDep && writeCont {
+			break
+		}
+	}
+	return readDep, writeCont
 }
