@@ -190,19 +190,6 @@ var chainRetryStats struct {
 	// SigAntiStarvationAdmit — DSN-58：reservation 反饥饿强制放行的次数（交易被跳过>=N 块后被当块放行）。
 	SigAntiStarvationAdmit atomic.Int64
 
-	// ── Task A (DSN-60) 观测计数：链式 SimTx 依赖分类（判据） ──
-	// 用于判断“写同一热 key 的那批交易”是否真为“读-写依赖链”，从而决定 A/B 值不值得做：
-	//  - SigChainMatchedReadOnly  下游只“读”上游写出的 key（read-dependency，无续写）；
-	//  - SigChainMatchedReadWrite 下游“读”上游写出的 key、且其 Write 也续接上游写过的 key
-	//    （read-write 续写，同 key 可连续落多笔的依据）。
-	// 二者均在 VerifySimulation 确定性通过(上游已 on-chain)后统计，跨 validator 可复现。
-	SigChainMatchedReadOnly  atomic.Int64
-	SigChainMatchedReadWrite atomic.Int64
-	// DagBlocksWithMultiWrite / DagBlocksTotal — 单块内“同 key 被 >=2 笔 SimTx 写”的块数与
-	// 含 >=2 笔 SimTx 的总块数（仅 leader 计），用于算 dagPerBlock sameKey>1 块占比。
-	DagBlocksWithMultiWrite atomic.Int64
-	DagBlocksTotal          atomic.Int64
-
 	// SigChainTxCRCommitted — 被 DAG 链式救起（isChainTx，即 VerifySimulation 时 UpstreamTxList>0）
 	// 的交易，最终走到 CR Commit 的交易数（仅 origin leader 累计，避免多节点重复）。
 	SigChainTxCRCommitted atomic.Int64
@@ -304,10 +291,6 @@ func dumpChainRetryStats() {
 		Int64("chainReadyCandidate", chainRetryStats.SigChainReadyCandidate.Swap(0)).
 		Int64("dagHoldProtected", chainRetryStats.SigDAGHoldProtected.Swap(0)).
 		Int64("antiStarvationAdmit", chainRetryStats.SigAntiStarvationAdmit.Swap(0)).
-		Int64("chainMatchedReadOnly", chainRetryStats.SigChainMatchedReadOnly.Swap(0)).
-		Int64("chainMatchedReadWrite", chainRetryStats.SigChainMatchedReadWrite.Swap(0)).
-		Int64("dagBlocksTotal", chainRetryStats.DagBlocksTotal.Swap(0)).
-		Int64("dagBlocksWithMultiWrite", chainRetryStats.DagBlocksWithMultiWrite.Swap(0)).
 		Interface("chainLengthDist", lenCnt).
 		Interface("chainCommitDist", commitCnt).
 		Interface("chainDepthDist", depthCnt).
@@ -757,12 +740,6 @@ func (rs *retryScheduler) recordPerBlockSameKeyWrites(block *types.Block) {
 	}
 	if m := chainRetryStats.MonitorDagPerBlockMaxSameKey.Load(); int64(maxCnt) > m {
 		chainRetryStats.MonitorDagPerBlockMaxSameKey.Store(int64(maxCnt))
-	}
-	// Task A (DSN-60)：统计“同 key 同块多写”占比（判据）。
-	// 分母 = 含 >=2 笔 SimTx 且本分片为 leader 的块；分子 = maxSameKeyWrites>1 的块。
-	chainRetryStats.DagBlocksTotal.Add(1)
-	if maxCnt > 1 {
-		chainRetryStats.DagBlocksWithMultiWrite.Add(1)
 	}
 	utils.SSCLogger().Info().Uint64("block", block.NumberU64()).
 		Int("simTx", simTxCount).
