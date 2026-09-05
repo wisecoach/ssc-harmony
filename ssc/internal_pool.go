@@ -12,6 +12,11 @@ import (
 	"google.golang.org/protobuf/proto"
 )
 
+// simNotReadyHoldBlocks — DSN-60 Task B：链式下游 SimTx 因“本分片本地上游未就绪”被扣留的
+// Extract 次数上限。达到后强制放行一次（若本地上游真缺失/已终局，则走 verify fail-closed 回滚传播），
+// 避免把下游无限扣在池里饿死（DSN-57 的教训：不得长期扣留跨分片下游）。
+const simNotReadyHoldBlocks = 50
+
 // SSCInternalPool 最简内部交易池（DSN-48）。
 // 只做三件事：存储、提取、区块提交后清理。分组/冲突/DAG 留给 DSN-46。
 type SSCInternalPool struct {
@@ -20,13 +25,28 @@ type SSCInternalPool struct {
 	txs map[types.InternalTxType][]*types.SSCInternalTx
 	// hash 索引：幂等去重 + 提交后清理
 	byHash map[common.Hash]*types.SSCInternalTx
+
+	// simUpstreamOnChain — DSN-60 Task B 就绪谓词：给定上游 txHash 是否已在本分片
+	// onChainDAGPatches 注册（已上链验证成功）。由 sscService/factory 接线（闭包到
+	// retryScheduler.upstreamOnChain）。nil = 未接线 → 不做扣留，保持旧行为。
+	//
+	// 口径：只查 SimTx.UpstreamTxList 里**本分片本地**的上游（CommitSimulation 已用
+	// LocalUpstreamTxRef 收敛），因此绝不扣留“上游只在别的分片”的跨分片下游
+	// （DSN-57 饿死根因，这里刻意避开）。
+	simUpstreamOnChain func(common.Hash) bool
+
+	// notReadyHoldCnt — DSN-60 Task B 有界扣留计数：链式 SimTx 因“本分片本地上游既不在同批、
+	// 也未 on-chain”而被扣留(未放入本块)的 Extract 次数。达到 simNotReadyHoldBlocks 阈值后
+	// 强制放行一次（走 verify 确定性 fail-closed，若本地上游真缺失则回滚传播，避免无限饿死）。
+	notReadyHoldCnt map[common.Hash]int64
 }
 
 // NewSSCInternalPool 创建一个空内部池。
 func NewSSCInternalPool() *SSCInternalPool {
 	return &SSCInternalPool{
-		txs:    make(map[types.InternalTxType][]*types.SSCInternalTx),
-		byHash: make(map[common.Hash]*types.SSCInternalTx),
+		txs:             make(map[types.InternalTxType][]*types.SSCInternalTx),
+		byHash:          make(map[common.Hash]*types.SSCInternalTx),
+		notReadyHoldCnt: make(map[common.Hash]int64),
 	}
 }
 
@@ -95,9 +115,14 @@ func (p *SSCInternalPool) Extract(maxTotal int) [][]*types.SSCInternalTx {
 			// 保证链式交易的 Upstream 先落块，避免下游 SimTx 在链上验证时上游还没就绪。
 			// 这是 internal_pool 保证“下游 SimTx 排在上游 SimTx 之后”的职责所在（同批内）。
 			row = p.orderSimTxsByDAG(row)
-			// 注：跨批/跨分片的上游就绪不在本池扣留（那会卡死跨分片下游）；verify 已改为
-			// **确定性**判定——只查链上 onChainDAGPatches 有无该上游 patch，无则直接回滚，
-			// 且不再依赖本池/offChainDAG 做 fail-open（见 verify.go DSN-57 说明）。
+			// DSN-60 Task B：有界“上游先于下游”门（同批 DAG 序之外，补“跨批/跨块本地依赖”缺口）。
+			// 只对本分片**本地**上游（SimTx.UpstreamTxList 已经 LocalUpstreamTxRef 收敛）做就绪判定：
+			//   - 上游同批 → orderSimTxsByDAG 已保证 U 在 D 前；
+			//   - 上游已 on-chain（upstreamOnChain）→ 就绪；
+			//   - 否则（本地上游既不在同批、也未 on-chain）→ 有界扣留，不放入本块，避免 verify
+			//     提前 rollback；达 simNotReadyHoldBlocks 后强制放行（真缺失则走 fail-closed 回滚）。
+			// 绝不对“上游只在别的分片”的跨分片下游扣留（DSN-57 饿死根因，本池只按本地口径判定）。
+			row = p.filterReadySimTxs(row)
 		}
 		if remaining <= 0 {
 			// 不限或已取满上限：整桶取
@@ -141,6 +166,65 @@ func (p *SSCInternalPool) simUpstreams(tx *types.SSCInternalTx) []common.Hash {
 		out = append(out, up.TxHash)
 	}
 	return out
+}
+
+// SetSimUpstreamOnChain — DSN-60 Task B：注入“某上游是否已在本分片 onChainDAGPatches 注册”的
+// 就绪谓词（本地依赖口径）。由 sscService/factory 接线到 retryScheduler.upstreamOnChain。
+// 未接线(nil)时本池不做扣留，仅保留同批 DAG 排序（旧行为）。
+func (p *SSCInternalPool) SetSimUpstreamOnChain(f func(common.Hash) bool) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.simUpstreamOnChain = f
+}
+
+// filterReadySimTxs — DSN-60 Task B：对已按 DAG 排序的 SimTx 行做“就绪筛选”。
+// 保持 DAG 顺序，只保留“本地依赖就绪”的 SimTx；not-ready 的下游留在池中（不放入本块、不占预算），
+// 达 simNotReadyHoldBlocks 后强制放行一次。未接线就绪谓词时原样返回（旧行为）。
+func (p *SSCInternalPool) filterReadySimTxs(row []*types.SSCInternalTx) []*types.SSCInternalTx {
+	if p.simUpstreamOnChain == nil || len(row) < 2 {
+		return row
+	}
+	inRow := make(map[common.Hash]struct{}, len(row))
+	for _, tx := range row {
+		inRow[tx.Hash()] = struct{}{}
+	}
+	out := make([]*types.SSCInternalTx, 0, len(row))
+	for _, tx := range row {
+		if p.simTxLocalDepsReady(tx, inRow) {
+			delete(p.notReadyHoldCnt, tx.Hash())
+			out = append(out, tx)
+			continue
+		}
+		// 本地上游未就绪 → 有界扣留
+		cnt := p.notReadyHoldCnt[tx.Hash()] + 1
+		p.notReadyHoldCnt[tx.Hash()] = cnt
+		if cnt >= simNotReadyHoldBlocks {
+			// 达阈值：强制放行一次（真缺失则由 verify fail-closed 回滚传播，避免无限饿死）。
+			delete(p.notReadyHoldCnt, tx.Hash())
+			out = append(out, tx)
+		}
+		// 未达阈值：not-ready，不放入本块（留在池中）
+	}
+	return out
+}
+
+// simTxLocalDepsReady — DSN-60 Task B：判断 SimTx 的本分片本地依赖是否已就绪。
+// 对每个上游 U：U 在本批(inRow) → 已由 orderSimTxsByDAG 保证 U 在 D 前（就绪）；
+// 否则 U 已 on-chain（upstreamOnChain）→ 就绪；否则 not-ready。
+func (p *SSCInternalPool) simTxLocalDepsReady(tx *types.SSCInternalTx, inRow map[common.Hash]struct{}) bool {
+	if tx == nil {
+		return true
+	}
+	for _, up := range p.simUpstreams(tx) {
+		if _, ok := inRow[up]; ok {
+			continue // 同批，DAG 序已保证 U 先于 D
+		}
+		if p.simUpstreamOnChain(up) {
+			continue // 上游已上链
+		}
+		return false // 本地上游既不在同批、也未 on-chain → not-ready
+	}
+	return true
 }
 
 // orderSimTxsByDAG 把同批 SimTx 按 DAG 依赖排序：被依赖（Upstream）的 SimTx 先于依赖者。
@@ -258,6 +342,7 @@ func (p *SSCInternalPool) Remove(tx *types.SSCInternalTx) {
 		return
 	}
 	delete(p.byHash, h)
+	delete(p.notReadyHoldCnt, h) // DSN-60 Task B：移除时清掉其有界扣留计数
 	tt := tx.Type
 	slice := p.txs[tt]
 	for i, e := range slice {
@@ -287,6 +372,7 @@ func (p *SSCInternalPool) OnBlockCommitted(block *types.Block) {
 				continue
 			}
 			delete(p.byHash, h)
+			delete(p.notReadyHoldCnt, h) // DSN-60 Task B：落块后清掉其有界扣留计数
 			// 从对应类型桶移除
 			tt := tx.Type
 			slice := p.txs[tt]

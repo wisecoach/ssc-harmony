@@ -32,6 +32,10 @@ func NewService(ctx context.Context, config *api.Config, cm *CommitteeMechanism,
 		// 供 verify fail-closed 区分“本分片上游没上链(queued)”与“上游在别的分片(absent→fail-open)”。
 		if baseService.retryScheduler != nil {
 			baseService.retryScheduler.SetQueuedSimCheck(internalPool.Has)
+			// DSN-60 Task B：internalPool 接上“某上游是否已 on-chain 注册”的就绪谓词（闭包到
+			// retryScheduler.upstreamOnChain）。供 Extract 对**本地链式** SimTx 做有界“上游先于下游”门，
+			// 减少“上游 patch 未上链 → verify rollback”。口径只查本分片 onChainDAGPatches（本地依赖）。
+			internalPool.SetSimUpstreamOnChain(baseService.retryScheduler.upstreamOnChain)
 		}
 	}
 
