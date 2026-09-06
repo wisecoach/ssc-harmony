@@ -18,6 +18,10 @@ type CommitterStateAccessor struct {
 	SetStatus          func(txHash common.Hash, status api.CXTStatus)
 	CloseTx            func(txHash common.Hash, success bool, reason string)
 	RemoveOnChainDAGPatch func(txHash common.Hash) // v6: CR 完成后清理 onChainDAGPatches
+	// MarkCommittedOnChain — DSN-64：CR Commit 成功后记录该 tx 已真正上链提交(写集已落盘、锁已释放)。
+	// 供 upstreamOnChain 在“上游 patch 已被 RemoveOnChainDAGPatch 清理、但该上游已 commit”时仍判就绪，
+	// 放行其下游 D(DSN-57 不再误回滚)。
+	MarkCommittedOnChain func(txHash common.Hash)
 	// RecordChainTxCRCommit — 统计“链式(isChainTx)交易最终 CR commit”的次数（仅 origin leader 回调）。
 	RecordChainTxCRCommit func(txHash common.Hash)
 }
@@ -110,6 +114,11 @@ func (c *Committer) CommitOrRollbackWithProof(commitProofBytes []byte, stateDB a
 		if err != nil {
 			utils.SSCLogger().Error().Str("txHash", txHash.String()).Err(err).Msg("failed to commit tx with proof")
 			return err
+		}
+		// DSN-64：commit 成功即记入“已上链提交”集合——其写集已落盘、锁已释放；
+		// 即使随后 RemoveOnChainDAGPatch 清掉临时 patch，上游仍被判为就绪，下游 D 可放行读最终值。
+		if c.state.MarkCommittedOnChain != nil {
+			c.state.MarkCommittedOnChain(txHash)
 		}
 		c.state.SetStatus(txHash, api.CXT_COMMITTED)
 		c.state.CloseTx(txHash, true, commitProof.Reason.String())

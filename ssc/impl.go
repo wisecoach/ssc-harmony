@@ -484,6 +484,11 @@ func newBaseService(ctx context.Context, config *api.Config, cm *CommitteeMechan
 			RemoveOnChainDAGPatch: func(txHash common.Hash) {
 				service.retryScheduler.RemoveOnChainDAGPatch(txHash)
 			},
+			MarkCommittedOnChain: func(txHash common.Hash) {
+				if service.retryScheduler != nil {
+					service.retryScheduler.MarkCommittedOnChain(txHash)
+				}
+			},
 			RecordChainTxCRCommit: func(txHash common.Hash) {
 				if service.retryScheduler == nil {
 					return

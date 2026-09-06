@@ -194,6 +194,9 @@ var chainRetryStats struct {
 	// SigUpstreamWoundedInvalidated — DSN-62 (B)：上游 U 被 Wound 时，把它从“已被某下游消费的
 	// 上游”中无效化/移除的次数。避免下游 D 一直链在一个被 Wound、注定上不了链的 U 上而 50 块后回滚。
 	SigUpstreamWoundedInvalidated atomic.Int64
+	// SigUpstreamCommittedGate — DSN-64：CR Commit 成功被记入 committedOnChain 的次数
+	// （即“上游已 commit、被记为可放行下游”的门命中次数）。
+	SigUpstreamCommittedGate atomic.Int64
 	// SigAntiStarvationAdmit — DSN-58：reservation 反饥饿强制放行的次数（交易被跳过>=N 块后被当块放行）。
 	SigAntiStarvationAdmit atomic.Int64
 
@@ -299,6 +302,7 @@ func dumpChainRetryStats() {
 		Int64("dagHoldProtected", chainRetryStats.SigDAGHoldProtected.Swap(0)).
 		Int64("upstreamHoldProtected", chainRetryStats.SigUpstreamHoldProtected.Swap(0)).
 		Int64("upstreamWoundedInvalidated", chainRetryStats.SigUpstreamWoundedInvalidated.Swap(0)).
+		Int64("upstreamCommittedGate", chainRetryStats.SigUpstreamCommittedGate.Swap(0)).
 		Int64("antiStarvationAdmit", chainRetryStats.SigAntiStarvationAdmit.Swap(0)).
 		Interface("chainLengthDist", lenCnt).
 		Interface("chainCommitDist", commitCnt).
@@ -442,6 +446,12 @@ type retryScheduler struct {
 	//      写入：收到 SimTx 多播时；清理：Committer CR 完成时
 	//      内层 map[int]*api.ChainNode 由 patchMap.mu 保护
 	onChainDAGPatches sync.Map // key: txHash common.Hash, value: *patchMap
+
+	// committedOnChain — DSN-64：已真正 CR Commit 成功的 txHash 集合(写集已落盘、锁已释放)。
+	// 与 onChainDAGPatches 不同：onChainDAGPatches 在该 tx CR 完成后被 RemoveOnChainDAGPatch 清掉，
+	// 导致晚到的下游 D(引用该 U)verify 时看不到 U → DSN-57 误回滚。这里持久记录“该 U 已 commit”，
+	// 使 upstreamOnChain 对已 commit 的 U 仍判就绪，放 D 上链读最终值。仅在 CR Commit(非 Rollback)时写入。
+	committedOnChain sync.Map // key: txHash common.Hash, value: struct{}
 
 	// offChainDAG — 链下单一 DAG 存储（合并原 localPatches 与 patches）
 	//      承担调度匹配（nodes/keyIndex/subscriber/txSubKeys）与读取/构建上游（UpstreamTxList）双职责
@@ -2473,14 +2483,35 @@ func (rs *retryScheduler) GetOnChainDAGPatch(txHash common.Hash, simNum int) *ap
 	return pm.m[simNum]
 }
 
-// upstreamOnChain — DSN-57 就绪谓词：某上游 tx 是否已在本分片 onChainDAGPatches 注册
-// （即已上链验证成功）。供 internal_pool 的 SimTx 就绪门查询。
+// upstreamOnChain — 就绪谓词：某上游 tx 是否已“可被下游依赖地就绪”。
+// 判据 = 该 tx 在 onChainDAGPatches（SimTx 已上链验证成功，patch 仍在）**或** 在 committedOnChain
+// （该 tx 已真正 CR Commit，写集已落盘、锁已释放——即使其临时 onChainDAGPatch 已被清理，D 也可
+// 放行去读最终状态）。供 verify(DSN-57) 与 internal_pool 的 SimTx 就绪门查询。
 func (rs *retryScheduler) upstreamOnChain(txHash common.Hash) bool {
 	if rs == nil || !rs.offChainDAG.isOn() {
 		return false
 	}
-	_, ok := rs.onChainDAGPatches.Load(txHash)
-	return ok
+	if _, ok := rs.onChainDAGPatches.Load(txHash); ok {
+		return true
+	}
+	// DSN-64：已 commit 的上游也算就绪（其写集已落盘、锁已释放，D 可读最终值）。
+	if _, ok := rs.committedOnChain.Load(txHash); ok {
+		return true
+	}
+	return false
+}
+
+// MarkCommittedOnChain — DSN-64：CR Commit 成功后记录该 tx 已上链提交。由 Committer 在 CommitTx
+// 成功后回调（见 committer.go）。此记录持久（不在 RemoveOnChainDAGPatch 时清除），使已 commit 的
+// 上游不再因临时 patch 被清而误伤晚到的下游 D。
+func (rs *retryScheduler) MarkCommittedOnChain(txHash common.Hash) {
+	if rs == nil || !rs.offChainDAG.isOn() {
+		return
+	}
+	rs.committedOnChain.Store(txHash, struct{}{})
+	chainRetryStats.SigUpstreamCommittedGate.Add(1)
+	utils.SSCLogger().Debug().Str("txHash", txHash.Hex()).
+		Msg("MarkCommittedOnChain: tx CR-committed, recorded as on-chain for downstreams (DSN-64)")
 }
 
 // upstreamQueued — DSN-57 探针：某上游 tx 是否仍在本分片 internalPool 排队（尚未上链）。
