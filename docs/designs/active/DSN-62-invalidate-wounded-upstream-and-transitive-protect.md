@@ -1,6 +1,9 @@
 # DSN-62: 让“被 Wound 的上游”不再卡死其下游 —— finalize 顺序 + 上游无效化 + 保护沿链传递
 
-> 状态：**design + (A)(B)(C) 已实现，待实验验证**
+> 状态：**design + (B)(C) 已实现；(A) 初版已回退（见 §1 附注），待实验验证**
+> 附注：实验发现 (A) 初版（对 Free 节点 finalize）会令 `tryConsumePatch` 无法消费 Finalized 节点，
+> 导致 DAG 链式救援整体失效（rollback≈0 系“无链可断”的假象）。正确解“被 Wound 的 Consumed 上游拖死
+> 下游”是 (B)，故回退 (A)，保留 (B)(C)。
 > 关联：DSN-55/56/57/58/60/61。来源：DSN-61 实验后仍残留
 > `upstream patch not on-chain yet -> rollback`（4372→2978 仍不为 0）的根因收敛。
 >
