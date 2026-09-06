@@ -111,6 +111,21 @@ func (p *SSCInternalPool) Extract(maxTotal int) [][]*types.SSCInternalTx {
 				}
 				return pi.Less(pj)
 			})
+			// DSN-63：上游优先——被本池其它 SimTx 引用为上游的 tx(上游提供者 U)排到最前，
+			// 优先进入本块切片。原因：U 若按普通优先级排在预算切片之外，会一直留在池里不被提案，
+			// 其下游 D 在 50 块有界扣留里等不到 U on-chain 而回滚（upstream-not-onchain 大头，
+			// U 的 simNum 多为 0/1 = 不是重试，而是排队没被取走）。
+			// 无上游交易之后再放入普通(独立/仅被依赖)交易——即在切片内先保上游再保普通。
+			if refs := p.simUpstreamRefSet(row); len(refs) > 0 {
+				sort.SliceStable(row, func(i, j int) bool {
+					_, ui := refs[row[i].Hash()]
+					_, uj := refs[row[j].Hash()]
+					if ui == uj {
+						return false // 同组内保持原有(优先级)相对顺序(SliceStable)
+					}
+					return ui // 上游提供者优先
+				})
+			}
 			// DSN-52：DAG 依赖排序——被依赖的 SimTx 在依赖它的 SimTx 之前执行，
 			// 保证链式交易的 Upstream 先落块，避免下游 SimTx 在链上验证时上游还没就绪。
 			// 这是 internal_pool 保证“下游 SimTx 排在上游 SimTx 之后”的职责所在（同批内）。
@@ -166,6 +181,25 @@ func (p *SSCInternalPool) simUpstreams(tx *types.SSCInternalTx) []common.Hash {
 		out = append(out, up.TxHash)
 	}
 	return out
+}
+
+// simUpstreamRefSet — DSN-63：收集“本池内被其它 SimTx 引用为上游”的 txHash 集合。
+// 这些是上游提供者(U)，只要它们还没 on-chain，其下游 D 就要等它们。把它们**优先**取进本块切片，
+// 避免低优先 U 一直排在预算切片之外、导致 D 在 50 块有界扣留里等不到 U on-chain 而回滚。
+func (p *SSCInternalPool) simUpstreamRefSet(row []*types.SSCInternalTx) map[common.Hash]struct{} {
+	if len(row) < 2 {
+		return nil
+	}
+	ref := make(map[common.Hash]struct{})
+	for _, tx := range row {
+		for _, up := range p.simUpstreams(tx) {
+			ref[up] = struct{}{}
+		}
+	}
+	if len(ref) == 0 {
+		return nil
+	}
+	return ref
 }
 
 // SetSimUpstreamOnChain — DSN-60 Task B：注入“某上游是否已在本分片 onChainDAGPatches 注册”的
