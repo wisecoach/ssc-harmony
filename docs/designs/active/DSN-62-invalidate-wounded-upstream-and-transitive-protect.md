@@ -1,6 +1,6 @@
 # DSN-62: 让“被 Wound 的上游”不再卡死其下游 —— finalize 顺序 + 上游无效化 + 保护沿链传递
 
-> 状态：**design（分析定稿，待实现）**
+> 状态：**design + (A)(B)(C) 已实现，待实验验证**
 > 关联：DSN-55/56/57/58/60/61。来源：DSN-61 实验后仍残留
 > `upstream patch not on-chain yet -> rollback`（4372→2978 仍不为 0）的根因收敛。
 >
@@ -70,6 +70,12 @@
   不应无限重试（仍受 retry limit / 有界扣留保护）。
 - (C) 保护深链加大 W 饥饿风险 → 由 reservation 反饥饿（DSN-58）+ CMH 兜底，不新增永久饥饿。
 - 跨分片：以上都作用于本分片 TLV/DAG；真正跨分片腿的时序仍靠 DSN-58/CR，非本文范围。
+
+## 3.5 实现落点（已实现，代码编译通过）
+- (A) `ssc/impl.go`（finalizePatch 移到 AddNode 之后）+ `ssc/patchpool.go`（finalizePatch 放宽、不降级）。
+- (B) `ssc/retry_scheduler.go`（`notifyWoundedUpstream`：解绑消费方 + `offChainDAG.Remove` 无效化；
+  计数 `upstreamWoundedInvalidated`）+ `ssc/temp_lock_view.go`（两处 wound 后调 `notifyUpstreamWounded`）。
+- (C) `ssc/retry_scheduler.go`（`protectUpstreamHeldLocks` 改 BFS 沿链传递，visited+maxChainDepth）。
 
 ## 4. 验收
 同配置（rate=200/shard=4/delay=10/vpn=4）对比：

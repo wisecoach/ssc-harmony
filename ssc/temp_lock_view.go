@@ -111,6 +111,9 @@ func (v *TempLockView) TryLockWithPriority(txHash common.Hash, priority api.Prio
 		if v.canWound(existingEntry, priority, txHash) {
 			// 可以 Wound → 替换
 			v.woundedTxs.Store(existingEntry.Holder, struct{}{})
+			// DSN-62 (B)：若被 wound 的是某下游已消费的上游，把它无效化并解绑该下游，
+			// 避免下游链在一个 doomed 上游上。
+			v.notifyUpstreamWounded(existingEntry.Holder)
 			v.tempWriteLocks.Store(key, entry)
 			acquiredWrites = append(acquiredWrites, key)
 			utils.SSCLogger().Debug().Str("wounded", existingEntry.Holder.Hex()).
@@ -162,6 +165,8 @@ func (v *TempLockView) TryLockWithPriority(txHash common.Hash, priority api.Prio
 				}
 				// 可以 wound 写锁持有者 → 升级为写锁
 				v.woundedTxs.Store(existingEntry.Holder, struct{}{})
+				// DSN-62 (B)：同写锁 wound，把被 wound 的上游无效化并解绑其下游。
+				v.notifyUpstreamWounded(existingEntry.Holder)
 				v.tempWriteLocks.Store(key, tempLockEntry{Holder: txHash, Priority: priority})
 				acquiredWrites = append(acquiredWrites, key)
 				utils.SSCLogger().Debug().Str("wounded", existingEntry.Holder.Hex()).
@@ -247,6 +252,20 @@ func (v *TempLockView) IsWounded(txHash common.Hash) bool {
 // ClearWounded 清理指定交易的 wounded 标记（在交易重试开始时调用）。
 func (v *TempLockView) ClearWounded(txHash common.Hash) {
 	v.woundedTxs.Delete(txHash)
+}
+
+// notifyUpstreamWounded — DSN-62 (B)：被 Wound 的 tx 若正被某下游当作“已消费上游”，则通知
+// retryScheduler 把它无效化并解绑该下游（见 retryScheduler.notifyWoundedUpstream）。
+// 放在 TryLockWithPriority 的 wound 之后；nil 保护，绝不阻塞/影响 wound 主流程。
+func (v *TempLockView) notifyUpstreamWounded(holder common.Hash) {
+	if v == nil || v.stateLockManager == nil || v.stateLockManager.sscService == nil {
+		return
+	}
+	rs := v.stateLockManager.sscService.retryScheduler
+	if rs == nil {
+		return
+	}
+	rs.notifyWoundedUpstream(holder)
 }
 
 // IsTempLockedBySelf 检查当前交易是否持有该 key 的 TempLock（写锁或读锁）。

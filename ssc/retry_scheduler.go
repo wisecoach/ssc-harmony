@@ -191,6 +191,9 @@ var chainRetryStats struct {
 	// protectHeldLocks 保锁的次数（按被保护的上游计数），避免上游被更高优先第三方 Wound
 	// 而无法先于下游上链（否则下游被有界扣留 50 块后仍 DSN-57 回滚）。
 	SigUpstreamHoldProtected atomic.Int64
+	// SigUpstreamWoundedInvalidated — DSN-62 (B)：上游 U 被 Wound 时，把它从“已被某下游消费的
+	// 上游”中无效化/移除的次数。避免下游 D 一直链在一个被 Wound、注定上不了链的 U 上而 50 块后回滚。
+	SigUpstreamWoundedInvalidated atomic.Int64
 	// SigAntiStarvationAdmit — DSN-58：reservation 反饥饿强制放行的次数（交易被跳过>=N 块后被当块放行）。
 	SigAntiStarvationAdmit atomic.Int64
 
@@ -295,6 +298,7 @@ func dumpChainRetryStats() {
 		Int64("chainReadyCandidate", chainRetryStats.SigChainReadyCandidate.Swap(0)).
 		Int64("dagHoldProtected", chainRetryStats.SigDAGHoldProtected.Swap(0)).
 		Int64("upstreamHoldProtected", chainRetryStats.SigUpstreamHoldProtected.Swap(0)).
+		Int64("upstreamWoundedInvalidated", chainRetryStats.SigUpstreamWoundedInvalidated.Swap(0)).
 		Int64("antiStarvationAdmit", chainRetryStats.SigAntiStarvationAdmit.Swap(0)).
 		Interface("chainLengthDist", lenCnt).
 		Interface("chainCommitDist", commitCnt).
@@ -1841,6 +1845,52 @@ func (rs *retryScheduler) protectUpstreamHeldLocksBFS(roots []common.Hash) {
 			queue = append(queue, item{h: up.TxHash, depth: it.depth + 1})
 		}
 	}
+}
+
+// notifyWoundedUpstream — DSN-62 (B)：上游 U 被 Wound 时，把其残留的可消费 Patch 无效化，
+// 并把依赖它的下游 D 从 consumedPatches 解绑，避免 D 一直链在一个“被 Wound、注定上不了链”的 U 上
+// 而白等 50 块后被 fail-closed 回滚。
+// 仅在 U 是“已被某下游消费的上游”(offChainDAG 节点 Consumer 非空)时处理——这正是“D 链在 doomed
+// 上游上”的精确情形；U 被 Wound 后其当前 SimTx 尝试作废，移除其节点让 U 在重试重新模拟后以**新**
+// patch 再被消费，而不是继续沿用已失效的旧 patch。
+func (rs *retryScheduler) notifyWoundedUpstream(U common.Hash) {
+	if rs == nil || !rs.offChainDAG.isOn() {
+		return
+	}
+	nv, ok := rs.offChainDAG.nodes.Load(U)
+	if !ok {
+		return
+	}
+	node, ok := nv.(*OffChainPatchNode)
+	if !ok {
+		return
+	}
+	D := node.Consumer
+	if D == (common.Hash{}) {
+		return // U 未被任何下游消费，不是我们要解的“D 链在 doomed 上游”情形
+	}
+	// 1) 把 U 从下游 D 的 consumedPatches 里去掉，使 D 不再误以为仍持有 U 这个上游
+	if cpv, ok := rs.consumedPatches.Load(D); ok {
+		if list, ok2 := cpv.([]common.Hash); ok2 {
+			kept := make([]common.Hash, 0, len(list))
+			for _, x := range list {
+				if x != U {
+					kept = append(kept, x)
+				}
+			}
+			if len(kept) > 0 {
+				rs.consumedPatches.Store(D, kept)
+			} else {
+				rs.consumedPatches.Delete(D)
+			}
+		}
+	}
+	// 2) 无效化 U 的节点（移除），使其不再被 findCoveringSet 选为可消费上游；U 重试后会重新 AddNode。
+	rs.offChainDAG.Remove(U)
+	chainRetryStats.SigUpstreamWoundedInvalidated.Add(1)
+	utils.SSCLogger().Debug().Str("upstream", U.Hex()).
+		Str("consumer", D.Hex()).
+		Msg("notifyWoundedUpstream: wounded upstream invalidated & unchained from consumer (DSN-62 B)")
 }
 
 func (rs *retryScheduler) retryCommit(txHash common.Hash, dagAttempt bool) *api.RetryCommitResp {
