@@ -1793,13 +1793,12 @@ func (rs *retryScheduler) RetryCommitDAG(txHash common.Hash) *api.RetryCommitRes
 }
 
 // protectUpstreamHeldLocks — DSN-61：RetryCommit 救援下游 D(消费其上游 U)时，除保护 D 外，
-// 连带把被消费的上游 U 已持有的 TLV 写锁提到最高优先级（与 protectHeldLocks(D) 同理）。
-// 动机：上游 U 并非 DAG 救援交易、本身仍可按普通优先级被更高优先第三方 Wound → U 被 Wound 拉回
-// 重试 → 迟迟无法先于 D 上链(AddOnChainDAGPatch) → D 即使被保锁不被 Wound，也会被有界扣留
-// 50 块后强制放行 → verify 判“上游未上链”DSN-57 回滚。把 U 也保锁可让“U→D”整条链都免疫被 Wound，
-// 上游得以先于下游稳定上链。
-// 范围克制：只保护 D 实际消费到的上游(consumedTxHashes)，不做全量优先级通胀；U 走上链/失败 GC
-// 释放锁后该保护即失效。
+// 连带把被消费的上游 U 标记为“被动链保护”（DSN-62 (D) markChainProtected），使其不可被 Wound
+// 但保持可被消费。动机：上游 U 若被更高优先第三方 Wound → 拉回重试 → 迟迟无法先于 D 上链
+// (AddOnChainDAGPatch) → D 即使被保锁不被 Wound，也会被有界扣留 50 块后强制放行 → verify 判
+// “上游未上链”DSN-57 回滚。把 U 也保护可让“U→D”整条链都免疫被 Wound，上游得以先于下游稳定上链。
+// 范围克制：只保护 D 实际消费到的上游(consumedTxHashes)及其祖先链，不做全量保护；U 走上链/失败
+// GC 节点被 Remove 后保护随节点消失。
 // DSN-62 (C)：保护**沿被消费的上游链递归传递**——U 要上链必须先让 U 自己的上游 UU 上链，只保 U
 // 不保 UU，链头 UU 仍可被 Wound 而断链。故保护 U 后继续沿 U 的 UpstreamTxList 向上保护其祖先，
 // 用 visited 防环、depth ≤ maxChainDepth 封顶，只作用于“实际被消费的链式子图”。
@@ -1830,7 +1829,10 @@ func (rs *retryScheduler) protectUpstreamHeldLocksBFS(roots []common.Hash) {
 		it := queue[0]
 		queue = queue[1:]
 		u := it.h
-		rs.tempLockView.protectHeldLocks(u)
+		// DSN-62 (D)：改为“被动链保护”——markChainProtected(U) 使 U 不可被 Wound 但保持可被消费。
+		// 不再用 protectHeldLocks(U) 把 U 顶到最高优先：那会让 U 反过来主动 wound 别的更低优先
+		// 上游(它也可能是别条链的上游) → 制造新的级联(见 Q3)。被动保护既保住 U，又不误伤他人。
+		rs.offChainDAG.markChainProtected(u)
 		chainRetryStats.SigUpstreamHoldProtected.Add(1)
 		// 向上扩展 U 自己的上游（U 是某更早节点的下游时才有）
 		if it.depth >= maxDepth {
@@ -1847,12 +1849,16 @@ func (rs *retryScheduler) protectUpstreamHeldLocksBFS(roots []common.Hash) {
 	}
 }
 
-// notifyWoundedUpstream — DSN-62 (B)：上游 U 被 Wound 时，把其残留的可消费 Patch 无效化，
-// 并把依赖它的下游 D 从 consumedPatches 解绑，避免 D 一直链在一个“被 Wound、注定上不了链”的 U 上
-// 而白等 50 块后被 fail-closed 回滚。
-// 仅在 U 是“已被某下游消费的上游”(offChainDAG 节点 Consumer 非空)时处理——这正是“D 链在 doomed
-// 上游上”的精确情形；U 被 Wound 后其当前 SimTx 尝试作废，移除其节点让 U 在重试重新模拟后以**新**
-// patch 再被消费，而不是继续沿用已失效的旧 patch。
+// notifyWoundedUpstream — DSN-62 (B')：上游 U 被 Wound 时，把其残留的可消费 Patch 节点从 DAG
+// **无条件移除**（若有下游 D 已消费 U，则先把 U 从 D 的 consumedPatches 解绑）。
+//
+// 为什么要无条件移除（不再像初版那样仅当 U 已 Consumed）：
+// 级联的根子是“U 在 **Free** 阶段就被 Wound、但其陈旧 Free 节点仍留在 DAG 里” → 之后大量下游 D
+// 仍可消费这个 doomed 的 U → 全在等一个上不了链的 U → 50 块后成片回滚。初版只处理“已 Consumed
+// 才被 wound”的少数，漏掉 Free-级联这个大头。这里对任何被 wound 的 U 一律移除其 DAG 节点：
+//   - 已 Consumed → 先解绑消费方 D；
+//   - 未 Consumed(Free) → 直接移除，杜绝后来者消费这个 doomed 节点；
+// U 被 wound 后当前 SimTx 尝试作废，其重试重新模拟后会以**新** patch 重新 AddNode。
 func (rs *retryScheduler) notifyWoundedUpstream(U common.Hash) {
 	if rs == nil || !rs.offChainDAG.isOn() {
 		return
@@ -1866,31 +1872,30 @@ func (rs *retryScheduler) notifyWoundedUpstream(U common.Hash) {
 		return
 	}
 	D := node.Consumer
-	if D == (common.Hash{}) {
-		return // U 未被任何下游消费，不是我们要解的“D 链在 doomed 上游”情形
-	}
-	// 1) 把 U 从下游 D 的 consumedPatches 里去掉，使 D 不再误以为仍持有 U 这个上游
-	if cpv, ok := rs.consumedPatches.Load(D); ok {
-		if list, ok2 := cpv.([]common.Hash); ok2 {
-			kept := make([]common.Hash, 0, len(list))
-			for _, x := range list {
-				if x != U {
-					kept = append(kept, x)
+	if D != (common.Hash{}) {
+		// 把 U 从下游 D 的 consumedPatches 里去掉，使 D 不再误以为仍持有 U 这个上游
+		if cpv, ok := rs.consumedPatches.Load(D); ok {
+			if list, ok2 := cpv.([]common.Hash); ok2 {
+				kept := make([]common.Hash, 0, len(list))
+				for _, x := range list {
+					if x != U {
+						kept = append(kept, x)
+					}
 				}
-			}
-			if len(kept) > 0 {
-				rs.consumedPatches.Store(D, kept)
-			} else {
-				rs.consumedPatches.Delete(D)
+				if len(kept) > 0 {
+					rs.consumedPatches.Store(D, kept)
+				} else {
+					rs.consumedPatches.Delete(D)
+				}
 			}
 		}
 	}
-	// 2) 无效化 U 的节点（移除），使其不再被 findCoveringSet 选为可消费上游；U 重试后会重新 AddNode。
+	// 无效化 U 的节点（无条件移除），使其不再被 findCoveringSet 选为可消费上游。
 	rs.offChainDAG.Remove(U)
 	chainRetryStats.SigUpstreamWoundedInvalidated.Add(1)
 	utils.SSCLogger().Debug().Str("upstream", U.Hex()).
 		Str("consumer", D.Hex()).
-		Msg("notifyWoundedUpstream: wounded upstream invalidated & unchained from consumer (DSN-62 B)")
+		Msg("notifyWoundedUpstream: wounded upstream invalidated (DSN-62 B')")
 }
 
 func (rs *retryScheduler) retryCommit(txHash common.Hash, dagAttempt bool) *api.RetryCommitResp {

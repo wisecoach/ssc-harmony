@@ -194,10 +194,17 @@ func (v *TempLockView) addReadLock(key api.LockKey, txHash common.Hash) {
 }
 
 // canWound 检查是否可以踢掉当前锁持有者。
-// 如果持有者优先级更高，或者持有者的 Patch 已 Finalized → false
+// 返回 false（不可被 wound）的条件：
+//   - 持有者优先级更高/相等；
+//   - 持有者的 Patch 已 Finalized；
+//   - 持有者已被标记为被动链保护（DSN-62 (D) chainProtected）——不可被 wound，但仍可被消费。
 func (v *TempLockView) canWound(entry tempLockEntry, requesterPri api.Priority, requester common.Hash) bool {
 	// 检查 PatchPool 中该持有者的 Patch 是否已 Finalized
 	if v.stateLockManager.sscService.retryScheduler.offChainDAG.isPatchFinalized(entry.Holder) {
+		return false
+	}
+	// DSN-62 (D)：被动链保护标记 → 不可被 wound（与 Finalized 解耦，不影响可消费性）
+	if v.stateLockManager.sscService.retryScheduler.offChainDAG.isChainProtected(entry.Holder) {
 		return false
 	}
 	// 如果持有者优先级更低（数值更大），可以踢

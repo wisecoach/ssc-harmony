@@ -44,6 +44,11 @@ type OffChainPatchNode struct {
 	CreatedAt      time.Time      // time when added to pool
 	Depth          int            // DSN-50: DAG 深度（根=1；非根=max(上游 Depth)+1），用于链深上限
 	status         atomic.Int32   // PatchConsumeStatus, lock-free
+	// chainProtected — DSN-62 (D)：被动链保护标记。与被某下游消费的上游(U)关联：置位后该 U
+	// **不可被 Wound**（canWound 反查此标记返回 false），但**仍保持可被后续下游消费**
+	// （与 Finalized 解耦——Finalized 会同时禁用消费导致 DAG 链失效，见 DSN-62 (A) 回退）。
+	// U 走上链/CR 终局节点被 Remove 后标记随节点消失。
+	chainProtected atomic.Bool
 }
 
 func (n *OffChainPatchNode) Status() PatchConsumeStatus {
@@ -286,6 +291,35 @@ func (dag *offChainDAG) isPatchFinalized(txHash common.Hash) bool {
 		return false
 	}
 	return nodeVal.(*OffChainPatchNode).Status() == PatchFinalized
+}
+
+// markChainProtected — DSN-62 (D)：把指定 tx 标记为“被动链保护”。置位后 canWound 对它返回 false
+// （不可被 Wound），但节点仍保持 Free/Consumed 可被消费——与 Finalized 解耦（Finalized 会禁用消费）。
+func (dag *offChainDAG) markChainProtected(txHash common.Hash) {
+	if !dag.isOn() {
+		return
+	}
+	if nodeVal, ok := dag.nodes.Load(txHash); ok {
+		if node, ok := nodeVal.(*OffChainPatchNode); ok {
+			node.chainProtected.Store(true)
+		}
+	}
+}
+
+// isChainProtected — DSN-62 (D)：读取某 tx 是否已被标记为被动链保护（不可被 Wound）。
+// DAG 禁用/无节点时返回 false（不影响正常 wound 语义）。
+func (dag *offChainDAG) isChainProtected(txHash common.Hash) bool {
+	if !dag.isOn() {
+		return false
+	}
+	nodeVal, ok := dag.nodes.Load(txHash)
+	if !ok {
+		return false
+	}
+	if node, ok := nodeVal.(*OffChainPatchNode); ok {
+		return node.chainProtected.Load()
+	}
+	return false
 }
 
 // ─── Subscriber ─────────────────────────────────────────────────────

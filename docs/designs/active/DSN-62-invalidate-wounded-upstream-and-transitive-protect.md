@@ -1,9 +1,13 @@
 # DSN-62: 让“被 Wound 的上游”不再卡死其下游 —— finalize 顺序 + 上游无效化 + 保护沿链传递
 
-> 状态：**design + (B)(C) 已实现；(A) 初版已回退（见 §1 附注），待实验验证**
-> 附注：实验发现 (A) 初版（对 Free 节点 finalize）会令 `tryConsumePatch` 无法消费 Finalized 节点，
-> 导致 DAG 链式救援整体失效（rollback≈0 系“无链可断”的假象）。正确解“被 Wound 的 Consumed 上游拖死
-> 下游”是 (B)，故回退 (A)，保留 (B)(C)。
+> 状态：**design + (B′)(C)(D) 已实现；(A) 已回退（见下），待实验验证**
+> 附注1：(A) 初版（对 Free 节点 finalize）会令 `tryConsumePatch` 无法消费 Finalized 节点，导致 DAG
+> 链式救援整体失效（rollback≈0 系“无链可断”的假象），已回退。
+> 附注2：实验表明 (B) 初版（仅当 U 已 Consumed 才移除）效果有限——级联大头是“U 在 **Free** 阶段被
+> wound、陈旧节点仍被后来者成批消费”。故升级为 **(B′)**：被 wound 一律移除 DAG 节点。
+> 附注3：(D) 用**与 Finalized 解耦的被动 `chainProtected`** 替代“最高优先提权”(protectHeldLocks)——
+> 提权会让 U 反过来 wound 别的更低优先上游(可能是别条链的上游)制造新级联；被动保护只让 U 不可被 wound
+> 且保持可消费、不误伤他人。
 > 关联：DSN-55/56/57/58/60/61。来源：DSN-61 实验后仍残留
 > `upstream patch not on-chain yet -> rollback`（4372→2978 仍不为 0）的根因收敛。
 >
@@ -75,10 +79,14 @@
 - 跨分片：以上都作用于本分片 TLV/DAG；真正跨分片腿的时序仍靠 DSN-58/CR，非本文范围。
 
 ## 3.5 实现落点（已实现，代码编译通过）
-- (A) `ssc/impl.go`（finalizePatch 移到 AddNode 之后）+ `ssc/patchpool.go`（finalizePatch 放宽、不降级）。
-- (B) `ssc/retry_scheduler.go`（`notifyWoundedUpstream`：解绑消费方 + `offChainDAG.Remove` 无效化；
-  计数 `upstreamWoundedInvalidated`）+ `ssc/temp_lock_view.go`（两处 wound 后调 `notifyUpstreamWounded`）。
-- (C) `ssc/retry_scheduler.go`（`protectUpstreamHeldLocks` 改 BFS 沿链传递，visited+maxChainDepth）。
+- (A) **已回退**（见附注1）：`finalizePatch` 保持仅 Consumed→Finalized；`impl.go` 恢复原调用位置。
+- (B′) `ssc/retry_scheduler.go`（`notifyWoundedUpstream`：被 wound 一律 `offChainDAG.Remove(U)`，
+  若已 Consumed 先解绑消费方；计数 `upstreamWoundedInvalidated`）+ `ssc/temp_lock_view.go`
+  （两处 wound 后调 `notifyUpstreamWounded`）。
+- (C) `ssc/retry_scheduler.go`（`protectUpstreamHeldLocksBFS` 沿被消费上游链递归，visited+maxChainDepth）。
+- (D) `ssc/patchpool.go`（`OffChainPatchNode.chainProtected` + `markChainProtected`/`isChainProtected`，
+  独立于 Free/Consumed/Finalized）+ `ssc/temp_lock_view.go`（`canWound` 对 chainProtected 返回 false）+
+  `ssc/retry_scheduler.go`（保护上游改用 `markChainProtected` 被动保护，替代最高优先提权）。
 
 ## 4. 验收
 同配置（rate=200/shard=4/delay=10/vpn=4）对比：
