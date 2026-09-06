@@ -1120,9 +1120,6 @@ func (s *sscService) CommitSimulation(commit *api.SimulationCommit) {
 	utils.SSCLogger().Debug().Str("txHash", txHash.Hex()).Msgf("build commit simulation completed")
 	tBuildCallStates = time.Since(t0)
 
-	// v5 Wound-Wait: 在提交 SimTx 前锁死 Patch（不可再被 Wound）
-	s.retryScheduler.offChainDAG.finalizePatch(txHash)
-
 	s.buildSignaturesForSimulation(tx.Ctx, simulation)
 	tBuildSignatures = time.Since(t0)
 
@@ -1131,6 +1128,11 @@ func (s *sscService) CommitSimulation(commit *api.SimulationCommit) {
 	// 注：AddNode 只建节点（状态 PatchFree），由后续 MarkReady 建立 keyIndex 并触发 subscriber 扫描
 	s.retryScheduler.offChainDAG.AddNode(txHash, commit.SimulationNum, writeSet, upstreamTxList)
 	tOnChainDAGPatch = time.Since(t0)
+
+	// v5 Wound-Wait: 提交 SimTx 前锁死 Patch（不可再被 Wound）。
+	// ⚠️ 必须在 AddNode 之后：AddNode 会把节点重置为 PatchFree；此前把 finalizePatch 放在 AddNode
+	// 之前是 no-op（节点此时 Free/非 Consumed），导致“形成 SimTx 的上游仍可被 Wound”（DSN-62 §1）。
+	s.retryScheduler.offChainDAG.finalizePatch(txHash)
 
 	err = s.txSubmitter.SubmitSimulationTx(simulation)
 	tSubmitTx = time.Since(t0)

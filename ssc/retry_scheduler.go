@@ -187,6 +187,10 @@ var chainRetryStats struct {
 	SigChainReadyCandidate atomic.Int64
 	// SigDAGHoldProtected — DSN-55 rev2：DAG 救援交易得锁后 protectHeldLocks 保锁的次数。
 	SigDAGHoldProtected atomic.Int64
+	// SigUpstreamHoldProtected — DSN-61：RetryCommit 救援下游时连带把“被消费的上游”也
+	// protectHeldLocks 保锁的次数（按被保护的上游计数），避免上游被更高优先第三方 Wound
+	// 而无法先于下游上链（否则下游被有界扣留 50 块后仍 DSN-57 回滚）。
+	SigUpstreamHoldProtected atomic.Int64
 	// SigAntiStarvationAdmit — DSN-58：reservation 反饥饿强制放行的次数（交易被跳过>=N 块后被当块放行）。
 	SigAntiStarvationAdmit atomic.Int64
 
@@ -290,6 +294,7 @@ func dumpChainRetryStats() {
 		Int64("chainReadyAdmission", chainRetryStats.SigChainReadyAdmission.Swap(0)).
 		Int64("chainReadyCandidate", chainRetryStats.SigChainReadyCandidate.Swap(0)).
 		Int64("dagHoldProtected", chainRetryStats.SigDAGHoldProtected.Swap(0)).
+		Int64("upstreamHoldProtected", chainRetryStats.SigUpstreamHoldProtected.Swap(0)).
 		Int64("antiStarvationAdmit", chainRetryStats.SigAntiStarvationAdmit.Swap(0)).
 		Interface("chainLengthDist", lenCnt).
 		Interface("chainCommitDist", commitCnt).
@@ -1783,6 +1788,61 @@ func (rs *retryScheduler) RetryCommitDAG(txHash common.Hash) *api.RetryCommitRes
 	return rs.retryCommit(txHash, true)
 }
 
+// protectUpstreamHeldLocks — DSN-61：RetryCommit 救援下游 D(消费其上游 U)时，除保护 D 外，
+// 连带把被消费的上游 U 已持有的 TLV 写锁提到最高优先级（与 protectHeldLocks(D) 同理）。
+// 动机：上游 U 并非 DAG 救援交易、本身仍可按普通优先级被更高优先第三方 Wound → U 被 Wound 拉回
+// 重试 → 迟迟无法先于 D 上链(AddOnChainDAGPatch) → D 即使被保锁不被 Wound，也会被有界扣留
+// 50 块后强制放行 → verify 判“上游未上链”DSN-57 回滚。把 U 也保锁可让“U→D”整条链都免疫被 Wound，
+// 上游得以先于下游稳定上链。
+// 范围克制：只保护 D 实际消费到的上游(consumedTxHashes)，不做全量优先级通胀；U 走上链/失败 GC
+// 释放锁后该保护即失效。
+// DSN-62 (C)：保护**沿被消费的上游链递归传递**——U 要上链必须先让 U 自己的上游 UU 上链，只保 U
+// 不保 UU，链头 UU 仍可被 Wound 而断链。故保护 U 后继续沿 U 的 UpstreamTxList 向上保护其祖先，
+// 用 visited 防环、depth ≤ maxChainDepth 封顶，只作用于“实际被消费的链式子图”。
+func (rs *retryScheduler) protectUpstreamHeldLocks(upstreams []common.Hash) {
+	if rs == nil || rs.tempLockView == nil || len(upstreams) == 0 {
+		return
+	}
+	rs.protectUpstreamHeldLocksBFS(upstreams)
+}
+
+func (rs *retryScheduler) protectUpstreamHeldLocksBFS(roots []common.Hash) {
+	visited := make(map[common.Hash]struct{}, len(roots))
+	// queue 的元素带当前深度（根=1，用于链深上限）
+	type item struct {
+		h     common.Hash
+		depth int
+	}
+	queue := make([]item, 0, len(roots))
+	for _, r := range roots {
+		if _, seen := visited[r]; seen {
+			continue
+		}
+		visited[r] = struct{}{}
+		queue = append(queue, item{h: r, depth: 1})
+	}
+	maxDepth := rs.maxChainDepth
+	for len(queue) > 0 {
+		it := queue[0]
+		queue = queue[1:]
+		u := it.h
+		rs.tempLockView.protectHeldLocks(u)
+		chainRetryStats.SigUpstreamHoldProtected.Add(1)
+		// 向上扩展 U 自己的上游（U 是某更早节点的下游时才有）
+		if it.depth >= maxDepth {
+			continue
+		}
+		ups := rs.GetUpstreamTxRef(u)
+		for _, up := range ups {
+			if _, seen := visited[up.TxHash]; seen {
+				continue
+			}
+			visited[up.TxHash] = struct{}{}
+			queue = append(queue, item{h: up.TxHash, depth: it.depth + 1})
+		}
+	}
+}
+
 func (rs *retryScheduler) retryCommit(txHash common.Hash, dagAttempt bool) *api.RetryCommitResp {
 	chainRetryStats.SigRetryCommitCalled.Add(1)
 	t0 := time.Now()
@@ -1830,6 +1890,12 @@ func (rs *retryScheduler) retryCommit(txHash common.Hash, dagAttempt bool) *api.
 		if dagAttempt {
 			rs.tempLockView.protectHeldLocks(txHash)
 			chainRetryStats.SigDAGHoldProtected.Add(1)
+			// DSN-61：连带保护本 tx 已消费的上游，避免上游被第三方 Wound 而无法先于 D 上链。
+			if uv, ok := rs.consumedPatches.Load(txHash); ok {
+				if ups, ok2 := uv.([]common.Hash); ok2 {
+					rs.protectUpstreamHeldLocks(ups)
+				}
+			}
 		}
 		return &api.RetryCommitResp{Locked: true, TxHash: txHash}
 	}
@@ -1904,6 +1970,8 @@ func (rs *retryScheduler) retryCommit(txHash common.Hash, dagAttempt bool) *api.
 					Msg("retryCommit: found DAG patches in PatchPool, rescued from TLV lock conflict")
 				// DSN-54：消费上游成功 → 广播本轮 simDAGPatch 子图给本分片成员
 				rs.broadcastSimDAGPatch(retryTx)
+				// DSN-61：救援下游时连带保护被消费的上游（本路径 D 尚未持 TLV 写锁，故只保上游）。
+				rs.protectUpstreamHeldLocks(consumedTxHashes)
 				return &api.RetryCommitResp{Locked: true, TxHash: txHash}
 			}
 			// 部分消费失败 → 回滚
@@ -2047,6 +2115,8 @@ func (rs *retryScheduler) retryCommit(txHash common.Hash, dagAttempt bool) *api.
 			// DSN-55 rev2：DAG 救援交易得锁后(Phase2b 持 TLV) → 提权保锁，避免被后来者 wound。
 			rs.tempLockView.protectHeldLocks(txHash)
 			chainRetryStats.SigDAGHoldProtected.Add(1)
+			// DSN-61：连带保护本 tx 刚消费的上游，保证 U 先于 D 稳定上链、不被第三方 Wound。
+			rs.protectUpstreamHeldLocks(consumedTxHashes)
 			return &api.RetryCommitResp{Locked: true, TxHash: txHash}
 		}
 	}
