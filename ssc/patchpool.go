@@ -256,11 +256,9 @@ func (dag *offChainDAG) releasePatch(txHash common.Hash) {
 }
 
 // finalizePatch marks a Patch as Finalized — cannot be Wounded anymore.
-// 允许 Free→Finalized 和 Consumed→Finalized 两种升级：
-//   - Consumed→Finalized：一笔作为某下游“上游”的 patch，在其自身构建 SimTx 提交时锁死（原语义）；
-//   - Free→Finalized：一笔首次构建自身 SimTx（节点刚 AddNode 后为 Free）也要锁死，使其不可再被 Wound。
-//     （DSN-62 §1 修正：此前 finalizePatch 放在 AddNode 之前、且仅当 Consumed 才生效，导致“形成 SimTx
-//       的上游仍可被 Wound”，是 DSN-61 后仍残留“上游未上链”回滚的根因之一。）
+// ⚠️ 仅允许 Consumed→Finalized：只有“已被某下游消费的上游”在其自身构建 SimTx 提交时才锁死。
+// 不能对 Free 节点 finalize——Free 节点仍需保持可被后续下游消费（TryAcquire 只允许 Free→Consumed），
+// 若一构建 SimTx 就 Finalize 会使节点不可再被消费、整条 DAG 链式救援失效（DSN-62 (A) 初版回归，已回退）。
 func (dag *offChainDAG) finalizePatch(txHash common.Hash) {
 	if !dag.isOn() {
 		return
@@ -270,8 +268,7 @@ func (dag *offChainDAG) finalizePatch(txHash common.Hash) {
 		return
 	}
 	node := nodeVal.(*OffChainPatchNode)
-	// 已是 Finalized：幂等返回（不降级）。
-	if node.Status() == PatchFinalized {
+	if node.Status() != PatchConsumed {
 		return
 	}
 	node.SetStatus(PatchFinalized)

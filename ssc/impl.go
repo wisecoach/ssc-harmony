@@ -1120,6 +1120,12 @@ func (s *sscService) CommitSimulation(commit *api.SimulationCommit) {
 	utils.SSCLogger().Debug().Str("txHash", txHash.Hex()).Msgf("build commit simulation completed")
 	tBuildCallStates = time.Since(t0)
 
+	// v5 Wound-Wait: 提交 SimTx 前锁死 Patch（不可再被 Wound）。
+	// 注：finalizePatch 仅对“已被下游消费(Consumed)”的节点生效(见 patchpool)；首次构建(Free)的
+	// 节点保持 Free 以继续可被后续下游消费。DSN-62 (A) 曾试图对 Free 也 finalize，导致 DAG 链式
+	// 救援失效(下游无法消费上游)而回退；保持原语义，交由 DSN-62 (B) 处理“被 Wound 的 Consumed 上游”。
+	s.retryScheduler.offChainDAG.finalizePatch(txHash)
+
 	s.buildSignaturesForSimulation(tx.Ctx, simulation)
 	tBuildSignatures = time.Since(t0)
 
@@ -1128,11 +1134,6 @@ func (s *sscService) CommitSimulation(commit *api.SimulationCommit) {
 	// 注：AddNode 只建节点（状态 PatchFree），由后续 MarkReady 建立 keyIndex 并触发 subscriber 扫描
 	s.retryScheduler.offChainDAG.AddNode(txHash, commit.SimulationNum, writeSet, upstreamTxList)
 	tOnChainDAGPatch = time.Since(t0)
-
-	// v5 Wound-Wait: 提交 SimTx 前锁死 Patch（不可再被 Wound）。
-	// ⚠️ 必须在 AddNode 之后：AddNode 会把节点重置为 PatchFree；此前把 finalizePatch 放在 AddNode
-	// 之前是 no-op（节点此时 Free/非 Consumed），导致“形成 SimTx 的上游仍可被 Wound”（DSN-62 §1）。
-	s.retryScheduler.offChainDAG.finalizePatch(txHash)
 
 	err = s.txSubmitter.SubmitSimulationTx(simulation)
 	tSubmitTx = time.Since(t0)
