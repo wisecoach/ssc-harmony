@@ -232,6 +232,40 @@ func (v *TempLockView) protectHeldLocks(txHash common.Hash) {
 	})
 }
 
+// unprotectHeldLocks — 对称撤销 protectHeldLocks（DSN-55 rev2 / RetryRollback 对称性）。
+// protectHeldLocks 把 tx 已持有的 TLV 写锁优先级提到最高（不可被 wound）；当该 tx 被
+// rollback / victim / RetryCancel / 失败清理时，若其锁仍被持有，必须把优先级还原为真实
+// 优先级，否则这把“最高优先哨兵锁”成为永不让位的僵尸持有者，死锁无法用 wound/CMH 自愈。
+// 还原依据：优先取 stateLockManager 里该 tx 的真实优先级；查不到则降为全局最低（人人可 wound），
+// 保证 rollback 后绝不残留不可被 wound 的锁。
+func (v *TempLockView) unprotectHeldLocks(txHash common.Hash) {
+	if v == nil {
+		return
+	}
+	pri, hasReal := api.Priority{}, false
+	if v.stateLockManager != nil {
+		if p, ok := v.stateLockManager.GetTxPriority(txHash); ok {
+			pri, hasReal = p, true
+		}
+	}
+	if !hasReal {
+		// 无真实优先级可还原 → 用“最低优先”兜底，确保后续任何 requester 都能 wound 掉这把锁。
+		pri = api.Priority{
+			Nonce:         ^uint64(0),
+			OriginShardID: ^uint32(0),
+			TxHash:        common.Hash{0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff},
+		}
+	}
+	v.tempWriteLocks.Range(func(k, val interface{}) bool {
+		e := val.(tempLockEntry)
+		if bytes.Equal(e.Holder.Bytes(), txHash.Bytes()) {
+			e.Priority = pri
+			v.tempWriteLocks.Store(k, e)
+		}
+		return true
+	})
+}
+
 // IsHeldProtected 判断某 tx 是否已通过 protectHeldLocks 提升（任一把其持有的写锁达到最高优先）。
 // 供打点/诊断。
 func (v *TempLockView) IsHeldProtected(txHash common.Hash) bool {

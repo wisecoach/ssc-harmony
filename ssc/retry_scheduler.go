@@ -1338,6 +1338,9 @@ func (rs *retryScheduler) triggerVictimRollback(txHash common.Hash) {
 	if rs.state == nil || rs.state.RollbackVictim == nil {
 		return
 	}
+	// victim 终局回滚：若 victim 是 DAG 保护过的交易，先对称撤销其保护（不可被 wound 的锁 /
+	// 被保护的上游 / origin DAG 标记），否则 rollback 仍会被“不可被 wound”卡住、环打不破。
+	rs.revokeDAGProtectionOnRollback(txHash)
 	rs.state.RollbackVictim(txHash)
 }
 
@@ -1428,6 +1431,40 @@ func (rs *retryScheduler) clearChainTxMark(txHash common.Hash) {
 	}
 }
 
+// revokeDAGProtectionOnRollback — RetryCommit(DAG) 设了保护，RetryRollback 必须对称撤销。
+// RetryCommit 路径（tryToReSimulation 里 isChainTxMarked → RetryCommitDAG）成功得锁后会：
+//  1. protectHeldLocks(txHash)        —— 把已持 TLV 写锁提到最高优先（不可被 wound）；
+//  2. protectUpstreamHeldLocks(...)    —— 把被消费的上游 markChainProtected（不可被 wound）；
+//  3. markChainTx(txHash)              —— origin 把整单标记为 DAG。
+//
+// 当该交易被 rollback / victim / RetryCancel / 失败清理时，若不把这三者撤销，会留下
+// “永不让位的僵尸保护”，使死锁无法用 wound/CMH 自愈（详见 HANDOFF-20260907-dsn-unfinished… §3.5/§4）。
+// 本方法做三件事的对称撤销（幂等，no-op 安全）：
+//   - unprotectHeldLocks：还原/移除该 tx 被提到最高优先的 TLV 锁（可再被 wound）；
+//   - unmarkChainProtected：撤销其已被保护的上游（释放后可被正常仲裁/消费）；
+//   - clearChainTxMark：整单不再按 DAG 处理（可被 wound / 被 CMH 选为 victim）。
+//
+// 注意：被释放的补丁本身走 releasePatch（其中已 unmarkChainProtected）；这里额外兜底本分片
+// consumedPatches 里仍登记的上游，保证覆盖所有 rollback 入口。
+func (rs *retryScheduler) revokeDAGProtectionOnRollback(txHash common.Hash) {
+	if rs == nil {
+		return
+	}
+	if rs.tempLockView != nil {
+		rs.tempLockView.unprotectHeldLocks(txHash)
+	}
+	if rs.offChainDAG.isOn() {
+		if v, ok := rs.consumedPatches.Load(txHash); ok {
+			if ups, ok2 := v.([]common.Hash); ok2 {
+				for _, u := range ups {
+					rs.offChainDAG.unmarkChainProtected(u)
+				}
+			}
+		}
+	}
+	rs.clearChainTxMark(txHash)
+}
+
 // chainNodeDepth 返回指定 tx 在 offChainDAG 中节点的真实 DAG 深度（node.Depth）。
 // DAG 关闭/节点不存在返回 0。用于按真实深度统计链深分布（而非 simulationNum）。
 func (rs *retryScheduler) chainNodeDepth(txHash common.Hash) int {
@@ -1454,25 +1491,26 @@ func (rs *retryScheduler) HandleRetrySignal(signal *api.RetrySignal) {
 	if rs.offChainDAG.isOn() && len(signal.UpstreamTxList) > 0 {
 		// DSN-57 分片收敛(规则 A)：signal 携带的上游是“救援发起分片”消费的，origin 只应保留
 		// 自己 offChainDAG 里确有节点(本分片持有该上游 patch)的那些；异地上游不写进 origin 节点。
-		// 规则 B：若 origin 一个本地节点都没有 → 不 AddNode 上游、不 markChain → origin 按非链处理。
 		var local []api.TxSimKey
 		for _, up := range signal.UpstreamTxList {
 			if _, ok := rs.offChainDAG.nodes.Load(up.TxHash); ok {
 				local = append(local, up)
 			}
 		}
-		if len(local) == 0 {
-			utils.SSCLogger().Debug().Str("txHash", signal.TxHash.Hex()).
-				Msg("HandleRetrySignal: signal upstreams not local to origin shard, treating as non-chain (DSN-57)")
-		} else {
+		if len(local) > 0 {
 			// 把本 tx 的、且属于 origin 的上游节点持久进 offChainDAG，供后续 CommitSimulation 读取。
 			// DSN-56：own Patch 传 nil（本 tx 尚未产出写集），之后由 CommitSimulation 以自身 WriteSet 覆盖补全。
 			rs.offChainDAG.AddNode(signal.TxHash, signal.SimulationNum, nil, local)
-			// 标记该 tx 为“DAG 链式救起”。HandleRetrySignal 一定跑在 origin shard，
-			// 而 chainTxCRCommitted / [chainTxFate] 也在 origin leader 记账——若只在
-			// VerifySimulation(分片本地) 打标，跨分片时 origin 拿不到标记会漏计(恒为 0)。
-			rs.markChainTx(signal.TxHash)
+		} else {
+			utils.SSCLogger().Debug().Str("txHash", signal.TxHash.Hex()).
+				Msg("HandleRetrySignal: upstreams not local to origin shard (DSN-65, whole-tx DAG mark only)")
 		}
+		// DSN-65 (P2)：整单 DAG 标志不再依赖“上游是否 origin 本地”。只要收到携带上游的 chain
+		// signal（任一分片确实消费了上游），origin 就把整单标记为 DAG —— 供 tryToReSimulation
+		// 对本交易所有 needing 分片统一走 RetryCommitDAG，使 DAG 足迹整单一致（不再因 origin
+		// 本地无该上游而漏标 → 别的腿不保护 → 撕裂）。HandleRetrySignal 一定跑在 origin shard，
+		// 而 chainTxCRCommitted / [chainTxFate] 也在 origin leader 记账。
+		rs.markChainTx(signal.TxHash)
 	}
 
 	// 收到一个 chain signal 就直接 tryToReSimulation
@@ -1672,6 +1710,13 @@ func (rs *retryScheduler) tryToReSimulation(retryTx *api.RetryTx) {
 		chainRetryStats.SigRetryCommitFailed.Add(1)
 		utils.SSCLogger().Debug().Str("txHash", txHash.Hex()).Msg("retry commit failed")
 
+		// DSN-62 对称撤销：本次 RetryCommit(DAG) attempt 失败。RetryCommit 得锁时设的保护
+		// （protectHeldLocks / markChainProtected / markChainTx）必须在失败清理时一并撤销，
+		// 否则留下“不可被 wound”的僵尸锁/上游，使交易被彻底卡死且无法用 wound/CMH 自愈。
+		// 下面的 releasePatch / RetryCancel 各自会 unmark/撤销，这里统一兜底本分片(含 origin)
+		// 的 chain 标记与本地被保护锁，保证覆盖所有失败入口。
+		rs.revokeDAGProtectionOnRollback(txHash)
+
 		// v2: 如果失败原因是链上锁冲突，O 通知已 Locked=true 的分片进被动池
 		var hasOnChainConflict bool
 		var lockedShards []uint32
@@ -1779,6 +1824,11 @@ func (rs *retryScheduler) isStale(tx *api.RetryTx) bool {
 
 func (rs *retryScheduler) StaleTx(txHash common.Hash) {
 	t0 := time.Now()
+	// Fix-B / RetryRollback 对称撤销：StaleTx 是 commit/rollback 终局的统一回收入口(closeTransaction)。
+	// 若该 tx 曾作为 DAG 腿被 protectHeldLocks / 上游 markChainProtected / origin markChainTx 保护，
+	// 必须在终局回收时撤掉这些“免 wound”标记并释放保护，否则残留的不可被 wound 的锁/节点会
+	// 继续挡住其它交易（stuck-DAG 锁死他人）。先撤保护再 GC，保证没有最高优先哨兵锁残留。
+	rs.revokeDAGProtectionOnRollback(txHash)
 	rs.tempLockView.GarbageCollect(txHash)
 
 	rs.staleTxs.Store(txHash, struct{}{})
@@ -1868,6 +1918,7 @@ func (rs *retryScheduler) protectUpstreamHeldLocksBFS(roots []common.Hash) {
 // 才被 wound”的少数，漏掉 Free-级联这个大头。这里对任何被 wound 的 U 一律移除其 DAG 节点：
 //   - 已 Consumed → 先解绑消费方 D；
 //   - 未 Consumed(Free) → 直接移除，杜绝后来者消费这个 doomed 节点；
+//
 // U 被 wound 后当前 SimTx 尝试作废，其重试重新模拟后会以**新** patch 重新 AddNode。
 func (rs *retryScheduler) notifyWoundedUpstream(U common.Hash) {
 	if rs == nil || !rs.offChainDAG.isOn() {
@@ -1949,17 +2000,20 @@ func (rs *retryScheduler) retryCommit(txHash common.Hash, dagAttempt bool) *api.
 		rs.tempLockView.ClearWounded(txHash)
 		utils.SSCLogger().Debug().Str("txHash", txHash.Hex()).
 			Msg("retryCommit: consumed patches found, skipping TLV locks")
+		// Fix-B：本分片已消费上游 = 这条腿本地就是 DAG 链（不依赖 origin 是否标记）。
+		// 打上本地 chain 标记，使后续任何对该 tx 的 leg 锁都不可被 wound。
+		rs.markChainTx(txHash)
 		// DSN-54：已消费上游 → 广播本轮 simDAGPatch 子图给本分片成员
 		rs.broadcastSimDAGPatch(retryTx)
-		// DSN-55 rev2：DAG attempt 得锁后保锁（若此处已持 TLV；未持则 no-op）
-		if dagAttempt {
-			rs.tempLockView.protectHeldLocks(txHash)
-			chainRetryStats.SigDAGHoldProtected.Add(1)
-			// DSN-61：连带保护本 tx 已消费的上游，避免上游被第三方 Wound 而无法先于 D 上链。
-			if uv, ok := rs.consumedPatches.Load(txHash); ok {
-				if ups, ok2 := uv.([]common.Hash); ok2 {
-					rs.protectUpstreamHeldLocks(ups)
-				}
+		// DSN-55 rev2 / Fix-B：DAG 腿得锁后一律保锁（不可被 wound）。
+		// 不再以 dagAttempt 门控：既然本分片确实消费了上游，它就是 DAG 链的一部分，
+		// 必须保锁以尽快完成 commit，避免被更高优先第三方 Wound 后卡住（B→X→A 级联）。
+		rs.tempLockView.protectHeldLocks(txHash)
+		chainRetryStats.SigDAGHoldProtected.Add(1)
+		// DSN-61：连带保护本 tx 已消费的上游，避免上游被第三方 Wound 而无法先于 D 上链。
+		if uv, ok := rs.consumedPatches.Load(txHash); ok {
+			if ups, ok2 := uv.([]common.Hash); ok2 {
+				rs.protectUpstreamHeldLocks(ups)
 			}
 		}
 		return &api.RetryCommitResp{Locked: true, TxHash: txHash}
@@ -2028,6 +2082,9 @@ func (rs *retryScheduler) retryCommit(txHash common.Hash, dagAttempt bool) *api.
 				// DSN-56：own Patch 传 nil（本 tx 尚未产出写集），之后由 CommitSimulation 以自身 WriteSet 覆盖补全。
 				rs.offChainDAG.AddNode(txHash, retryTx.SimulationNum, nil, upstreamTxList)
 				rs.consumedPatches.Store(txHash, consumedTxHashes)
+				// Fix-B：本分片消费了上游 = 本地确认这条腿是 DAG 链 → 打本地 chain 标记，
+				// 使本分片后续对该 tx 的任何 leg 锁都不可被 wound（不依赖 origin 是否已标记）。
+				rs.markChainTx(txHash)
 				utils.SSCLogger().Debug().Str("txHash", txHash.Hex()).
 					Int("patchCount", len(patches)).
 					Int("coveredKeys", len(tlvBlockedKeys)).
@@ -2109,8 +2166,10 @@ func (rs *retryScheduler) retryCommit(txHash common.Hash, dagAttempt bool) *api.
 		rs.tempLockView.ClearWounded(txHash)
 		chainRetryStats.SigRetryCommitTryLockOk.Add(1)
 		utils.SSCLogger().Debug().Str("txHash", txHash.Hex()).Msg("retryCommit")
-		// DSN-55 rev2：若是 DAG 救援 attempt，得锁(TLV)后提权保锁，避免被后来者 wound。
-		if dagAttempt {
+		// DSN-55 rev2 / Fix-B：DAG attempt 得锁后提权保锁。除了 origin 传入的 dagAttempt，
+		// 若本分片本地已标记该 tx 为 DAG 链（本分片曾消费上游/验过 chain 腿），同样保锁——
+		// 避免该 tx 在其它分片用了 DAG、而本分片这条(普通)腿却因不知情被 wound（B→X→A 级联）。
+		if dagAttempt || rs.isChainTxMarked(txHash) {
 			rs.tempLockView.protectHeldLocks(txHash)
 			chainRetryStats.SigDAGHoldProtected.Add(1)
 		}
@@ -2170,6 +2229,9 @@ func (rs *retryScheduler) retryCommit(txHash common.Hash, dagAttempt bool) *api.
 			rs.offChainDAG.AddNode(txHash, retryTx.SimulationNum, nil, upstreamTxList)
 			rs.consumedPatches.Store(txHash, consumedTxHashes)
 			rs.tempLockView.ClearWounded(txHash)
+			// Fix-B：本分片消费了上游 = 本地确认这条腿是 DAG 链 → 打本地 chain 标记，
+			// 使本分片后续对该 tx 的任何 leg 锁都不可被 wound（不依赖 origin 是否已标记）。
+			rs.markChainTx(txHash)
 			utils.SSCLogger().Debug().Str("txHash", txHash.Hex()).
 				Int("patchCount", len(patches2)).
 				Int("coveredKeys", len(conflictKeys)).
@@ -2290,6 +2352,9 @@ func (rs *retryScheduler) GetCachedBlockHash() common.Hash {
 }
 
 func (rs *retryScheduler) RetryCancel(txHash common.Hash) {
+	// RetryRollback 对称撤销：RetryCommit(DAG) 得锁后设的保护（protectHeldLocks /
+	// markChainProtected / markChainTx）必须在取消/回滚时撤销，否则留下僵尸保护导致死锁无法自愈。
+	rs.revokeDAGProtectionOnRollback(txHash)
 	rs.tempLockView.GarbageCollect(txHash)
 }
 

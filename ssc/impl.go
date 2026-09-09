@@ -1138,6 +1138,12 @@ func (s *sscService) CommitSimulation(commit *api.SimulationCommit) {
 	// 链上 onChainDAGPatches 在 VerifySimulation 验证通过后导入（见 verify.go）
 	// 注：AddNode 只建节点（状态 PatchFree），由后续 MarkReady 建立 keyIndex 并触发 subscriber 扫描
 	s.retryScheduler.offChainDAG.AddNode(txHash, commit.SimulationNum, writeSet, upstreamTxList)
+	// DSN-65 (P1)：SimTx 构建即 producer 自保护。producer 一旦构建 SimTx 并入 DAG（可能成为被
+	// 下游消费的上游 U），其 TLV 写锁从此刻起不可被 Wound（仍可被消费，区别于 finalize，避免
+	// DSN-62(A) 禁消费回归）。用独立的 markProducerProtected（区别于下游请求的 chainProtected），
+	// 使下游 releasePatch/放弃不会剥离 producer 自身的保护（修复“构建后仍被 wound”的符合性缺陷）。
+	// 该保护持续到 producer 自身 SimTx 终局/节点被 Remove（P3/失败即失效为后续兜底）。
+	s.retryScheduler.offChainDAG.markProducerProtected(txHash)
 	tOnChainDAGPatch = time.Since(t0)
 
 	err = s.txSubmitter.SubmitSimulationTx(simulation)

@@ -49,6 +49,13 @@ type OffChainPatchNode struct {
 	// （与 Finalized 解耦——Finalized 会同时禁用消费导致 DAG 链失效，见 DSN-62 (A) 回退）。
 	// U 走上链/CR 终局节点被 Remove 后标记随节点消失。
 	chainProtected atomic.Bool
+	// producerProtected — DSN-65 (P1)：producer 自保护标记。producer 一旦在 CommitSimulation
+	// 构建 SimTx 并入 DAG，就从该刻起被标记为自保护（不可被 Wound），**与“被下游消费”解耦**：
+	// 下游 releasePatch/放弃只撤销它自己的 chainProtected（下游那份额），不得剥离 producer 自身
+	// 的保护——否则 producer 在“刚构建完 SimTx、正待上链”的窗口会被下游放弃动作 wound 掉
+	// （实测 260/561 例被 wound 目标刚构建过 SimTx，见 HANDOFF-20260908 符合性审计）。
+	// 该保护一直持续到 producer 自身 SimTx 终局/失败(节点被 offChainDAG.Remove)才随节点消失。
+	producerProtected atomic.Bool
 }
 
 func (n *OffChainPatchNode) Status() PatchConsumeStatus {
@@ -258,6 +265,10 @@ func (dag *offChainDAG) releasePatch(txHash common.Hash) {
 	node.SetStatus(PatchFree)
 	node.Consumer = common.Hash{}
 	node.Priority = api.Priority{}
+	// 对称撤销：RetryCommit(DAG) 得锁后会对被消费的上游 markChainProtected（不可被 Wound）。
+	// 下游 RetryRollback/失败 releasePatch 释放该上游时，必须一并撤销其 wound 免疫——
+	// 否则该上游成为“永不让位”的僵尸持有者，死锁无法用 wound/CMH 自愈。
+	dag.unmarkChainProtected(txHash)
 }
 
 // finalizePatch marks a Patch as Finalized — cannot be Wounded anymore.
@@ -306,7 +317,8 @@ func (dag *offChainDAG) markChainProtected(txHash common.Hash) {
 	}
 }
 
-// isChainProtected — DSN-62 (D)：读取某 tx 是否已被标记为被动链保护（不可被 Wound）。
+// isChainProtected — DSN-62 (D) + DSN-65 (P1)：读取某 tx 是否“免于被 Wound”。
+// = chainProtected（被某下游消费的上游，DSN-62）∨ producerProtected（producer 自保护，DSN-65）。
 // DAG 禁用/无节点时返回 false（不影响正常 wound 语义）。
 func (dag *offChainDAG) isChainProtected(txHash common.Hash) bool {
 	if !dag.isOn() {
@@ -317,7 +329,67 @@ func (dag *offChainDAG) isChainProtected(txHash common.Hash) bool {
 		return false
 	}
 	if node, ok := nodeVal.(*OffChainPatchNode); ok {
-		return node.chainProtected.Load()
+		return node.chainProtected.Load() || node.producerProtected.Load()
+	}
+	return false
+}
+
+// unmarkChainProtected — 对称撤销 markChainProtected（DSN-62 (D) 保护与 rollback 对称）。
+// RetryCommit(DAG) 保护被消费的上游使其不可被 Wound；当该保护不再需要（下游 RetryRollback/
+// 失败 releasePatch、或 tx 终局回滚/被 victim）时必须撤销，否则上游成为永不让位的僵尸持有者，
+// 死锁无法用 wound/CMH 打破。节点不存在时为 no-op（不影响正常 wound 语义）。
+// ⚠️ 只撤销“被下游消费”那一份（chainProtected）；**不得触碰 producerProtected（DSN-65 P1）**——
+// producer 自身的自保护要保留到它自己的 SimTx 终局/节点被 Remove，否则会被下游放弃动作误伤。
+func (dag *offChainDAG) unmarkChainProtected(txHash common.Hash) {
+	if !dag.isOn() {
+		return
+	}
+	if nodeVal, ok := dag.nodes.Load(txHash); ok {
+		if node, ok := nodeVal.(*OffChainPatchNode); ok {
+			node.chainProtected.Store(false)
+		}
+	}
+}
+
+// markProducerProtected — DSN-65 (P1)：producer 自保护。producer 在 CommitSimulation 构建 SimTx
+// 并入 DAG 后调用；置位后该 producer 不可被 Wound（且保持可被后续下游消费）。
+// 与 chainProtected(下游那份) 独立：releasePatch/revoke 只撤 chainProtected，不撤 producerProtected。
+func (dag *offChainDAG) markProducerProtected(txHash common.Hash) {
+	if !dag.isOn() {
+		return
+	}
+	if nodeVal, ok := dag.nodes.Load(txHash); ok {
+		if node, ok := nodeVal.(*OffChainPatchNode); ok {
+			node.producerProtected.Store(true)
+		}
+	}
+}
+
+// unmarkProducerProtected — DSN-65 (P1) 对称撤销 producer 自保护。仅应在 producer 自身的 SimTx
+// 尝试被放弃/终局（非“被下游 release”）时调用；一般节点被 offChainDAG.Remove 时随节点消失即可，
+// 无需显式 unmark。幂等、no-op 安全。
+func (dag *offChainDAG) unmarkProducerProtected(txHash common.Hash) {
+	if !dag.isOn() {
+		return
+	}
+	if nodeVal, ok := dag.nodes.Load(txHash); ok {
+		if node, ok := nodeVal.(*OffChainPatchNode); ok {
+			node.producerProtected.Store(false)
+		}
+	}
+}
+
+// isProducerProtected — DSN-65 (P1)：读 producer 自保护位。
+func (dag *offChainDAG) isProducerProtected(txHash common.Hash) bool {
+	if !dag.isOn() {
+		return false
+	}
+	nodeVal, ok := dag.nodes.Load(txHash)
+	if !ok {
+		return false
+	}
+	if node, ok := nodeVal.(*OffChainPatchNode); ok {
+		return node.producerProtected.Load()
 	}
 	return false
 }
