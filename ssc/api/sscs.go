@@ -22,20 +22,23 @@ const (
 	Method_HandleCommitVote           = "ssc_handleCommitVote"
 	Method_HandleCXTSSCCall           = "ssc_handleCXTSSCCall"
 	Method_CommitSimulation           = "ssc_commitSimulation"
-	Method_HandleCXTCommitSSCVote     = "ssc_handleCXTCommitSSCVote"
-	Method_HandleCXTCommitProof       = "ssc_handleCXTCommitProof"
-	Method_SignalReSimulation         = "ssc_signalReSimulation"
-	Method_AddRetryTx                 = "ssc_addRetryTx"
-	Method_RetryCommit                = "ssc_retryCommit"
-	Method_RetryCommitDAG             = "ssc_retryCommitDAG"
-	Method_RetryCancel                = "ssc_retryCancel"
-	Method_HandleRetrySignal          = "ssc_handleRetrySignal"
-	Method_SLTest                     = "ssc_sLTest"
-	Method_HandleNewEpoch             = "ssc_handleNewEpoch"
-	Method_AddToPassivePool           = "ssc_addToPassivePool"
-	Method_SignDeadlockProbe          = "ssc_signDeadlockProbe"
-	Method_DetectDeadlockProbe        = "ssc_detectDeadlockProbe"
-	Method_StoreSimDAGPatch           = "ssc_storeSimDAGPatch"
+	// Method_ReserveLegCommit — 2PC (H1)：首建 SimTx 前，origin 让各相关分片 leader 先“预留”
+	//（推导本分片 RWSet 并占 TLV，但不建/不提交 SimTx），全部预留成功后才允许 CommitSimulation 建单。
+	Method_ReserveLegCommit       = "ssc_reserveLegCommit"
+	Method_HandleCXTCommitSSCVote = "ssc_handleCXTCommitSSCVote"
+	Method_HandleCXTCommitProof   = "ssc_handleCXTCommitProof"
+	Method_SignalReSimulation     = "ssc_signalReSimulation"
+	Method_AddRetryTx             = "ssc_addRetryTx"
+	Method_RetryCommit            = "ssc_retryCommit"
+	Method_RetryCommitDAG         = "ssc_retryCommitDAG"
+	Method_RetryCancel            = "ssc_retryCancel"
+	Method_HandleRetrySignal      = "ssc_handleRetrySignal"
+	Method_SLTest                 = "ssc_sLTest"
+	Method_HandleNewEpoch         = "ssc_handleNewEpoch"
+	Method_AddToPassivePool       = "ssc_addToPassivePool"
+	Method_SignDeadlockProbe      = "ssc_signDeadlockProbe"
+	Method_DetectDeadlockProbe    = "ssc_detectDeadlockProbe"
+	Method_StoreSimDAGPatch       = "ssc_storeSimDAGPatch"
 )
 
 type ShardLocator interface {
@@ -239,6 +242,12 @@ type ShardService interface {
 	// RetryCommitDAG — DSN-55 rev2：DAG 救援 attempt 的 RetryCommit。
 	// 与 RetryCommit 唯一区别：取得 TLV 锁后提权保锁(不被 wound)。
 	RetryCommitDAG(txHash common.Hash) *RetryCommitResp
+
+	// ReserveLegCommit — 2PC (H1) Phase A：首建 SimTx 前 origin 调用各相关分片 leader，
+	// 让它推导本分片 RWSet 并占 TLV（预留），但【不建/不提交 SimTx】。
+	// 返回 Locked=true 表示本分片已持有 TLV、等 Phase B CommitSimulation 复用该锁建单；
+	// 返回 Locked=false 表示本分片此刻拿不到 TLV（origin 应整单放弃并 RetryCancel 已预留分片）。
+	ReserveLegCommit(commit *SimulationCommit) *RetryCommitResp
 
 	RetryCancel(txHash common.Hash)
 

@@ -45,6 +45,8 @@ type SSCShardServiceClient interface {
 	RetryCommit(ctx context.Context, in *Hash, opts ...grpc.CallOption) (*RetryCommitResp, error)
 	// DSN-55 rev2: DAG 救援 attempt 的 RetryCommit —— 得锁(TLV)后提权保锁(不被 wound)
 	RetryCommitDAG(ctx context.Context, in *Hash, opts ...grpc.CallOption) (*RetryCommitResp, error)
+	// 2PC (H1): origin -> related shard leader, reserve TLV for its leg (no SimTx built yet)
+	ReserveLegCommit(ctx context.Context, in *SimulationCommit, opts ...grpc.CallOption) (*RetryCommitResp, error)
 	RetryCancel(ctx context.Context, in *Hash, opts ...grpc.CallOption) (*Empty, error)
 	// Epoch transition
 	HandleNewEpoch(ctx context.Context, in *HandleNewEpochRequest, opts ...grpc.CallOption) (*Empty, error)
@@ -177,6 +179,15 @@ func (c *sSCShardServiceClient) RetryCommitDAG(ctx context.Context, in *Hash, op
 	return out, nil
 }
 
+func (c *sSCShardServiceClient) ReserveLegCommit(ctx context.Context, in *SimulationCommit, opts ...grpc.CallOption) (*RetryCommitResp, error) {
+	out := new(RetryCommitResp)
+	err := c.cc.Invoke(ctx, "/sscpb.SSCShardService/ReserveLegCommit", in, out, opts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 func (c *sSCShardServiceClient) RetryCancel(ctx context.Context, in *Hash, opts ...grpc.CallOption) (*Empty, error) {
 	out := new(Empty)
 	err := c.cc.Invoke(ctx, "/sscpb.SSCShardService/RetryCancel", in, out, opts...)
@@ -231,6 +242,8 @@ type SSCShardServiceServer interface {
 	RetryCommit(context.Context, *Hash) (*RetryCommitResp, error)
 	// DSN-55 rev2: DAG 救援 attempt 的 RetryCommit —— 得锁(TLV)后提权保锁(不被 wound)
 	RetryCommitDAG(context.Context, *Hash) (*RetryCommitResp, error)
+	// 2PC (H1): origin -> related shard leader, reserve TLV for its leg (no SimTx built yet)
+	ReserveLegCommit(context.Context, *SimulationCommit) (*RetryCommitResp, error)
 	RetryCancel(context.Context, *Hash) (*Empty, error)
 	// Epoch transition
 	HandleNewEpoch(context.Context, *HandleNewEpochRequest) (*Empty, error)
@@ -281,6 +294,9 @@ func (UnimplementedSSCShardServiceServer) RetryCommit(context.Context, *Hash) (*
 }
 func (UnimplementedSSCShardServiceServer) RetryCommitDAG(context.Context, *Hash) (*RetryCommitResp, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method RetryCommitDAG not implemented")
+}
+func (UnimplementedSSCShardServiceServer) ReserveLegCommit(context.Context, *SimulationCommit) (*RetryCommitResp, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method ReserveLegCommit not implemented")
 }
 func (UnimplementedSSCShardServiceServer) RetryCancel(context.Context, *Hash) (*Empty, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method RetryCancel not implemented")
@@ -538,6 +554,24 @@ func _SSCShardService_RetryCommitDAG_Handler(srv interface{}, ctx context.Contex
 	return interceptor(ctx, in, info, handler)
 }
 
+func _SSCShardService_ReserveLegCommit_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(SimulationCommit)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(SSCShardServiceServer).ReserveLegCommit(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: "/sscpb.SSCShardService/ReserveLegCommit",
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(SSCShardServiceServer).ReserveLegCommit(ctx, req.(*SimulationCommit))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 func _SSCShardService_RetryCancel_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
 	in := new(Hash)
 	if err := dec(in); err != nil {
@@ -650,6 +684,10 @@ var SSCShardService_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "RetryCommitDAG",
 			Handler:    _SSCShardService_RetryCommitDAG_Handler,
+		},
+		{
+			MethodName: "ReserveLegCommit",
+			Handler:    _SSCShardService_ReserveLegCommit_Handler,
 		},
 		{
 			MethodName: "RetryCancel",

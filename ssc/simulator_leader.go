@@ -49,6 +49,94 @@ import (
 // s.simuLock → sim.simuChMap (per-tx sync.Map)
 // s.simuWaitingChs → sim.simuChMap + simuChannels
 // s.simuResultCh → sim.simuChMap + simuChannels
+// reserveAllLegsCommit — 2PC (H1) Phase A（origin 侧）。
+// origin 在“首建 SimTx”前，向每个 related-shard leader 发 ReserveLegCommit，让其在本地占 TLV 预留
+// （只预留、不建/不提交 SimTx）。所有分片都返回 Locked=true 才返回 true；
+// 任一失败/超时则对“已预留成功”的分片发 RetryCancel（释放），并返回 false，由调用方整单回重试。
+// 效果：要么所有相关分片都预留成功才进入 Phase B（CommitSimulation 建单），要么一单都不建
+// → 从根上消掉“某腿建了 SimTx/上链、另一腿没锁上/没建成”的 H1 半单上链。
+func (sim *Simulator) reserveAllLegsCommit(commit *api.SimulationCommit) bool {
+	txHash := commit.TxHash
+	selfAddr := sim.communicator.signerMgr.GetSSCSigner().Address()
+	ctx, cancel := context.WithTimeout(sim.ctx, sim.config.CallTimeout)
+	defer cancel()
+
+	var (
+		mu    sync.Mutex
+		resps = make(map[uint32]bool, len(commit.RelatedShards))
+		wg    sync.WaitGroup
+	)
+	for _, shardId := range commit.RelatedShards {
+		leader := sim.committee.GetLeader(commit.Epochs[shardId], shardId)
+		if leader == nil {
+			mu.Lock()
+			resps[shardId] = false
+			mu.Unlock()
+			utils.SSCLogger().Warn().Str("txHash", txHash.Hex()).
+				Uint32("shardId", shardId).
+				Msg("reserveAllLegsCommit: leader not found, treat as not-locked")
+			continue
+		}
+		wg.Add(1)
+		go func(shardId uint32, leader *api.Member) {
+			defer wg.Done()
+			var locked bool
+			if bytes.Equal(leader.Address.Bytes(), selfAddr.Bytes()) {
+				locked = sim.sscService.ReserveLegCommit(commit).Locked
+			} else {
+				resp := new(api.RetryCommitResp)
+				if err := sim.communicator.comm.Call(ctx, resp, leader, api.Method_ReserveLegCommit, commit); err != nil {
+					utils.SSCLogger().Warn().Str("txHash", txHash.Hex()).
+						Uint32("shardId", shardId).Err(err).
+						Msg("reserveAllLegsCommit: RPC failed, treat as not-locked")
+				} else {
+					locked = resp.Locked
+				}
+			}
+			mu.Lock()
+			resps[shardId] = locked
+			mu.Unlock()
+		}(shardId, leader)
+	}
+	wg.Wait()
+
+	all := true
+	for _, locked := range resps {
+		if !locked {
+			all = false
+			break
+		}
+	}
+	if all {
+		utils.SSCLogger().Debug().Str("txHash", txHash.Hex()).
+			Int("shards", len(resps)).
+			Msg("reserveAllLegsCommit: all legs reserved (2PC H1 Phase A ok)")
+		return true
+	}
+
+	// 释放已预留成功的分片（对称撤销，避免占锁不放）
+	for shardId, locked := range resps {
+		if !locked {
+			continue
+		}
+		leader := sim.committee.GetLeader(commit.Epochs[shardId], shardId)
+		if leader == nil {
+			continue
+		}
+		if bytes.Equal(leader.Address.Bytes(), selfAddr.Bytes()) {
+			sim.sscService.RetryCancel(txHash)
+		} else {
+			go func(leader *api.Member) {
+				_ = sim.communicator.comm.Call(sim.ctx, nil, leader, api.Method_RetryCancel, txHash)
+			}(leader)
+		}
+	}
+	utils.SSCLogger().Debug().Str("txHash", txHash.Hex()).
+		Int("shards", len(resps)).
+		Msg("reserveAllLegsCommit: not all legs locked, released reserved legs (2PC H1)")
+	return false
+}
+
 func (sim *Simulator) StartSimulateCXTransaction(req *api.CXTSimulationRequest) *api.CXTSimulationSSCResult {
 	var waitingCh chan *api.CXTSimulationSSCResult
 	txHash := req.Tx.Hash()
@@ -340,6 +428,30 @@ func (sim *Simulator) StartSimulateCXTransaction(req *api.CXTSimulationRequest) 
 	tAggregate = time.Since(t0)
 	tThresholdSign = time.Since(t0)
 
+	// 2PC (H1): Phase A — 先让所有相关分片 leader 预留(占 TLV)，全部成功才允许建/提交 SimTx。
+	if !sim.reserveAllLegsCommit(simulationCommit) {
+		// 某腿拿不到 TLV → 整单回重试（reserveAllLegsCommit 已释放已预留分片），不做半单上链。
+		utils.SSCLogger().Info().Str("txHash", txHash.Hex()).
+			Int("simNum", simulationCommit.SimulationNum).
+			Msg("StartSimulateCXTransaction: 2PC(H1) reserve not all locked -> whole-tx retry (no partial SimTx)")
+		if sim.committee.IsLeader(req.Epochs[sim.committee.SelfShard]) {
+			sim.state.CallForRetry(&api.RetryTx{
+				TxHash:        txHash,
+				Epochs:        req.Epochs,
+				RelatedShards: simulationCommit.RelatedShards,
+				SimulationNum: simulationCommit.SimulationNum + 1,
+				Condition:     api.Simulate,
+				OriginShardID: sim.committee.SelfShard,
+				Nonce:         req.Tx.Nonce(),
+			})
+		}
+		sim.state.SetTxStatus(txHash, api.WAITING_FOR_RESIMULATION_OFF_CHAIN)
+		notifyWaiters(sscResult)
+		closeResultCh()
+		return sscResult
+	}
+
+	// Phase B — 全部预留成功，才建/提交各分片 SimTx（CommitSimulation 复用 Phase A 已持的 TLV，必能建）。
 	leaders := make([]*api.Member, 0)
 	selfAddr := sim.communicator.signerMgr.GetSSCSigner().Address()
 	for _, shardId := range simulationCommit.RelatedShards {
@@ -943,6 +1055,34 @@ func (sim *Simulator) StartReSimulation(txHash common.Hash, simulationNum int) {
 	tThresholdSign = time.Since(t0)
 	utils.SSCLogger().Debug().Str("txHash", txHash.Hex()).
 		Msg("startReSimulation: after thresholdSignSimulationCommit")
+
+	// 2PC（修订）：重试路径也必须先做 Phase A —— 由 origin 统一让全分片预留(TLV)，
+	// 全部 locked 才允许 Phase B 构建；否则整单回滚重试。这样上锁唯一且由 origin 掌握，
+	// Phase B 只构建不抢锁，避免“兄弟腿照上链”的 H1。
+	if simulationCommit.Commit {
+		if !sim.reserveAllLegsCommit(simulationCommit) {
+			utils.SSCLogger().Info().Str("txHash", txHash.Hex()).
+				Int("simNum", simulationCommit.SimulationNum).
+				Msg("StartReSimulation: 2PC reserve not all locked -> whole-tx retry (no partial build)")
+			if sim.committee.IsLeader(simulationCommit.Epochs[sim.committee.SelfShard]) {
+				originShardId := sim.committee.SelfShard
+				if st, es := sim.state.GetTxState(txHash); es == nil && st != nil {
+					originShardId = st.OriginShardId
+				}
+				sim.state.CallForRetry(&api.RetryTx{
+					TxHash:        txHash,
+					Epochs:        simulationCommit.Epochs,
+					RelatedShards: simulationCommit.RelatedShards,
+					SimulationNum: simulationCommit.SimulationNum + 1,
+					Condition:     api.Simulate,
+					OriginShardID: originShardId,
+					Nonce:         simulationCommit.Nonce,
+				})
+			}
+			sim.state.SetTxStatus(txHash, api.WAITING_FOR_RESIMULATION_OFF_CHAIN)
+			return
+		}
+	}
 
 	// 创建独立的 ctx 用于后续 Multicast，避免被 thresholdSignSimulationCommit 的 cancel 影响
 	notifyCtx, notifyCancel := context.WithTimeout(txState.Ctx, sim.config.CallTimeout)

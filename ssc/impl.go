@@ -1101,25 +1101,40 @@ func (s *sscService) CommitSimulation(commit *api.SimulationCommit) {
 		}
 	}
 	if len(readKeys)+len(writeKeys) > 0 {
-		priority := api.Priority{Nonce: commit.Nonce, OriginShardID: tx.OriginShardId, TxHash: txHash}
-		locked, _ := tlv.TryLockWithPriority(txHash, priority, readKeys, writeKeys)
-		if !locked {
-			// 拿不到 TLV 锁（与并行模拟冲突、且无法 wound）→ 不构建 SimTx，回重试池。
-			utils.SSCLogger().Debug().Str("txHash", txHash.Hex()).
-				Int("readKeys", len(readKeys)).
-				Int("writeKeys", len(writeKeys)).
-				Msg("DSN-52 方案1: first-sim failed to acquire TLV lock, not building SimTx, back to retry")
-			s.retryScheduler.CallForRetry(&api.RetryTx{
-				TxHash:        txHash,
-				Epochs:        commit.Epochs,
-				RelatedShards: commit.RelatedShards,
-				SimulationNum: commit.SimulationNum + 1,
-				Condition:     api.Simulate,
-				OriginShardID: tx.OriginShardId,
-				Nonce:         commit.Nonce,
-			})
+		// 2PC（修订）：上锁唯一且提前——TLV 已被 Phase A（ReserveLegCommit）或 RetryCommit 为本 tx 持有。
+		// Phase B 只【校验已持锁】然后构建，**绝不抢锁**（origin 已确保全分片 locked 才广播建单）。
+		// 若这里发现未持锁，说明 origin 的 Phase A 未覆盖本腿（不应发生）→ 拒绝构建（不回重试、不抢锁），
+		// 由 origin 统一回滚，避免“兄弟腿照上链”的 H1。
+		allHeld := true
+		var missing api.LockKey
+		for _, k := range writeKeys {
+			if !tlv.IsTempLockedBySelf(txHash, k) {
+				allHeld = false
+				missing = k
+				break
+			}
+		}
+		if allHeld {
+			for _, k := range readKeys {
+				if !tlv.IsTempLockedBySelf(txHash, k) {
+					allHeld = false
+					missing = k
+					break
+				}
+			}
+		}
+		if !allHeld {
+			utils.SSCLogger().Error().Str("txHash", txHash.Hex()).
+				Uint32("shardId", s.SelfShard).
+				Int("simNum", commit.SimulationNum).
+				Str("missingKey", string(missing)).
+				Msg("2PC PhaseB: leg TLV not held (Phase A did not cover this leg), refuse to build (no lock in Phase B)")
 			return
 		}
+		utils.SSCLogger().Debug().Str("txHash", txHash.Hex()).
+			Int("readKeys", len(readKeys)).
+			Int("writeKeys", len(writeKeys)).
+			Msg("2PC PhaseB: leg TLV verified held (Phase A), build without re-lock")
 	}
 
 	utils.SSCLogger().Debug().Str("txHash", txHash.Hex()).Msgf("build commit simulation completed")
@@ -1719,6 +1734,79 @@ func (s *sscService) RetryCommitDAG(txHash common.Hash) *api.RetryCommitResp {
 
 func (s *sscService) RetryCancel(txHash common.Hash) {
 	s.retryScheduler.RetryCancel(txHash)
+}
+
+// ReserveLegCommit — 2PC (H1) Phase A（每分片 leader 侧）。
+// origin 在“首建 SimTx”前，让每个相关分片 leader 先做两件事：
+//  1. 从本分片已存好的模拟结果（SimulationCallStates）推导本腿 RWSet；
+//  2. 对该 RWSet 占 TLV（TryLockWithPriority），成功则【只预留、不建/不提交 SimTx】。
+//
+// 成功（Locked=true）：本分片已持 TLV，等 Phase B（CommitSimulation）复用同一把锁（同 tx 同 key 重入）
+// 去建 SimTx —— 从而保证“要么所有相关分片都预留成功才建单，要么一单都不建”，消掉 H1 半单上链。
+// 失败（Locked=false）：本分片此刻拿不到 TLV（热 key 被其它在途交易占着），origin 负责整单放弃并
+// 对已预留分片 RetryCancel（释放），回 SimulationNum+1 重试；本函数不做任何“独自回重试”的动作。
+func (s *sscService) ReserveLegCommit(commit *api.SimulationCommit) *api.RetryCommitResp {
+	resp := &api.RetryCommitResp{TxHash: commit.TxHash}
+	txHash := commit.TxHash
+
+	txStateVal, ok := s.txStates.Load(txHash)
+	if !ok {
+		utils.SSCLogger().Warn().Str("txHash", txHash.Hex()).
+			Msg("ReserveLegCommit: txState not found, cannot reserve")
+		return resp // Locked=false
+	}
+	txState := txStateVal.(*api.TxState)
+
+	// 与 CommitSimulation 相同的 RWSet 推导：从已存模拟结果重建本腿 callStates。
+	callStates, err := s.Simulator.BuildCallStates(txHash, commit.SimulationNum)
+	if err != nil {
+		utils.SSCLogger().Error().Str("txHash", txHash.Hex()).
+			Err(err).Msg("ReserveLegCommit: no call states to derive RWSet")
+		return resp // Locked=false
+	}
+	var readKeys, writeKeys []api.LockKey
+	for _, cs := range callStates {
+		if cs.RWSet == nil {
+			continue
+		}
+		if cs.RWSet.ReadState != nil {
+			for addr, state := range cs.RWSet.ReadState.State {
+				for key := range state {
+					readKeys = append(readKeys, api.FormKey(addr, key))
+				}
+			}
+		}
+		if cs.RWSet.WriteState != nil {
+			for addr, state := range cs.RWSet.WriteState.State {
+				for key := range state {
+					writeKeys = append(writeKeys, api.FormKey(addr, key))
+				}
+			}
+		}
+	}
+
+	if len(readKeys)+len(writeKeys) == 0 {
+		// 本腿无读写 key（空腿/只读外部？）→ 无可预留，视为成功。
+		resp.Locked = true
+		return resp
+	}
+
+	priority := api.Priority{Nonce: commit.Nonce, OriginShardID: txState.OriginShardId, TxHash: txHash}
+	locked, _ := s.retryScheduler.tempLockView.TryLockWithPriority(txHash, priority, readKeys, writeKeys)
+	resp.Locked = locked
+	if locked {
+		utils.SSCLogger().Debug().Str("txHash", txHash.Hex()).
+			Uint32("shardId", s.SelfShard).
+			Int("simNum", commit.SimulationNum).
+			Int("writeKeys", len(writeKeys)).
+			Msg("ReserveLegCommit: TLV reserved (2PC H1), waiting Phase B build")
+	} else {
+		utils.SSCLogger().Debug().Str("txHash", txHash.Hex()).
+			Uint32("shardId", s.SelfShard).
+			Int("simNum", commit.SimulationNum).
+			Msg("ReserveLegCommit: TLV not acquirable (2PC H1), will not build this leg")
+	}
+	return resp
 }
 
 // StoreSimDAGPatch — DSN-54：成员侧接收 leader 广播的模拟期链下 DAG patch 子图，

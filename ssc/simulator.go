@@ -12,7 +12,6 @@ import (
 
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/harmony-one/harmony/core"
-	corestate "github.com/harmony-one/harmony/core/state"
 	"github.com/harmony-one/harmony/internal/utils"
 	"github.com/harmony-one/harmony/ssc/api"
 )
@@ -906,75 +905,30 @@ func (sim *Simulator) currentTxPriority(txHash common.Hash) (api.Priority, bool)
 	return api.Priority{}, false
 }
 
-// isLowerPriorityLock 判断当前交易撞到的锁（TLV 或 SLM/on-chain+pending）是否由更低优先级的持有者持有。
-// 链下 wound：若是，则当前交易优先级更高，可「忽略」该锁继续模拟、构建 SimTx（由链下 TLV wound 保证
-// 最终能拿到锁）；链上冲突则交给 Verify 的 Wait-Die（低优先级终局回滚），不在链下判死。
-func (sim *Simulator) isLowerPriorityLock(txHash common.Hash, lockKey api.LockKey, db api.StateDB) bool {
-	cur, ok := sim.currentTxPriority(txHash)
-	if !ok {
-		return false
-	}
-	if sim.sscService == nil || sim.sscService.retryScheduler == nil {
-		return false
-	}
-	tlv := sim.sscService.retryScheduler.tempLockView
-	return lowerPriorityLock(tlv, tlv.stateLockManager, db, txHash, lockKey, cur)
-}
-
-// lowerPriorityLock 判断某 key 是否被比 cur（当前交易）更低优先级的持有者持有。
-//
-// 供链下模拟（Simulator.isLowerPriorityLock）使用：撞到低优先级持有者的锁时，高优先级交易可以
-// 「忽略」该锁继续模拟（TLV wound 语义）——由链下 retryScheduler 的 TryLockWithPriority 真正抢占 TLV 锁。
-//
-// 覆盖：TLV 持有者 / global 写锁（含 Finalized 判定）/ global 读锁 / pending 写锁 / pending 读锁。
-func lowerPriorityLock(tlv *TempLockView, mgr *stateLockManager, db api.StateDB, txHash common.Hash, lockKey api.LockKey, cur api.Priority) bool {
-	// 1) TLV 持有者（tempLockEntry 已带 Priority）
-	if tlv != nil {
-		if h, pri, found := tlv.GetTempLockHolder(lockKey); found && h != txHash {
-			if cur.Less(pri) {
-				return true
-			}
-		}
-	}
-	// 2) SLM/on-chain 持有者：globalLockedStates + globalRLockedStates + pendingStates（写/读锁）
-	if mgr != nil {
-		if meta, ok2 := mgr.GetLockHolderMeta(lockKey); ok2 && meta.TxHash != txHash {
-			if !meta.Finalized && cur.Less(meta.Priority) {
-				return true
-			}
-		} else {
-			// global 读锁持有者（读锁可多持有者，返回其一）
-			if h, ok4 := mgr.GetRLockHolder(lockKey); ok4 && h != txHash {
-				if hp, ok5 := mgr.GetTxPriority(h); ok5 && cur.Less(hp) {
-					return true
-				}
-			}
-			// pending 写锁 / 读锁
-			if sdb, isDB := db.(*corestate.DB); isDB {
-				if h, found := sdb.FindPendingLockHolder(lockKey); found && h != txHash {
-					if hp, ok3 := mgr.GetTxPriority(h); ok3 && cur.Less(hp) {
-						return true
-					}
-				}
-			}
-		}
-	}
-	return false
-}
+// 【无 wound】wound（Wound-Wait 抢占）已整体移除：
+//   - TLV 抢锁：TempLockView.canWound → false（谁先拿 TLV 谁保留）；
+//   - 模拟侧“忽略低优先级持有者的锁”：此前 isLowerPriorityLock/lowerPriorityLock 允许高优先级交易
+//     撞到低优先级锁时「忽略该锁继续模拟/无锁读取」，其成立前提是“之后 TLV TryLock 会真的 wound 抢到锁”。
+//     一旦 TLV 抢锁被关，若模拟侧仍照旧忽略，会产生「幻影 RWSet」——高优先级交易反复模拟出它其实
+//     抢不到锁的写集 → TryLock 失败 → 反复重试 → unfinished 堆积（即 canWound=false 只改一半的 A/B 现象）。
+//     故这两个函数已删除；任何锁冲突都按真实冲突处理（记入 LockedKeys / LockedByOtherTx），
+//     由既有 DAG 上游补救（readUpstreamValue）、ForceSimulation 与重试/退让机制收敛，不再走 wound。
+//     （git 历史保留原实现可回滚。）
 
 // IsKeyAvailable 三层仲裁：TLV 检查 → SLM 检查 → DAG 上游补救（readUpstreamValue）。
 // 用于 GetState/SetState 中 stateDB 读取前的锁冲突预检。
 //
-// DSN-52 §17.7 最终分层：若冲突锁由**更低优先级**持有者持有，则当前（高优先级）交易可
-// 「忽略」该锁（视为可用）继续模拟——配合链下 TLV wound（RetryCommit Phase1
-// TryLockWithPriority 真正抢占 TLV 锁）；on-chain 冲突由严格门拦截，链上 Verify 只做
-// Wait-Die（低优先级终局回滚，高优先级 wait，**不 wound**）。不在模拟层判死。
+// 【无 wound】：wound（Wound-Wait 抢占，含“忽略低优先级持有者的锁”）已整体移除
+// （canWound=false + isLowerPriorityLock=false）。因此这里不再因“持有者优先级更低”而放行；
+// 撞锁一律按真实冲突处理，只依赖 DAG 上游补救（readUpstreamValue）覆盖“下游读写上游”的
+// 合法场景（DSN-56/DSN-60），其余冲突返回 ErrLockConflict_OnChain，交给既有的
+// LockedKeys/ForceSimulation 与重试/退让机制收敛。
 //
 // 返回：
 //
 //	available: key 是否可访问
 //	patchedVal: 非 nil 表示上游 DAG 已写出此 key（readUpstreamValue 命中），调用方应使用此值
-//	err: 非 nil 表示锁冲突且无 DAG 上游覆盖、且持有者不是更低优先级
+//	err: 非 nil 表示锁冲突且无 DAG 上游覆盖
 func (sim *Simulator) IsKeyAvailable(txHash common.Hash, db api.StateDB, address common.Address, key common.Hash) (available bool, patchedVal *common.Hash, err error) {
 	lockKey := api.FormKey(address, key)
 	tlv := sim.sscService.retryScheduler.tempLockView
@@ -993,12 +947,8 @@ func (sim *Simulator) IsKeyAvailable(txHash common.Hash, db api.StateDB, address
 		return true, nil, nil
 	}
 
-	// 链下 wound：撞到更低优先级持有者的锁 → 当前（高优先级）可忽略（视为可用）继续模拟；
-	// on-chain 冲突由严格门（RetryCommit Phase2）拦截，链上 Verify 只做 Wait-Die，不在此上链判 die。
-	if sim.isLowerPriorityLock(txHash, lockKey, db) {
-		return true, nil, nil
-	}
-
+	// 【无 wound】不再因“持有者优先级更低”放行（isLowerPriorityLock 已关闭）。
+	// 直接走 DAG 上游补救，未覆盖则视为真实冲突。
 	// Step 3: DAG 上游补救 — 看该交易的上游是否已写出此 key（DSN-56：只从 DAG 反查，
 	// 即 readUpstreamValue → offChainDAG 链 / DSN-54 simDAGPatches）。
 	val, found := sim.readUpstreamValue(txHash, address, key)
@@ -1087,13 +1037,6 @@ func (sim *Simulator) GetState(db api.StateDB, txHash common.Hash, address commo
 		if patchVal != nil {
 			// Step 2b: Patch 提供了值，不走 stateDB
 			val = *patchVal
-		} else if sim.isLowerPriorityLock(txHash, api.FormKey(address, key), db) {
-			// 链下 wound：该锁由更低优先级持有者持有 → 当前（高优先级）可忽略锁直接无锁读取
-			// （配合链下 TLV wound；on-chain 冲突由严格门拦截，不在模拟层判 die）。
-			val, err = db.GetStateWithoutLock(address, key)
-			if err != nil {
-				return common.Hash{}, err
-			}
 		} else {
 			// Step 2c: 无锁冲突，走 stateDB 正常读
 			val, err = db.GetState(txHash, address, key)
@@ -1161,15 +1104,6 @@ func (sim *Simulator) SetState(db api.StateDB, txHash common.Hash, address commo
 			if patchVal != nil {
 				// Patch 提供了值，不走 stateDB
 				val = *patchVal
-			} else if sim.isLowerPriorityLock(txHash, api.FormKey(address, key), db) {
-				// 链下 wound：该锁由更低优先级持有者持有 → 当前（高优先级）可忽略锁直接无锁读取
-				// （配合链下 TLV wound；on-chain 冲突由严格门拦截，不在模拟层判 die）。
-				val, err = db.GetStateWithoutLock(address, key)
-				if err != nil {
-					utils.SSCLogger().Error().Err(err).Str("txHash", txHash.Hex()).
-						Msgf("failed to set state: get conflict state (ignored lower-prio holder) [%s:%s]", address.Hex(), key.Hex())
-					return err
-				}
 			} else {
 				// 无锁冲突，走 stateDB 正常读
 				val, err = db.GetState(txHash, address, key)

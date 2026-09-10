@@ -241,6 +241,18 @@ func (c *Comm) callOnConn(ctx context.Context, ret interface{}, conn *grpc.Clien
 		_, err := sscpb.NewSSCShardServiceClient(conn).RetryCancel(ctx, &sscpb.Hash{Val: txHash.Bytes()})
 		return err
 
+	case "reserveLegCommit":
+		a := args[0].(*api.SimulationCommit)
+		p := sscpb.SimulationCommitToProto(a)
+		resp, err := sscpb.NewSSCShardServiceClient(conn).ReserveLegCommit(ctx, p)
+		if err != nil {
+			return err
+		}
+		if ret != nil {
+			*(ret.(*api.RetryCommitResp)) = *sscpb.RetryCommitRespFromProto(resp)
+		}
+		return nil
+
 	case "handleNewEpoch":
 		a := args[0].(*api.NewEpoch)
 		blockNum := args[1].(uint64)

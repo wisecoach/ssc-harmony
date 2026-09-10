@@ -154,6 +154,14 @@ func (s *sscGrpcShardService) RetryCommitDAG(
 	return sscpb.RetryCommitRespToProto(ret), nil
 }
 
+func (s *sscGrpcShardService) ReserveLegCommit(
+	ctx context.Context, req *sscpb.SimulationCommit,
+) (*sscpb.RetryCommitResp, error) {
+	internalReq := sscpb.SimulationCommitFromProto(req)
+	ret := s.internalService.ReserveLegCommit(internalReq)
+	return sscpb.RetryCommitRespToProto(ret), nil
+}
+
 func (s *sscGrpcShardService) RetryCancel(
 	ctx context.Context, req *sscpb.Hash,
 ) (*sscpb.Empty, error) {

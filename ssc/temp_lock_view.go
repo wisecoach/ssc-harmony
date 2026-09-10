@@ -198,17 +198,18 @@ func (v *TempLockView) addReadLock(key api.LockKey, txHash common.Hash) {
 //   - 持有者优先级更高/相等；
 //   - 持有者的 Patch 已 Finalized；
 //   - 持有者已被标记为被动链保护（DSN-62 (D) chainProtected）——不可被 wound，但仍可被消费。
+//
+// 【实验开关：移除 wound —— A/B】2026-09-09 checkpoint 69cd2ec07 之后，为验证
+// “因 wound 导致错误 SimTx 上链 → 系统失活”的假设，临时把 wound 全部关掉：
+//   - TryLockWithPriority 永不抢占已有持有者 → 谁先拿到 TLV 谁保留，不再有
+//     “tx1 验证 key 后、构建 SimTx 途中被 tx0 wound → 双方都提交同 key SimTx”的竞态；
+//   - 已上链锁（本就不是 wound 可救）不受影响；
+//   - woundedTxs / woundedRetryTxs / 恢复路径等随之空转（无害）。
+//
+// 若实验证明 wound 非病根，改回真实 wound 语义即可（保留原逻辑见 git HEAD）。
 func (v *TempLockView) canWound(entry tempLockEntry, requesterPri api.Priority, requester common.Hash) bool {
-	// 检查 PatchPool 中该持有者的 Patch 是否已 Finalized
-	if v.stateLockManager.sscService.retryScheduler.offChainDAG.isPatchFinalized(entry.Holder) {
-		return false
-	}
-	// DSN-62 (D)：被动链保护标记 → 不可被 wound（与 Finalized 解耦，不影响可消费性）
-	if v.stateLockManager.sscService.retryScheduler.offChainDAG.isChainProtected(entry.Holder) {
-		return false
-	}
-	// 如果持有者优先级更低（数值更大），可以踢
-	return requesterPri.Less(entry.Priority)
+	// A/B：移除 wound —— 永不抢占。
+	return false
 }
 
 // protectHeldLocks — DSN-55 rev2：DAG 救援交易得锁后，把其已持有的每把 TLV 写锁的
